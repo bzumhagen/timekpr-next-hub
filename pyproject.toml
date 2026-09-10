@@ -1,0 +1,20 @@
+[project]
+name = "timekpr-next-hub"
+version = "0.1.0"
+description = "Centralized, pooled screen-time management hub for timekpr-next"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["core", "hub", "agent"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# All async tests share one event loop (rather than one per test function).
+# Needed because timekpr_hub.db.session creates its engine/pool once at
+# import time; a fresh event loop per test would hand asyncpg connections
+# created under loop N to a teardown running under loop N+1.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

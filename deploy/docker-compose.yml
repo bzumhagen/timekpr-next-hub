@@ -1,0 +1,81 @@
+# PLAN reference: "Deploy: docker-compose with caddy + hub + postgres, with
+# nightly pg_dump." Run from the repo root:
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
+#
+# Postgres is bound only to the docker network (no host port published) --
+# the hub is the only thing that needs to reach it. Caddy is the only
+# container exposed to the LAN/internet, terminating TLS via Let's Encrypt
+# DNS-01 (see Caddyfile) or serving plain HTTP on the LAN if HUB_DOMAIN is a
+# bare IP/hostname without a real cert.
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-timekpr_hub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a real password in deploy/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-timekpr_hub}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-timekpr_hub}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  hub:
+    build:
+      context: ..
+      dockerfile: hub/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-timekpr_hub}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-timekpr_hub}
+      HUB_TZ: ${HUB_TZ:-UTC}
+
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - hub
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    env_file:
+      - .env
+
+  # Nightly logical backup -- a single file, easy to copy offsite. Litestream
+  # or WAL-archiving is a reasonable Phase 5 upgrade (PLAN "Hardening") if
+  # point-in-time recovery matters more than "yesterday's snapshot".
+  backup:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-timekpr_hub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a real password in deploy/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-timekpr_hub}
+      PGHOST: postgres
+    volumes:
+      - ./backups:/backups
+    entrypoint: >
+      sh -c '
+        while true; do
+          sleep 86400;
+          pg_dump -Fc -f /backups/timekpr_hub_$$(date +%%Y%%m%%d).dump;
+          find /backups -name "*.dump" -mtime +14 -delete;
+        done
+      '
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>timekpr-next-hub</title>
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; }
+    .user-card { border: 1px solid #8884; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+    .bar-track { background: #8882; border-radius: 6px; height: 14px; overflow: hidden; margin: .5rem 0; }
+    .bar-fill { background: #4a9; height: 100%; }
+    .bar-fill.over { background: #d55; }
+    .row { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+    button { padding: .4rem .8rem; border-radius: 6px; border: 1px solid #8886; background: #8881; cursor: pointer; }
+    .devices { font-size: .85rem; opacity: .75; margin-top: .5rem; }
+    .device-pill { display: inline-block; border: 1px solid #8886; border-radius: 999px; padding: .1rem .6rem; margin-right: .3rem; }
+    .device-pill.pending { border-color: #d90; color: #d90; }
+  </style>
+</head>
+<body>
+  <h1>timekpr-next-hub</h1>
+
+  <div id="users" hx-get="/ui/users-fragment" hx-trigger="load, every 20s" hx-swap="innerHTML">
+    Loading&hellip;
+  </div>
+
+  <h2>Devices</h2>
+  <div id="devices" hx-get="/ui/devices-fragment" hx-trigger="load, every 20s" hx-swap="innerHTML">
+    Loading&hellip;
+  </div>
+
+  <h2>Enroll a new device</h2>
+  <form hx-post="/ui/enrollment-codes" hx-target="#enroll-result" hx-swap="innerHTML">
+    <button type="submit">Generate enrollment code</button>
+  </form>
+  <div id="enroll-result"></div>
+</body>
+</html>

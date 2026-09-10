@@ -1,0 +1,48 @@
+[Unit]
+Description=timekpr-next-hub agent
+Documentation=https://github.com/YOUR_ORG/timekpr-next-hub
+# Needs the local timekprd (system DBUS) and network to reach the hub.
+After=network-online.target dbus.service timekpr.service
+Wants=network-online.target
+Requires=dbus.service
+
+[Service]
+Type=simple
+# PLAN "Auth and threat model": runs as a non-root user in the `timekpr`
+# supplementary group -- gets full admin DBUS access without root, per the
+# DBUS policy already shipped by timekpr-next itself
+# (resource/server/dbus/timekpr.conf: `<policy group="timekpr">`).
+User=timekpr-hub
+Group=timekpr-hub
+SupplementaryGroups=timekpr
+
+# See sysusers.d/timekpr-hub-agent.conf and tmpfiles.d/timekpr-hub-agent.conf
+# for how these directories/users are created.
+StateDirectory=timekpr-hub-agent
+StateDirectoryMode=0700
+
+ExecStart=/opt/timekpr-hub-agent/venv/bin/python3 -m timekpr_hub_agent.main \
+    --hub-url ${TIMEKPR_HUB_URL} \
+    --users ${TIMEKPR_HUB_MANAGED_USERS} \
+    --tz ${TIMEKPR_HUB_TZ} \
+    --state-path /var/lib/timekpr-hub-agent/state.json
+
+EnvironmentFile=-/etc/timekpr-hub-agent/agent.env
+
+Restart=on-failure
+RestartSec=10
+
+# PLAN "Auth and threat model" -- agent hardening.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+# The agent needs to read /var/lib/timekpr/{config,work} indirectly (via
+# DBUS calls to timekprd, which runs as root) and write only its own state
+# directory -- ProtectSystem=strict plus the explicit StateDirectory above
+# covers that without any additional ReadWritePaths.
+
+[Install]
+WantedBy=multi-user.target

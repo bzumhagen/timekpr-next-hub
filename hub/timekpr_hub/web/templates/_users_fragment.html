@@ -1,0 +1,18 @@
+{% for u in users %}
+<div class="user-card">
+  <div class="row">
+    <strong>{{ u.display_name }}</strong>
+    <span>{{ u.today_global_spent_s // 60 }} / {{ u.today_effective_limit_s // 60 }} min today</span>
+  </div>
+  <div class="bar-track">
+    {% set pct = (u.today_global_spent_s / u.today_effective_limit_s * 100) if u.today_effective_limit_s else 0 %}
+    <div class="bar-fill {% if pct >= 100 %}over{% endif %}" style="width: {{ [pct, 100] | min }}%;"></div>
+  </div>
+  <form hx-post="/ui/users/{{ u.username }}/grants" hx-target="closest .user-card" hx-swap="outerHTML">
+    <input type="hidden" name="seconds" value="1800">
+    <button type="submit">+30 min</button>
+  </form>
+</div>
+{% else %}
+<p>No users yet.</p>
+{% endfor %}

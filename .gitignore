@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+agent/.venv/
+.pytest_cache/
+.hypothesis/
+*.egg-info/
+deploy/.env
+deploy/backups/

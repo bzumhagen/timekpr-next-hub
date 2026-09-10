@@ -1,0 +1,12 @@
+{% for d in devices %}
+  <span class="device-pill {{ d.status }}">
+    {{ d.name }} &middot; {{ d.status }}
+    {% if d.status == 'pending' %}
+      <form style="display:inline" hx-post="/ui/devices/{{ d.id }}/approve" hx-target="#devices" hx-swap="innerHTML">
+        <button type="submit" style="padding:0 .3rem;">approve</button>
+      </form>
+    {% endif %}
+  </span>
+{% else %}
+  <p>No devices enrolled yet.</p>
+{% endfor %}

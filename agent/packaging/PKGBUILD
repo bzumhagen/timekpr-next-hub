@@ -1,0 +1,47 @@
+# Maintainer: (you)
+# PLAN reference: "Tech stack" -- PKGBUILD for Arch/CachyOS (the user's
+# actual platform). Builds the agent's --system-site-packages venv (so it
+# gets dbus-python/PyGObject from the system, and pip-installs httpx +
+# pydantic on top -- see docs/phase0-findings.md §4 and CHECKLIST.md for why
+# a plain venv without --system-site-packages doesn't work here).
+pkgname=timekpr-hub-agent
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Sidecar agent that pools timekpr-next screen-time budgets across multiple devices via a self-hosted hub"
+arch=('any')
+url="https://github.com/YOUR_ORG/timekpr-next-hub"
+license=('GPL3')
+depends=('python' 'python-dbus' 'python-gobject' 'timekpr-next' 'systemd')
+makedepends=('python-pip' 'python-virtualenv')
+backup=('etc/timekpr-hub-agent/agent.env')
+source=()  # populated by your packaging pipeline (git archive, release tarball, ...)
+sha256sums=()
+
+package() {
+    local venv_dir="$pkgdir/opt/timekpr-hub-agent/venv"
+
+    install -dm755 "$pkgdir/opt/timekpr-hub-agent"
+    python -m venv --system-site-packages "$venv_dir"
+    "$venv_dir/bin/pip" install --no-cache-dir httpx pydantic pydantic-core
+
+    install -dm755 "$venv_dir/lib/python3*/site-packages/timekpr_hub_agent"
+    cp -r "$srcdir/agent/timekpr_hub_agent"/* \
+        "$venv_dir"/lib/python3*/site-packages/timekpr_hub_agent/
+    cp -r "$srcdir/core/timekpr_hub_core" \
+        "$venv_dir"/lib/python3*/site-packages/
+
+    install -Dm644 "$srcdir/agent/packaging/timekpr-hub-agent.service" \
+        "$pkgdir/usr/lib/systemd/system/timekpr-hub-agent.service"
+    install -Dm644 "$srcdir/agent/packaging/sysusers.d/timekpr-hub-agent.conf" \
+        "$pkgdir/usr/lib/sysusers.d/timekpr-hub-agent.conf"
+    install -Dm644 "$srcdir/agent/packaging/tmpfiles.d/timekpr-hub-agent.conf" \
+        "$pkgdir/usr/lib/tmpfiles.d/timekpr-hub-agent.conf"
+
+    install -Dm640 /dev/null "$pkgdir/etc/timekpr-hub-agent/agent.env"
+    cat > "$pkgdir/etc/timekpr-hub-agent/agent.env" <<'EOF'
+# Filled in by `timekpr-hub-agent enroll` or manually:
+TIMEKPR_HUB_URL=https://hub.example.com
+TIMEKPR_HUB_MANAGED_USERS=
+TIMEKPR_HUB_TZ=UTC
+EOF
+}

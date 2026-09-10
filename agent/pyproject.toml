@@ -1,0 +1,30 @@
+[project]
+name = "timekpr-hub-agent"
+version = "0.1.0"
+description = "Sidecar agent that syncs a machine's local timekpr-next daemon with the hub"
+requires-python = ">=3.11"
+dependencies = [
+    "timekpr-hub-core",
+    "httpx>=0.28",
+]
+# Deliberately NOT declared here: `dbus` (dbus-python) and the `timekpr`
+# package itself. Both are system-provided (python-dbus/python-gobject from
+# the distro, timekpr-next's own install) and are why the real deployment
+# uses `python -m venv --system-site-packages` (see agent/packaging/PKGBUILD)
+# rather than a plain uv-managed venv -- a uv sync of this package alone
+# gives you timekpr_hub_agent + httpx + pydantic importable, but NOT `dbus`
+# or `timekpr`, so `python -m timekpr_hub_agent.main` only actually runs
+# against a real daemon from the PKGBUILD-built venv, not `make install`'s.
+
+[project.scripts]
+timekpr-hub-agent = "timekpr_hub_agent.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["timekpr_hub_agent"]
+
+[tool.uv.sources]
+timekpr-hub-core = { workspace = true }

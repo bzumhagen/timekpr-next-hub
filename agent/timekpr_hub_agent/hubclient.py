@@ -7,7 +7,6 @@ here since the agent has no GLib/asyncio loop to share time with.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,7 +38,9 @@ class HubClient:
         self._token = self._load_token()
         self._client = httpx.Client(
             base_url=config.base_url,
-            timeout=httpx.Timeout(connect=CONNECT_TIMEOUT_S, read=READ_TIMEOUT_S, write=READ_TIMEOUT_S, pool=READ_TIMEOUT_S),
+            timeout=httpx.Timeout(
+                connect=CONNECT_TIMEOUT_S, read=READ_TIMEOUT_S, write=READ_TIMEOUT_S, pool=READ_TIMEOUT_S
+            ),
             verify=config.ca_cert if config.ca_cert else True,
         )
 
@@ -58,8 +59,17 @@ class HubClient:
             raise RuntimeError("device not enrolled -- no token on disk")
         return {"Authorization": f"Bearer {self._token}"}
 
-    def enroll(self, *, enrollment_code: str, hostname: str, machine_id: str, os: str, tz: str,
-               agent_version: str, local_users: list[str]) -> dict:
+    def enroll(
+        self,
+        *,
+        enrollment_code: str,
+        hostname: str,
+        machine_id: str,
+        os: str,
+        tz: str,
+        agent_version: str,
+        local_users: list[str],
+    ) -> dict:
         resp = self._client.post(
             "/api/v1/enroll",
             json={

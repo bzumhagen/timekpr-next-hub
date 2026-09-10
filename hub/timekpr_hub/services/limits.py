@@ -23,9 +23,7 @@ def base_daily_limit(policy: Policy, day: date) -> int:
 
 async def grants_total(session: AsyncSession, *, user_id: uuid.UUID, day: date) -> int:
     result = await session.execute(
-        select(func.coalesce(func.sum(Grant.seconds), 0)).where(
-            Grant.user_id == user_id, Grant.day == day
-        )
+        select(func.coalesce(func.sum(Grant.seconds), 0)).where(Grant.user_id == user_id, Grant.day == day)
     )
     return int(result.scalar_one())
 

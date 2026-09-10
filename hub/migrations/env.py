@@ -1,19 +1,19 @@
 import asyncio
 import os
-import sys
 from logging.config import fileConfig
-from pathlib import Path
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+from timekpr_hub.db.models import Base
 
-from alembic import context
-
-# Make `timekpr_hub` importable when alembic is invoked from hub/.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from timekpr_hub.db.models import Base  # noqa: E402
+# `timekpr_hub` is importable directly: this repo is a uv workspace and
+# `timekpr_hub` is an installed (editable) package in the workspace venv,
+# not something reached via a path hack. Alembic must therefore be invoked
+# through that venv, e.g. `uv run --package timekpr-hub alembic ...` (see
+# the Makefile's migrate/migrate-test targets) rather than a bare `alembic`
+# on some other interpreter's PATH.
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

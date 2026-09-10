@@ -28,7 +28,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSTZRANGE, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql import func
 
 
@@ -85,21 +85,23 @@ class User(Base):
     # layer (see services/policy.py).
     current_policy_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
-    accounting_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="wallclock", server_default="wallclock")
-    offline_policy: Mapped[str] = mapped_column(String(16), nullable=False, default="capped", server_default="capped")
+    accounting_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="wallclock", server_default="wallclock"
+    )
+    offline_policy: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="capped", server_default="capped"
+    )
     offline_grace_s: Mapped[int] = mapped_column(Integer, nullable=False, default=900, server_default="900")
     offline_cap_s: Mapped[int] = mapped_column(Integer, nullable=False, default=1800, server_default="1800")
-    auto_adopt_local_grants: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    auto_adopt_local_grants: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        CheckConstraint(
-            "accounting_mode IN ('wallclock', 'parallel')", name="ck_users_accounting_mode"
-        ),
-        CheckConstraint(
-            "offline_policy IN ('open', 'capped', 'closed')", name="ck_users_offline_policy"
-        ),
+        CheckConstraint("accounting_mode IN ('wallclock', 'parallel')", name="ck_users_accounting_mode"),
+        CheckConstraint("offline_policy IN ('open', 'capped', 'closed')", name="ck_users_offline_policy"),
     )
 
 
@@ -131,8 +133,12 @@ class Device(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     token_prefix: Mapped[str] = mapped_column(String(12), nullable=False)
 
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
-    enforcement: Mapped[str] = mapped_column(String(16), nullable=False, default="enforce", server_default="enforce")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    enforcement: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="enforce", server_default="enforce"
+    )
 
     agent_version: Mapped[str | None] = mapped_column(String(32))
     os_info: Mapped[str | None] = mapped_column(String(255))
@@ -169,10 +175,14 @@ class Policy(Base):
     allowed_weekdays_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     weekly_limit_s: Mapped[int] = mapped_column(Integer, nullable=False)
     monthly_limit_s: Mapped[int] = mapped_column(Integer, nullable=False)
-    lockout_type: Mapped[str] = mapped_column(String(16), nullable=False, default="lock", server_default="lock")
+    lockout_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="lock", server_default="lock"
+    )
     wake_from: Mapped[str | None] = mapped_column(String(8))
     wake_to: Mapped[str | None] = mapped_column(String(8))
-    track_inactive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    track_inactive: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     note: Mapped[str | None] = mapped_column(String(500))
 
     __table_args__ = (UniqueConstraint("user_id", "version", name="uq_policies_user_version"),)
@@ -241,9 +251,7 @@ class Grant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        CheckConstraint(
-            "source IN ('parent', 'local_timekpra', 'auto_carryover')", name="ck_grants_source"
-        ),
+        CheckConstraint("source IN ('parent', 'local_timekpra', 'auto_carryover')", name="ck_grants_source"),
     )
 
 

@@ -8,7 +8,6 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-
 from timekpr_hub_core.calendar import (
     canonical_stamp,
     day_changed,

@@ -153,6 +153,5 @@ def test_thirty_days_random_activity_never_exceeds_overshoot_bound():
 
             total = hub.global_spent()
             assert total <= limit + overshoot_bound, (
-                f"day {day}: total_spent={total} exceeded limit+bound="
-                f"{limit + overshoot_bound}"
+                f"day {day}: total_spent={total} exceeded limit+bound={limit + overshoot_bound}"
             )

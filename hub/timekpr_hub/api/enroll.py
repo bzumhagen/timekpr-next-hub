@@ -9,16 +9,15 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import Depends
-
-from timekpr_hub.db.models import Device, EnrollmentCode, UserAlias, User
-from timekpr_hub.db.session import get_session
 from timekpr_hub_core.models import EnrollRequest, EnrollResponse
+
+from timekpr_hub.db.models import Device, EnrollmentCode, User, UserAlias
+from timekpr_hub.db.session import get_session
 
 router = APIRouter()
 
@@ -31,11 +30,9 @@ def _hash_token(token: str) -> str:
 
 @router.post("/enroll", response_model=EnrollResponse, status_code=status.HTTP_201_CREATED)
 async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session)) -> EnrollResponse:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
-    result = await session.execute(
-        select(EnrollmentCode).where(EnrollmentCode.code == req.enrollment_code)
-    )
+    result = await session.execute(select(EnrollmentCode).where(EnrollmentCode.code == req.enrollment_code))
     code_row = result.scalar_one_or_none()
     if code_row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown enrollment code")
@@ -66,12 +63,14 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
     # canonical users (PLAN "Enrollment"); a parent still has to approve the
     # device before it's usable (status stays 'pending').
     for local_username in req.local_users:
-        existing = await session.execute(
-            select(User).where(User.canonical_username == local_username)
-        )
+        existing = await session.execute(select(User).where(User.canonical_username == local_username))
         user = existing.scalar_one_or_none()
         if user is not None:
-            session.add(UserAlias(id=uuid.uuid4(), user_id=user.id, device_id=device.id, local_username=local_username))
+            session.add(
+                UserAlias(
+                    id=uuid.uuid4(), user_id=user.id, device_id=device.id, local_username=local_username
+                )
+            )
 
     code_row.used_at = now
     code_row.used_by_device_id = device.id

@@ -116,7 +116,7 @@ class SyncUserResponse(BaseModel):
     enforcement: EnforcementMode
     suppressed: bool = False
     policy_version: int
-    policy: "PolicyPayload | None" = None
+    policy: PolicyPayload | None = None
 
 
 class SyncResponse(BaseModel):

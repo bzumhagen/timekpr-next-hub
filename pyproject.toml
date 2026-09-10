@@ -3,9 +3,35 @@ name = "timekpr-next-hub"
 version = "0.1.0"
 description = "Centralized, pooled screen-time management hub for timekpr-next"
 requires-python = ">=3.11"
+dependencies = [
+    "timekpr-hub-core",
+    "timekpr-hub",
+    "timekpr-hub-agent",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "hypothesis>=6.168",
+    "asgi-lifespan>=2.1",
+    "httpx>=0.28",
+    "ruff>=0.14",
+    "mypy>=1.15",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["core", "hub", "agent"]
+
+[tool.uv.sources]
+timekpr-hub-core = { workspace = true }
+timekpr-hub = { workspace = true }
+timekpr-hub-agent = { workspace = true }
 
 [tool.pytest.ini_options]
-pythonpath = ["core", "hub", "agent"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 # All async tests share one event loop (rather than one per test function).
@@ -14,7 +40,45 @@ asyncio_mode = "auto"
 # created under loop N to a teardown running under loop N+1.
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
+addopts = "-ra --strict-markers"
+markers = [
+    "db: needs a reachable Postgres test database (make test-db / make test-all)",
+]
 
 [tool.ruff]
 line-length = 110
 target-version = "py311"
+# Throwaway Phase 0 spike script, not part of any package or shipped
+# anywhere -- see docs/phase0-findings.md for what it was for.
+extend-exclude = ["scratchpad"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's own DI pattern is `param: T = Depends(...)` -- the "function
+# call in a default argument" is how FastAPI recognizes a dependency at all,
+# not a mutable-default footgun (each request gets a fresh call). See the
+# best-practices review (docs/best-practices-review.md) for the separate,
+# real finding that these should move to `Annotated[T, Depends(...)]`.
+"hub/timekpr_hub/api/*.py" = ["B008"]
+# Same false positive: ConvergenceConfig() as a default is an immutable,
+# cheap-to-construct dataclass used as a shared-default sentinel.
+"core/timekpr_hub_core/convergence.py" = ["B008", "UP042"]
+# `class Foo(str, Enum)` -> `enum.StrEnum` is otherwise a safe, cosmetic
+# modernization, but str(member)/f"{member}" formatting for the two forms
+# differs across Python versions (changed in 3.12) -- these are wire-format
+# enums serialized straight into the hub<->agent JSON contract (models.py)
+# or into the DBUS `setTimeLeft` op argument (convergence.py's `Op`), so
+# this is left as a deliberate app-behavior decision (see
+# docs/best-practices-review.md) rather than an automatic tooling fix.
+"core/timekpr_hub_core/models.py" = ["UP042"]
+
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+# Non-strict baseline -- ignore_missing_imports covers third-party libs
+# without stubs in general, and specifically timekpr/dbus (system-provided,
+# no stubs anywhere) and the workspace packages under their own dirs.
+ignore_missing_imports = true
+mypy_path = ["core", "hub", "agent"]

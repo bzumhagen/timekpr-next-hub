@@ -12,12 +12,9 @@ from __future__ import annotations
 import argparse
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from timekpr_hub_agent import state as state_mod
-from timekpr_hub_agent.enforcer import TimekprEnforcer
-from timekpr_hub_agent.hubclient import DeviceRevokedError, HubClient, HubClientConfig, HubUnreachableError
 from timekpr_hub_core.convergence import (
     ConvergenceConfig,
     CumulativeState,
@@ -28,6 +25,10 @@ from timekpr_hub_core.convergence import (
     plan,
     reset_for_new_canonical_day,
 )
+
+from timekpr_hub_agent import state as state_mod
+from timekpr_hub_agent.enforcer import TimekprEnforcer
+from timekpr_hub_agent.hubclient import DeviceRevokedError, HubClient, HubClientConfig, HubUnreachableError
 
 log = logging.getLogger("timekpr_hub_agent")
 
@@ -54,7 +55,7 @@ def run_tick(
     """One full tick across every managed user. Returns the next poll delay
     in milliseconds (hub-provided when reachable, a local fallback
     otherwise -- PLAN "Overshoot bound and sync interval")."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     sync_users = []
     observations: dict[str, tuple] = {}
 
@@ -215,14 +216,22 @@ def _apply_offline_policy(
         )
         target = HubTarget(limit_today_s=capped_limit, global_spent_s=user_state.last_global_spent_s)
         _apply_convergence(
-            enforcer=enforcer, username=username, obs=obs, target=target,
-            user_state=user_state, force_absolute=False,
+            enforcer=enforcer,
+            username=username,
+            obs=obs,
+            target=target,
+            user_state=user_state,
+            force_absolute=False,
         )
     elif offline_policy == "closed":
         target = HubTarget(limit_today_s=obs.limit_today_s, global_spent_s=obs.limit_today_s, suppressed=True)
         _apply_convergence(
-            enforcer=enforcer, username=username, obs=obs, target=target,
-            user_state=user_state, force_absolute=False,
+            enforcer=enforcer,
+            username=username,
+            obs=obs,
+            target=target,
+            user_state=user_state,
+            force_absolute=False,
         )
 
 

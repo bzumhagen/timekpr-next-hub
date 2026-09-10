@@ -17,11 +17,13 @@ dumb: measure -> report -> receive a target -> nudge the balance").
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from timekpr_hub_core.calendar import canonical_stamp
+from timekpr_hub_core.models import EnforcementMode, SyncRequest, SyncResponse, SyncUserResponse
 
 from timekpr_hub.api.auth import get_current_device
 from timekpr_hub.db.models import Device, User, UserAlias
@@ -36,8 +38,6 @@ from timekpr_hub.services.aggregate import (
 from timekpr_hub.services.limits import effective_daily_limit
 from timekpr_hub.services.policy import create_initial_policy, get_current_policy, policy_to_payload
 from timekpr_hub.settings import settings
-from timekpr_hub_core.calendar import canonical_stamp
-from timekpr_hub_core.models import EnforcementMode, SyncRequest, SyncResponse, SyncUserResponse
 
 router = APIRouter()
 
@@ -48,7 +48,7 @@ async def sync(
     device: Device = Depends(get_current_device),
     session: AsyncSession = Depends(get_session),
 ) -> SyncResponse:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stamp = canonical_stamp(now, settings.tz)
 
     device.last_seen_at = now
@@ -133,9 +133,7 @@ async def sync(
         week_limit = policy.weekly_limit_s
         month_limit = policy.monthly_limit_s
 
-        enforcement = (
-            EnforcementMode.OBSERVE if device.enforcement == "observe" else EnforcementMode.ENFORCE
-        )
+        enforcement = EnforcementMode.OBSERVE if device.enforcement == "observe" else EnforcementMode.ENFORCE
 
         policy_payload = (
             policy_to_payload(policy) if user_sync.policy_version_applied != policy.version else None

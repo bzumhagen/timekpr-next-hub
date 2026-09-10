@@ -11,9 +11,9 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from timekpr_hub_core.models import PolicyPayload
 
 from timekpr_hub.db.models import Policy, User
-from timekpr_hub_core.models import PolicyPayload
 
 DEFAULT_DAILY_LIMITS_S = [3600] * 7  # 1h/day default for a newly-created user, all days
 

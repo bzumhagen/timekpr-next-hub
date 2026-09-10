@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-
 from timekpr_hub_core.convergence import (
     ConvergenceConfig,
     CumulativeState,
@@ -158,7 +157,6 @@ def test_local_grant_detected_when_parent_edits_balance_out_of_band(
 ):
     """A parent running `timekpra --settimeleft +N` moves the balance without
     moving spent_local -- this must show up as a positive local_grant_s."""
-    obs = Observation(balance_s=balance_s, spent_local_s=spent_local_s, limit_today_s=limit_today_s)
     target = HubTarget(limit_today_s=limit_today_s, global_spent_s=balance_s - spent_local_s)
 
     # Establish a baseline applied_offset matching the current (pre-grant) offset.
@@ -168,7 +166,9 @@ def test_local_grant_detected_when_parent_edits_balance_out_of_band(
     # i.e. B decreases in timekpr's "spent" accounting... but the plan module
     # works in offset space, so simulate it as the offset shrinking.
     granted_balance = balance_s - parent_grant_s
-    obs_after_grant = Observation(balance_s=granted_balance, spent_local_s=spent_local_s, limit_today_s=limit_today_s)
+    obs_after_grant = Observation(
+        balance_s=granted_balance, spent_local_s=spent_local_s, limit_today_s=limit_today_s
+    )
 
     p = plan(obs_after_grant, target, applied_offset_s=baseline_offset, force_absolute=False, cfg=CFG)
 

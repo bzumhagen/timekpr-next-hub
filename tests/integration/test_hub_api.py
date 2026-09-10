@@ -1,9 +1,9 @@
 """Layer 4 verification (PLAN "Verification"): FastAPI app against a real
 Postgres, exercising the enroll -> approve -> sync flow end-to-end.
 
-Requires a running Postgres reachable via $DATABASE_URL with migrations
-applied (same as tests/integration/test_aggregate_postgres.py) -- skips
-gracefully otherwise.
+Requires a running Postgres reachable via $TEST_DATABASE_URL with
+migrations applied (same as test_aggregate_postgres.py) -- see README.md
+"Testing". Marked `db`; see that file's docstring for what runs it.
 """
 
 from __future__ import annotations
@@ -16,9 +16,12 @@ import pytest_asyncio
 from asgi_lifespan import LifespanManager
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from timekpr_hub.app import app
-from timekpr_hub.db.session import DATABASE_URL, get_session
+from timekpr_hub.db.session import get_session
+
+from tests.dbutil import TEST_DATABASE_URL, require_db
+
+pytestmark = pytest.mark.db
 
 # One engine per test *session* (not per app import), created lazily inside
 # whatever event loop pytest-asyncio is actually running -- and injected via
@@ -36,7 +39,7 @@ _test_sessionmaker = None
 def _get_test_sessionmaker():
     global _test_engine, _test_sessionmaker
     if _test_engine is None:
-        _test_engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+        _test_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
         _test_sessionmaker = async_sessionmaker(_test_engine, expire_on_commit=False, class_=AsyncSession)
     return _test_sessionmaker
 
@@ -47,20 +50,9 @@ async def _override_get_session():
         yield session
 
 
-async def _db_reachable() -> bool:
-    try:
-        session_factory = _get_test_sessionmaker()
-        async with session_factory() as session:
-            await session.execute(text("SELECT 1"))
-        return True
-    except Exception:
-        return False
-
-
 @pytest_asyncio.fixture
 async def client():
-    if not await _db_reachable():
-        pytest.skip(f"no Postgres reachable at {DATABASE_URL}")
+    await require_db()
 
     session_factory = _get_test_sessionmaker()
     async with session_factory() as session:
@@ -175,9 +167,7 @@ async def test_sync_rejects_revoked_device_immediately(client):
     # revoke it directly (no admin endpoint yet in Phase 1 -- direct DB write)
     session_factory = _get_test_sessionmaker()
     async with session_factory() as session:
-        await session.execute(
-            text("UPDATE devices SET status = 'revoked' WHERE id = :id"), {"id": device_id}
-        )
+        await session.execute(text("UPDATE devices SET status = 'revoked' WHERE id = :id"), {"id": device_id})
         await session.commit()
 
     resp = await client.post(
@@ -256,12 +246,8 @@ async def test_full_enroll_approve_sync_flow_two_devices_wallclock_burn_once(cli
         return resp.json()["users"][0]
 
     # Both devices active for the SAME 30-minute window -> burn once, not 60.
-    result_a = await sync(
-        token_a, 1800, "2026-09-09T14:00:00+00:00", "2026-09-09T14:30:00+00:00"
-    )
-    result_b = await sync(
-        token_b, 1800, "2026-09-09T14:00:00+00:00", "2026-09-09T14:30:00+00:00"
-    )
+    result_a = await sync(token_a, 1800, "2026-09-09T14:00:00+00:00", "2026-09-09T14:30:00+00:00")
+    result_b = await sync(token_b, 1800, "2026-09-09T14:00:00+00:00", "2026-09-09T14:30:00+00:00")
 
     assert result_a["global_spent_s"] == 1800
     assert result_b["global_spent_s"] == 1800  # same union, not 3600

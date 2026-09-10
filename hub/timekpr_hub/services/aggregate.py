@@ -43,9 +43,7 @@ async def upsert_usage_counter(
     stmt = stmt.on_conflict_do_update(
         index_elements=[UsageCounter.user_id, UsageCounter.device_id, UsageCounter.day],
         set_={
-            "spent_seconds": text(
-                "GREATEST(usage_counters.spent_seconds, EXCLUDED.spent_seconds)"
-            ),
+            "spent_seconds": text("GREATEST(usage_counters.spent_seconds, EXCLUDED.spent_seconds)"),
             "raw_balance_s": stmt.excluded.raw_balance_s,
             "raw_limit_today_s": stmt.excluded.raw_limit_today_s,
             "updated_at": text("now()"),

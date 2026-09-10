@@ -10,27 +10,27 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from timekpr_hub_core.calendar import canonical_stamp
+from timekpr_hub_core.models import GrantCreate, UserSummary
 
 from timekpr_hub.db.models import Device, EnrollmentCode, User
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.aggregate import global_spent_parallel, global_spent_wallclock
 from timekpr_hub.services.limits import effective_daily_limit
-from timekpr_hub.services.policy import create_initial_policy, get_current_policy
+from timekpr_hub.services.policy import get_current_policy
 from timekpr_hub.settings import settings
-from timekpr_hub_core.calendar import canonical_stamp
-from timekpr_hub_core.models import GrantCreate, UserSummary
 
 router = APIRouter()
 
 
 @router.get("/users", response_model=list[UserSummary])
 async def list_users(session: AsyncSession = Depends(get_session)) -> list[UserSummary]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stamp = canonical_stamp(now, settings.tz)
 
     result = await session.execute(select(User))
@@ -80,7 +80,7 @@ async def create_grant(
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stamp = canonical_stamp(now, settings.tz)
 
     grant = Grant(
@@ -100,7 +100,7 @@ async def create_grant(
 @router.post("/enrollment-codes", status_code=status.HTTP_201_CREATED)
 async def create_enrollment_code(session: AsyncSession = Depends(get_session)) -> dict:
     code = secrets.token_urlsafe(6).upper().replace("_", "A").replace("-", "B")[:8]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     row = EnrollmentCode(code=code, expires_at=now + timedelta(minutes=15))
     session.add(row)
     await session.commit()

@@ -7,3 +7,9 @@ agent/.venv/
 *.egg-info/
 deploy/.env
 deploy/backups/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+.coverage
+htmlcov/

@@ -1,25 +1,24 @@
 """Layer 4 verification (PLAN "Verification"): hub aggregation against a
 real Postgres instance.
 
-Requires a running Postgres reachable via $DATABASE_URL (or the default
-`postgresql+asyncpg://timekpr_hub:timekpr_hub@localhost:5432/timekpr_hub`)
-with the Alembic migrations already applied -- see deploy/docker-compose.yml
-or docs/dev-setup.md for how to bring one up. Skipped automatically if no
-database is reachable, so the rest of the suite (which needs no services)
-still runs anywhere.
+Requires a running Postgres reachable via $TEST_DATABASE_URL (default:
+`postgresql+asyncpg://timekpr_hub:timekpr_hub@127.0.0.1:55432/timekpr_hub_test`,
+`make db-up`) with the Alembic migrations already applied (`make
+migrate-test`) -- see README.md "Testing" for the full recipe. Marked `db`
+so a plain `pytest`/`make test` run skips this file entirely; `make test-db`
+or `make test-all` are what actually exercise it, and fail (rather than
+silently skip) if no database is reachable.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-from timekpr_hub.db.session import DATABASE_URL
 from timekpr_hub.services.aggregate import (
     device_spent_today,
     global_spent_wallclock,
@@ -27,36 +26,23 @@ from timekpr_hub.services.aggregate import (
     upsert_usage_counter,
 )
 
+from tests.dbutil import TEST_DATABASE_URL, require_db
 
-async def _db_reachable() -> bool:
-    try:
-        engine = create_async_engine(DATABASE_URL)
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-        await engine.dispose()
-        return True
-    except Exception:
-        return False
+pytestmark = pytest.mark.db
 
 
 @pytest_asyncio.fixture
 async def db_session():
-    reachable = await _db_reachable()
-    if not reachable:
-        pytest.skip(f"no Postgres reachable at {DATABASE_URL}")
+    await require_db()
 
-    engine = create_async_engine(DATABASE_URL)
+    engine = create_async_engine(TEST_DATABASE_URL)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with session_factory() as session:
         # isolate each test: truncate the tables we touch
-        await session.execute(
-            text("TRUNCATE usage_counters, activity_intervals, users, devices CASCADE")
-        )
+        await session.execute(text("TRUNCATE usage_counters, activity_intervals, users, devices CASCADE"))
         await session.commit()
         yield session
-        await session.execute(
-            text("TRUNCATE usage_counters, activity_intervals, users, devices CASCADE")
-        )
+        await session.execute(text("TRUNCATE usage_counters, activity_intervals, users, devices CASCADE"))
         await session.commit()
     await engine.dispose()
 
@@ -127,18 +113,18 @@ async def test_wallclock_union_burn_once_two_overlapping_devices(db_session):
         user_id=user_id,
         device_id=dev_a,
         day=today,
-        start=datetime(2026, 9, 9, 0, 0, 0, tzinfo=timezone.utc),
-        end=datetime(2026, 9, 9, 0, 30, 0, tzinfo=timezone.utc),
-        window_end_ts=datetime(2026, 9, 9, 0, 30, 0, tzinfo=timezone.utc),
+        start=datetime(2026, 9, 9, 0, 0, 0, tzinfo=UTC),
+        end=datetime(2026, 9, 9, 0, 30, 0, tzinfo=UTC),
+        window_end_ts=datetime(2026, 9, 9, 0, 30, 0, tzinfo=UTC),
     )
     await insert_activity_interval(
         db_session,
         user_id=user_id,
         device_id=dev_b,
         day=today,
-        start=datetime(2026, 9, 9, 0, 15, 0, tzinfo=timezone.utc),
-        end=datetime(2026, 9, 9, 0, 45, 0, tzinfo=timezone.utc),
-        window_end_ts=datetime(2026, 9, 9, 0, 45, 0, tzinfo=timezone.utc),
+        start=datetime(2026, 9, 9, 0, 15, 0, tzinfo=UTC),
+        end=datetime(2026, 9, 9, 0, 45, 0, tzinfo=UTC),
+        window_end_ts=datetime(2026, 9, 9, 0, 45, 0, tzinfo=UTC),
     )
     await db_session.commit()
 
@@ -159,9 +145,9 @@ async def test_wallclock_union_replay_is_idempotent(db_session):
             user_id=user_id,
             device_id=dev_a,
             day=today,
-            start=datetime(2026, 9, 9, 0, 0, 0, tzinfo=timezone.utc),
-            end=datetime(2026, 9, 9, 0, 10, 0, tzinfo=timezone.utc),
-            window_end_ts=datetime(2026, 9, 9, 0, 10, 0, tzinfo=timezone.utc),
+            start=datetime(2026, 9, 9, 0, 0, 0, tzinfo=UTC),
+            end=datetime(2026, 9, 9, 0, 10, 0, tzinfo=UTC),
+            window_end_ts=datetime(2026, 9, 9, 0, 10, 0, tzinfo=UTC),
         )
     await db_session.commit()
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-
 from timekpr_hub_core.interval_union import Span, snap_to_grid, union_seconds, union_seconds_bruteforce
 
 

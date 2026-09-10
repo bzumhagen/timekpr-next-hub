@@ -1,0 +1,30 @@
+# Local dev/test Postgres -- NOT the production stack (see
+# deploy/docker-compose.yml for that). Bound to 127.0.0.1 only, with a
+# tmpfs data directory: this is throwaway state, reset with `make db-down
+# db-up` any time. Provides two databases:
+#   timekpr_hub_dev  -- used by `make dev` (the hub's DATABASE_URL)
+#   timekpr_hub_test -- used by `make test-db`/`make test-all`, created by
+#                        dev-initdb.sql. tests/dbutil.py refuses to run
+#                        DB-backed tests against anything else.
+#
+# Run via the Makefile (`make db-up`), which wraps:
+#   docker compose -f deploy/compose.dev.yml up -d
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: timekpr_hub
+      POSTGRES_PASSWORD: timekpr_hub
+      POSTGRES_DB: timekpr_hub_dev
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./dev-initdb.sql:/docker-entrypoint-initdb.d/dev-initdb.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timekpr_hub"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

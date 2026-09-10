@@ -13,7 +13,7 @@ CHECKLIST.md); the usage bar, device list/approval, and +30 min grant are.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from timekpr_hub_core.calendar import canonical_stamp
 
 from timekpr_hub.db.models import Device, Grant, User
 from timekpr_hub.db.session import get_session
@@ -28,7 +29,6 @@ from timekpr_hub.services.aggregate import global_spent_parallel, global_spent_w
 from timekpr_hub.services.limits import effective_daily_limit
 from timekpr_hub.services.policy import get_current_policy
 from timekpr_hub.settings import settings
-from timekpr_hub_core.calendar import canonical_stamp
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "web" / "templates"))
@@ -40,7 +40,7 @@ async def index(request: Request) -> HTMLResponse:
 
 
 async def _user_summaries(session: AsyncSession) -> list[dict]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stamp = canonical_stamp(now, settings.tz)
 
     result = await session.execute(select(User))
@@ -89,7 +89,7 @@ async def grant_from_ui(
     result = await session.execute(select(User).where(User.canonical_username == username))
     user = result.scalar_one_or_none()
     if user is not None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         stamp = canonical_stamp(now, settings.tz)
         session.add(
             Grant(
@@ -106,7 +106,9 @@ async def grant_from_ui(
 
     users = await _user_summaries(session)
     this_user = next((u for u in users if u["username"] == username), None)
-    return templates.TemplateResponse(request, "_users_fragment.html", {"users": [this_user] if this_user else []})
+    return templates.TemplateResponse(
+        request, "_users_fragment.html", {"users": [this_user] if this_user else []}
+    )
 
 
 @router.get("/ui/devices-fragment", response_class=HTMLResponse)

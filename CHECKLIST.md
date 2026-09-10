@@ -4,6 +4,12 @@ Tracks execution against the design plan at
 `/home/bzumhagen/.claude/plans/help-me-make-a-twinkling-penguin.md` (referenced below as **PLAN**).
 Check items off as completed; leave a one-line note if something deviated from PLAN and why.
 
+See also [`docs/best-practices-review.md`](docs/best-practices-review.md)
+for a general Python/FastAPI/SQLAlchemy best-practices pass done after
+Phase 1 — several of its findings (no parent auth, pending devices can
+sync, the agent's offline-grace clock) sharpen items already listed below
+as deferred or open here.
+
 ---
 
 ## Phase 0 — Spike (PLAN: "Phase 0 — spike (1–2 days). Do not skip.")

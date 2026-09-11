@@ -41,19 +41,34 @@ def policy_to_payload(policy: Policy) -> PolicyPayload:
     )
 
 
-async def create_initial_policy(session: AsyncSession, user_id: uuid.UUID) -> Policy:
+async def create_initial_policy(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    daily_limits_s: list[int] | None = None,
+    weekly_limit_s: int | None = None,
+    monthly_limit_s: int | None = None,
+    allowed_weekdays: list[str] | None = None,
+) -> Policy:
     """Every newly-registered user needs a policy row before /sync can serve
-    them a limit. Phase 1 default: 1h/day, every day, no PlayTime, no
-    week/month cap (large placeholder), simple lock on expiry."""
+    them a limit. Default: 1h/day, every day, no PlayTime, no week/month cap
+    (large placeholder), simple lock on expiry -- used when no snapshot is
+    given (e.g. a user created by hand, or the parent API).
+
+    Phase 5a: `enroll` passes the enrolling device's own currently-configured
+    limits here instead, when it has them, so a brand-new hub user's policy
+    starts from what's actually running on that device rather than always
+    resetting a possibly-already-configured child to the placeholder."""
+    limits = daily_limits_s if daily_limits_s is not None else DEFAULT_DAILY_LIMITS_S
     policy = Policy(
         user_id=user_id,
         version=1,
-        created_by="system_default",
-        daily_limits_json=DEFAULT_DAILY_LIMITS_S,
+        created_by="system_default" if daily_limits_s is None else "seeded_from_device",
+        daily_limits_json=limits,
         allowed_hours_json={},
-        allowed_weekdays_json=["1", "2", "3", "4", "5", "6", "7"],
-        weekly_limit_s=sum(DEFAULT_DAILY_LIMITS_S),
-        monthly_limit_s=sum(DEFAULT_DAILY_LIMITS_S) * 5,
+        allowed_weekdays_json=allowed_weekdays or ["1", "2", "3", "4", "5", "6", "7"],
+        weekly_limit_s=weekly_limit_s if weekly_limit_s is not None else sum(limits),
+        monthly_limit_s=monthly_limit_s if monthly_limit_s is not None else sum(limits) * 5,
         lockout_type="lock",
         track_inactive=False,
     )

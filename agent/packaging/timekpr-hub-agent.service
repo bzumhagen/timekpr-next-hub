@@ -1,13 +1,21 @@
 [Unit]
 Description=timekpr-next-hub agent
 Documentation=https://github.com/YOUR_ORG/timekpr-next-hub
-# Needs the local timekprd (system DBUS) and network to reach the hub.
-After=network-online.target dbus.service timekpr.service
+# Deliberately no ordering against timekpr.service: it's After=multi-user.target
+# and we're WantedBy=multi-user.target, so After=timekpr.service here would
+# form a boot ordering cycle (systemd drops a start job -- possibly
+# timekpr's own -- to break it). Not needed anyway: TimekprEnforcer retries
+# its DBUS connection every tick (enforcer.py's get_user_observation), so
+# starting before timekprd is up is harmless. Same reasoning for dbus.service:
+# no Requires=, since the system bus restarting shouldn't stop the agent.
+After=network-online.target
 Wants=network-online.target
-Requires=dbus.service
+StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
 # PLAN "Auth and threat model": runs as a non-root user in the `timekpr`
 # supplementary group -- gets full admin DBUS access without root, per the
 # DBUS policy already shipped by timekpr-next itself
@@ -21,15 +29,16 @@ SupplementaryGroups=timekpr
 StateDirectory=timekpr-hub-agent
 StateDirectoryMode=0700
 
-ExecStart=/opt/timekpr-hub-agent/venv/bin/python3 -m timekpr_hub_agent.main \
-    --hub-url ${TIMEKPR_HUB_URL} \
-    --users ${TIMEKPR_HUB_MANAGED_USERS} \
-    --tz ${TIMEKPR_HUB_TZ} \
-    --state-path /var/lib/timekpr-hub-agent/state.json
-
 EnvironmentFile=-/etc/timekpr-hub-agent/agent.env
 
-Restart=on-failure
+# No flags on the command line: `run` reads TIMEKPR_HUB_URL,
+# TIMEKPR_HUB_MANAGED_USERS, TIMEKPR_HUB_TZ and TIMEKPR_HUB_CA_CERT straight
+# from the environment (see agent/timekpr_hub_agent/config.py), so
+# agent.env is the single source of truth -- `timekpr-hub-agent enroll`
+# writes it, nothing here needs editing to match.
+ExecStart=/usr/bin/timekpr-hub-agent run --state-path /var/lib/timekpr-hub-agent/state.json
+
+Restart=always
 RestartSec=10
 
 # PLAN "Auth and threat model" -- agent hardening.

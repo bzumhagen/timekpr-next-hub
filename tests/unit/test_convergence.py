@@ -55,6 +55,46 @@ offsets = st.integers(min_value=-86400, max_value=86400)
     balance_s=reasonable_seconds,
     spent_local_s=reasonable_seconds,
     global_spent_s=reasonable_seconds,
+    device_limit_s=reasonable_seconds,
+    hub_limit_s=reasonable_seconds,
+    applied_offset_s=offsets,
+)
+@settings(max_examples=300)
+def test_plan_converges_time_left_to_hub_effective_limit_even_when_device_limit_differs(
+    balance_s, spent_local_s, global_spent_s, device_limit_s, hub_limit_s, applied_offset_s
+):
+    """Phase 5c: generalizes `test_plan_converges_when_balance_within_limit`
+    to the case where the device's own configured limit (`device_limit_s`,
+    before a policy push has landed, or after a hub-side grant that never
+    gets pushed as a local limit change) doesn't match the hub's effective
+    limit (`hub_limit_s`, policy + grants). What must converge is TIME LEFT
+    -- `device_limit_s - BALANCE` -- to `hub_limit_s - global_spent_s`, not
+    BALANCE itself to `global_spent_s` (that's only true when the two
+    limits happen to be equal, which the other test below covers)."""
+    obs = Observation(balance_s=balance_s, spent_local_s=spent_local_s, limit_today_s=device_limit_s)
+    target = HubTarget(limit_today_s=hub_limit_s, global_spent_s=global_spent_s)
+
+    p = plan(obs, target, applied_offset_s, force_absolute=False, cfg=CFG)
+
+    model = TimekprBalanceModel(balance_s=balance_s, limit_s=device_limit_s)
+    model.apply(p.op, p.seconds)
+    time_left = device_limit_s - model.balance_s
+    target_time_left = hub_limit_s - global_spent_s
+
+    if p.op in (Op.SUBTRACT, Op.ADD):
+        assert balance_s <= device_limit_s
+        assert time_left == target_time_left
+    elif p.op is Op.SET:
+        assert time_left == target_time_left
+    else:  # NOOP
+        target_balance = global_spent_s + device_limit_s - hub_limit_s
+        assert abs(target_balance - balance_s) <= CFG.deadband_s
+
+
+@given(
+    balance_s=reasonable_seconds,
+    spent_local_s=reasonable_seconds,
+    global_spent_s=reasonable_seconds,
     limit_today_s=reasonable_seconds,
     applied_offset_s=offsets,
 )
@@ -217,15 +257,21 @@ def test_overspent_balance_uses_absolute_reset_not_clamped_relative_op():
 
 def test_absolute_write_uses_device_limit_not_hub_target_limit():
     """Regression test for a real bug caught only by running the agent
-    against a live daemon (not by any synthetic test): before Phase 2's
-    policy push exists, a freshly-enrolled device's own configured daily
-    limit (e.g. timekpr's unconfigured default of 86400s) can differ wildly
-    from what the hub believes the limit to be (e.g. a new policy's 3600s
-    default). The '=' write must land BALANCE on `global_spent_s`
-    regardless of that mismatch -- using `target.limit_today_s` (the hub's
-    belief) instead of `observed.limit_today_s` (the device's actual
-    configured limit) in the `seconds` computation was exactly this bug: it
-    left BALANCE off by `device_limit - hub_limit` instead of landing on G.
+    against a live daemon (not by any synthetic test): before policy push
+    exists, a freshly-enrolled device's own configured daily limit (e.g.
+    timekpr's unconfigured default of 86400s) can differ wildly from what
+    the hub believes the limit to be (e.g. a new policy's 3600s default).
+    Using `target.limit_today_s` (the hub's belief) instead of
+    `observed.limit_today_s` (the device's actual configured limit) in the
+    `seconds` computation was exactly this bug.
+
+    Phase 5c superseded the original invariant here ("BALANCE lands on
+    plain G") with a more general one that also covers a mismatched limit
+    correctly: TIME LEFT (the only thing that actually matters -- what
+    timekpr enforces and what the child sees) must land on
+    `target.limit_today_s - target.global_spent_s`, the hub's *effective*
+    limit minus its global spent total, regardless of what the device's own
+    limit happens to be configured to. See `plan()`'s `target_balance`.
     """
     obs = Observation(balance_s=345, spent_local_s=393, limit_today_s=86400)  # unconfigured device
     target = HubTarget(limit_today_s=3600, global_spent_s=0)  # hub's freshly-created policy
@@ -235,7 +281,8 @@ def test_absolute_write_uses_device_limit_not_hub_target_limit():
     model = TimekprBalanceModel(balance_s=obs.balance_s, limit_s=obs.limit_today_s)
     model.apply(p.op, p.seconds)
 
-    assert model.balance_s == target.global_spent_s  # == 0, not 82800 (the bug's actual result)
+    time_left = obs.limit_today_s - model.balance_s
+    assert time_left == target.limit_today_s - target.global_spent_s  # == 3600, the hub's intent
 
 
 # ---------------------------------------------------------------------------

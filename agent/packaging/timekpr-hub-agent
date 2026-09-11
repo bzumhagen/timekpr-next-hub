@@ -1,0 +1,22 @@
+#!/usr/bin/python3
+"""Launcher installed at /usr/bin/timekpr-hub-agent.
+
+No venv (Phase 4 "packaging"): the agent's code is installed straight into
+/usr/lib/timekpr-hub-agent/ (see PKGBUILD's package()), a path with no
+Python-version number in it, so an Arch Python minor upgrade (3.14 -> 3.15)
+needs no repackaging -- only this one line has to find it on sys.path
+first. httpx/pydantic/dbus/gi all come from the distro's own system
+site-packages (this package's `depends=`), which is why no venv is needed
+here at all, unlike timekpr_paths.py's search for *timekpr's* own install
+location (a separate concern -- that's still distro-version-dependent and
+handled at runtime, not at this fixed path).
+"""
+
+import sys
+
+sys.path.insert(0, "/usr/lib/timekpr-hub-agent")
+
+from timekpr_hub_agent.main import main  # noqa: E402
+
+if __name__ == "__main__":
+    main()

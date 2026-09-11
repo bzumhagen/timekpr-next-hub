@@ -57,16 +57,12 @@ make dev           # apply migrations, run the hub with --reload on :8000
 ```
 
 Then open <http://127.0.0.1:8000>. The UI lets you generate an enrollment
-code and approve devices, but there's no way to create a *user* from the
-UI yet (Phase 1 gap — see below) — insert one directly to try the full
-flow:
-
-```sh
-make db-shell
-# inside psql:
-INSERT INTO users (id, canonical_username, display_name)
-VALUES (gen_random_uuid(), 'alice', 'Alice');
-```
+code and approve devices — there's no separate "create a user" step:
+enrolling a device provisions a hub `User` row for each of its
+`local_users` that the hub doesn't already know about, and aliases into
+the existing one for any that it does (so the same account on a second
+machine pools into the same user rather than getting a duplicate). A
+parent still has to approve the device afterward before it can sync.
 
 ## Make targets
 
@@ -162,48 +158,89 @@ make deploy-logs                     # tail everything
 
 ## Installing the agent
 
-The agent needs the distro's system `dbus`/`PyGObject` packages (to talk
-to `timekprd`) *and* `httpx`/`pydantic` (pip) in the same interpreter —
-hence a `--system-site-packages` venv rather than a plain one.
+The agent's own code needs only `httpx` beyond the standard library — it
+never imports `pydantic` itself — plus the distro's system `dbus`/`PyGObject`
+packages to talk to `timekprd`. No venv: the Arch package installs straight
+into system site-packages under a Python-version-independent path
+(`/usr/lib/timekpr-hub-agent/`), depending on `python-httpx`/`python-pydantic`
+directly, so an Arch Python minor upgrade needs no rebuild.
 
-**Via the PKGBUILD** (`agent/packaging/PKGBUILD`, Arch/CachyOS): this is a
-solid draft — it builds the `--system-site-packages` venv, installs the
-systemd unit, `sysusers.d`/`tmpfiles.d` config, and the `agent.env`
-template — but **it has not actually been run through `makepkg`** yet.
-Treat it as a starting point, not a tested package.
-
-**Manual install**, the path that has been validated end-to-end
-(`docs/agent-live-test-findings.md`):
-
-```sh
-sudo python3 -m venv --system-site-packages /opt/timekpr-hub-agent/venv
-sudo /opt/timekpr-hub-agent/venv/bin/pip install httpx pydantic pydantic-core
-# then copy agent/timekpr_hub_agent/ and core/timekpr_hub_core/ into that
-# venv's site-packages, and install the systemd unit + sysusers/tmpfiles
-# config from agent/packaging/ by hand (see PKGBUILD's package() for the
-# exact paths)
-```
-
-**Enrolling a device**: there is no `enroll` CLI subcommand yet (a real
-gap — see the review). Enroll by hand against the hub's HTTP API, then
-drop the returned token where the agent expects it:
+**Via the PKGBUILD** (`agent/packaging/PKGBUILD`, Arch/CachyOS). Builds
+directly from this checkout (via `$startdir/../..`, since there's no
+release tarball yet) rather than a `source=()` archive — run it from
+`agent/packaging/`:
 
 ```sh
-CODE=$(curl -s -X POST http://<hub>/api/v1/enrollment-codes | jq -r .code)
-curl -s -X POST http://<hub>/api/v1/enroll -H 'Content-Type: application/json' -d '{
-  "enrollment_code": "'"$CODE"'", "hostname": "'"$(hostname)"'",
-  "machine_id": "'"$(cat /etc/machine-id)"'", "os": "linux", "tz": "America/Denver",
-  "agent_version": "0.1.0", "local_users": ["alice"]
-}' | tee /tmp/enroll.json
-sudo mkdir -p /var/lib/timekpr-hub-agent
-sudo sh -c 'jq -r .device_token /tmp/enroll.json > /var/lib/timekpr-hub-agent/device_token'
-sudo chmod 600 /var/lib/timekpr-hub-agent/device_token
-# then have a parent approve it: POST /api/v1/devices/{device_id}/approve
+cd agent/packaging && makepkg -f      # builds timekpr-hub-agent-*.pkg.tar.zst
+sudo pacman -U timekpr-hub-agent-*.pkg.tar.zst
 ```
 
-Then start the systemd unit (`agent/packaging/timekpr-hub-agent.service`),
-configured via `/etc/timekpr-hub-agent/agent.env`
-(`TIMEKPR_HUB_URL`, `TIMEKPR_HUB_MANAGED_USERS`, `TIMEKPR_HUB_TZ`).
+pacman's own systemd hooks handle `sysusers`/`tmpfiles`/`daemon-reload`
+automatically — nothing else to run by hand. Verified in this repo:
+`makepkg -f` produces a package with `usr/bin/timekpr-hub-agent`, the code
+under `usr/lib/timekpr-hub-agent/` (no `python3.*` path anywhere in it —
+confirmed with `tar -tf *.pkg.tar.zst | grep python3\\.`), the systemd
+unit, and `sysusers.d`/`tmpfiles.d`/`agent.env`. **Not yet verified**: an
+actual `pacman -U` + real enrollment on this machine (would create a
+system user and a running service — left for you to do, not run
+unattended during this change).
+
+**Manual install** (any systemd distro with `python-dbus`/`python-gobject`
+and `httpx` available):
+
+```sh
+sudo mkdir -p /usr/lib/timekpr-hub-agent
+sudo cp -r agent/timekpr_hub_agent core/timekpr_hub_core /usr/lib/timekpr-hub-agent/
+sudo install -Dm755 agent/packaging/timekpr-hub-agent /usr/bin/timekpr-hub-agent
+# then install the systemd unit + sysusers/tmpfiles config from
+# agent/packaging/ by hand, and run systemd-sysusers/systemd-tmpfiles/daemon-reload
+```
+
+### Enrolling a device
+
+Click **Generate enrollment code** in the hub UI — it prints the exact
+command to run, with the hub's own URL and the code already filled in:
+
+```sh
+sudo timekpr-hub-agent enroll --hub-url http://<hub>:8000 --code K7F29Q
+```
+
+This preflights the local timekpr install, prompts for which local users
+to manage if `--users` isn't given (validating each against timekpr's own
+user list), redeems the code, writes the device token (`0600`, owned by
+the service's own user — safe to re-run against a device that's already
+been running for a while), writes `/etc/timekpr-hub-agent/agent.env`, and
+enables + starts the service. A parent-minted code is itself the
+approval — there's no separate "approve this device" step to do
+afterward. Pass `--no-start` to skip the last step, or `--ca-cert` for a
+hub with a self-signed certificate.
+
+Check `sudo timekpr-hub-agent status` afterward — one ✓/✗ line per link in
+the chain (timekpr installed, DBUS reachable, config present, token
+readable, service enabled/active, hub reachable), plus each managed
+user's last sync and current balance.
+
+## Surviving reboots & upgrades
+
+- The service is `Restart=always` with no backoff limit, `Type=notify` +
+  a watchdog (a hung DBUS/HTTP call gets killed and restarted rather than
+  sitting there looking alive), and deliberately has no `After=`/`Requires=`
+  ordering against `timekprd` or `dbus` — it retries its own DBUS
+  connection every tick, so starting in any order is fine. `enroll` runs
+  `systemctl enable --now`, so a fresh enrollment survives a reboot without
+  a separate step.
+- Its offline-grace clock is wall-clock, not `time.monotonic()` (whose
+  epoch resets on reboot) — so a reboot while the hub is unreachable can't
+  make the agent think it's still "recently in contact" and stay
+  unenforced.
+- `state.json` is written atomically (temp file + fsync + rename + fsync
+  the directory) and tolerates unknown/missing fields, so an interrupted
+  write or a downgrade/upgrade across a state-schema change can't
+  crash-loop the service.
+- The one thing this can't guarantee: anyone with `sudo` can stop the
+  service or uninstall the package. Check the hub UI's device list (it
+  flags a device that hasn't checked in recently) if you suspect that's
+  happened.
 
 ## Configuration reference
 
@@ -214,15 +251,24 @@ configured via `/etc/timekpr-hub-agent/agent.env`
 | `DATABASE_URL` | `postgresql+asyncpg://timekpr_hub:timekpr_hub@localhost:5432/timekpr_hub` | Set explicitly in any real deployment |
 | `HUB_TZ` | `UTC` | The one household timezone every day/week/month boundary is computed in |
 
-**Agent** (`timekpr-hub-agent` CLI flags / `agent.env`):
+**Agent** (`timekpr-hub-agent` CLI flags / `agent.env`, written by `enroll` —
+see "Enrolling a device" above): three subcommands, `enroll`, `run`, and
+`status`. `enroll` and `run` both take `--hub-url`, `--token-path` (default
+`/var/lib/timekpr-hub-agent/device_token`) and `--ca-cert`; a flag always
+overrides the matching env var, which overrides `agent.env`.
 
 | Flag | env var (via `agent.env`) | Notes |
 |---|---|---|
-| `--hub-url` (required) | `TIMEKPR_HUB_URL` | |
-| `--users` (required) | `TIMEKPR_HUB_MANAGED_USERS` | Comma-separated local usernames |
-| `--tz` | `TIMEKPR_HUB_TZ` | Default `UTC` — see the review's note that this isn't yet used for the agent's own day-rollover math |
-| `--state-path` | | Default `/var/lib/timekpr-hub-agent/state.json` |
-| `--once` | | Run a single tick and exit, for testing |
+| `run`/`enroll --hub-url` | `TIMEKPR_HUB_URL` | Required unless already set via env/`agent.env` |
+| `run --users` | `TIMEKPR_HUB_MANAGED_USERS` | Comma-separated local usernames |
+| `run`/`enroll --ca-cert` | `TIMEKPR_HUB_CA_CERT` | For a hub with a self-signed certificate |
+| `run --tz` | `TIMEKPR_HUB_TZ` | Overwritten by the hub's `HUB_TZ` on the next successful sync |
+| `run --state-path` / `status --state-path` | | Default `/var/lib/timekpr-hub-agent/state.json` |
+| `run --once` | | Run a single tick and exit, for testing |
+| `enroll --code` (required) | | One-time enrollment code from the hub |
+| `enroll --users` | | Comma-separated; prompted interactively (from timekpr's own user list) if omitted |
+| `enroll --no-start` | | Don't `systemctl enable --now` after enrolling |
+| `enroll --hostname` / `--machine-id` / `--os` | | Default to the local machine's own values |
 
 ## Further reading
 

@@ -106,8 +106,13 @@ Proceeding to Phase 1.
       `usage_counters`. See `hub/timekpr_hub/services/aggregate.py` and
       `tests/integration/test_aggregate_postgres.py` (3 tests, skips gracefully with no DB
       reachable).
-- [x] `POST /enroll` — `hub/timekpr_hub/api/enroll.py`, single-use enrollment codes, auto-suggests
-      user aliases by exact local-username match
+- [x] `POST /enroll` — `hub/timekpr_hub/api/enroll.py`, single-use enrollment codes. Each reported
+      `local_users` entry is provisioned as a new canonical `User` if the hub doesn't already know
+      that username, or aliased into the existing one if it does (a savepoint absorbs the
+      unique-constraint race from two devices enrolling the same brand-new username
+      concurrently) — no separate "create a user" step needed before enrolling. Covered by
+      `test_enroll_provisions_a_new_user_when_none_exists` and
+      `test_enroll_merges_into_an_existing_user_of_the_same_username` in `tests/integration/test_hub_api.py`.
 - [x] `POST /sync` (daily budget only; wall-clock union via `activity_intervals` + range_agg) —
       `hub/timekpr_hub/api/sync.py`. Supports both `wallclock` and `parallel` accounting modes
       per-user (user's choice was wallclock; parallel implemented too since it's nearly free —
@@ -150,16 +155,77 @@ Proceeding to Phase 1.
 - [x] Daily convergence per PLAN pseudocode (deadband, `'='` cases, regression-safe cumulative)
 - [x] Offline grace + `open`/`capped`/`closed` policies (default `capped`, grace/cap constants
       from PLAN defaults) — `_apply_offline_policy()` in `main.py`
-- [x] systemd unit + sysusers.d + tmpfiles.d + PKGBUILD — `agent/packaging/`. Unit file syntax
-      checked with `systemd-analyze verify` (only complaint: the venv path doesn't exist yet in
-      this dev sandbox, which is expected — it's created by the PKGBUILD's `package()` step).
-      **The PKGBUILD itself has not been run through `makepkg`** — it's a solid draft following
-      the `--system-site-packages` venv approach validated manually earlier in this session,
-      but an actual build+install cycle on this machine is still open work.
-- [x] **Agent venv packaging validated**: `python3 -m venv --system-site-packages agent/.venv`
-      + `pip install httpx pydantic` gives one interpreter with both `dbus` (system) and
-      `httpx`/`pydantic` (pip) importable together, exactly per PLAN's packaging
-      recommendation — confirmed by actually creating it and running the agent through it.
+- [x] systemd unit + sysusers.d + tmpfiles.d + PKGBUILD — `agent/packaging/`. **No venv**: the
+      agent's only third-party dependency is `httpx` (it never imports `pydantic` itself), so
+      the package now `depends=` on `python-httpx`/`python-pydantic` directly and installs
+      straight into `/usr/lib/timekpr-hub-agent/` (a fixed, Python-version-independent path) via
+      a thin `/usr/bin/timekpr-hub-agent` launcher, replacing the earlier
+      `--system-site-packages` venv under `/opt` — an Arch Python minor upgrade no longer
+      requires rebuilding this package. `Restart=always` (was `on-failure`) with
+      `StartLimitIntervalSec=0`, `Type=notify` + `WatchdogSec=120` (agent sends `READY=1`/
+      `WATCHDOG=1` via a ~15-line stdlib `notify.py`, no dependency), and deliberately no
+      `After=`/`Requires=` on `timekprd`/`dbus` (the old `After=timekpr.service` combined with
+      `WantedBy=multi-user.target` forms a boot-ordering cycle with timekpr's own
+      `After=multi-user.target` unit). `makepkg -f` run and verified in this session: produced a
+      correctly-laid-out `.pkg.tar.zst` (`usr/bin/timekpr-hub-agent` present,
+      `tar -tf … | grep python3\.` empty, systemd unit +
+      sysusers.d/tmpfiles.d/agent.env at their expected paths). **Not yet installed** via
+      `pacman -U` + a real enrollment on this machine — deliberately left for the user (it
+      creates a system user and a running service) rather than done unattended here.
+- [x] `enroll`/`run`/`status` CLI subcommands, single-command enrollment (`main.py`,
+      `config.py`). `enroll` now: preflights the local timekpr install and DBUS connectivity;
+      prompts for which local users to manage (from timekpr's own `getUserList()`) when
+      `--users` is omitted, validating any explicitly-given names the same way; reads each
+      user's own configured limits to seed a brand-new hub user's policy (Phase 5a, see below)
+      instead of always defaulting to 1h/day; writes the device token `chown`-ed to the
+      service's own user (`config.chown_to_service_user` — a plain `sudo … enroll` used to leave
+      a root-owned token the service can't read, working the *first* time only because
+      systemd's `StateDirectory=` re-owns the directory once, not on a re-enroll); writes
+      `/etc/timekpr-hub-agent/agent.env` itself instead of printing it for a parent to
+      copy-paste; and runs `systemctl enable --now` (skippable with `--no-start`). Friendly
+      errors (`hubclient.EnrollError`) for an unknown/used/expired code or an unreachable hub,
+      no traceback. The hub UI's own enrollment snippet was also fixed — it previously printed
+      `--hub` (not a real flag) and omitted the required `--users`
+      (`docs/best-practices-review.md`). `status` reports one ✓/✗ line per link in the chain
+      (timekpr installed, DBUS reachable, config present, token readable, service
+      enabled/active, hub reachable) plus each managed user's last sync/balance.
+- [x] **Reboot/offline correctness fixes**, all caught or confirmed by new tests in
+      `tests/unit/test_agent_state.py`/`test_agent_run_tick.py`:
+      - Offline grace now keyed on wall-clock time (`last_hub_contact_utc`), not
+        `time.monotonic()` (whose epoch resets on reboot and used to leave the agent silently
+        unenforced — `docs/best-practices-review.md`).
+      - `state.load()` drops unknown/legacy fields instead of `TypeError`-crashing on an old
+        `state.json` after an upgrade.
+      - Offline `capped` policy now estimates today's spend as
+        `last_global_spent_s + (local activity since contact)`, so local usage while offline
+        is never silently refunded back to the stale synced value — the *cap itself* stays
+        anchored to the frozen `last_global_spent_s`, not the live estimate (a first attempt at
+        this used the live estimate for both, which the new
+        `test_offline_capped_policy_still_enforces_the_cap` caught: it made the cap always
+        trail the estimate by a fixed margin and never actually bind).
+      - A device's first tick for a user now credits whatever timekpr already shows as spent
+        today instead of resetting to 0 (Phase 5f — pre-enrollment usage used to be silently
+        forgiven).
+- [x] **Hub-authoritative limits (Phase 5, partial)** — previously each device converged its
+      local balance toward the pooled *spend* total but enforced against its *own* locally
+      configured limit, so an unconfigured device (timekpr's 24h/day default) was effectively
+      unlimited regardless of the hub's policy, and a hub-side grant never actually granted
+      anything on a device whose local limit hadn't been separately pushed.
+      `core/timekpr_hub_core/convergence.py`'s `plan()` now converges to
+      `target_balance = G + (L_dev - L_eff)`, making time left equal `L_eff - G` (the hub's
+      effective limit minus its global spent total) regardless of the device's own configured
+      limit — see the new property test in `test_convergence.py` and the updated
+      `test_absolute_write_uses_device_limit_not_hub_target_limit` regression test. The agent
+      now actually pushes `setTimeLimitForDays`/`Week`/`Month`/`setAllowedDays` when the hub
+      sends a policy payload (previously nothing called these, and a `policy_version_applied`
+      bug marked the push as done without ever writing anything, so the hub stopped resending
+      it after the very first tick). `/enroll` seeds a brand-new hub user's policy from the
+      first device's own configured limits rather than always defaulting to 1h/day, and returns
+      each user's effective policy so `enroll` can print a diff. **Not yet done**: a hub-side
+      policy editor UI/endpoint (there's still no way to *change* a policy through the hub
+      itself beyond the existing +time grants), pushing `allowed_hours`/lockout
+      type/PlayTime, and a hub UI indicator for a device whose reported limit still disagrees
+      with policy after a push (see `docs/best-practices-review.md`).
 - [x] **Full live dogfooding against the real daemon + real hub** (not mocks): enrolled a real
       device, ran `run_tick()` against `timekprd` on this machine via `newgrp timekpr`, and
       against the live FastAPI+Postgres hub. This is the single most valuable testing done in
@@ -215,6 +281,44 @@ Proceeding to Phase 1.
 - [ ] One-active-device leases
 - [ ] PlayTime pooling
 - [ ] Per-device weighting
+
+## Multi-distro support (not started — Arch/CachyOS only today)
+
+timekpr-next itself supports Ubuntu & derivatives (PPA), Debian (native),
+Arch/Manjaro (AUR), Fedora (COPR), and openSUSE (native) — see its own
+README. The agent should eventually run on all of them; today only the
+Arch PKGBUILD exists. Systemd distros only (timekpr-next itself depends on
+logind for session tracking).
+
+- [ ] Make the agent stdlib-only: replace `httpx` (the agent's only
+      third-party dependency — it never imports `pydantic` itself) with
+      `urllib.request`. The two POST calls it makes (enroll, sync) don't
+      need more than the stdlib gives, and this drops the agent's runtime
+      dependencies to just `python3`/`python3-dbus`/`python3-gi`, which
+      timekpr-next already requires on every supported distro.
+- [ ] Build `.deb`/`.rpm`/Arch packages from one payload (e.g.
+      [nfpm](https://nfpm.goreleaser.com/)) in CI, attached to GitHub
+      Releases — this also finally gives the Arch PKGBUILD a real
+      `source=()` tarball instead of building from `$startdir/../..`.
+- [ ] Per-format post-install scripts (`systemd-sysusers`,
+      `systemd-tmpfiles --create`, `systemctl daemon-reload`) for
+      `.deb`/`.rpm` — Arch's own pacman hooks already cover this
+      (`timekpr-hub-agent.install` only prints the next step).
+- [ ] Publish per distro as demand warrants: AUR first (closest to today's
+      PKGBUILD), then a PPA/COPR/OBS submission.
+- [ ] Confirm each distro's timekpr-next package actually creates the
+      `timekpr` group the agent's `sysusers.d` config joins, and that
+      `timekpr_paths.py`'s search (`dist-packages`/`site-packages`) finds
+      that distro's install layout.
+- [ ] Log the detected timekpr-next version at startup, and re-run the
+      live checks from `docs/agent-live-test-findings.md` on each
+      distro — distro timekpr-next versions differ (Debian's own README
+      calls its packages "usually outdated"), and both real bugs that
+      writeup found were invisible to every synthetic test.
+- [ ] CI smoke tests: install the built package in
+      `debian`/`ubuntu`/`fedora`/`opensuse`/`archlinux` containers and run
+      `timekpr-hub-agent status`; a real reboot-survival check still needs
+      an actual VM per distro, not a container.
 
 ---
 

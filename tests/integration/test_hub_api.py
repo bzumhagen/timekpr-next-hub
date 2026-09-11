@@ -130,6 +130,211 @@ async def test_enrollment_code_is_single_use(client):
 
 
 @pytest.mark.asyncio
+async def test_enroll_provisions_a_new_user_when_none_exists(client):
+    """No `_seed_user` here -- enrollment itself is the provisioning path
+    now, not a prerequisite manual INSERT."""
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h",
+            "machine_id": "m",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["brandnew"],
+        },
+    )
+    assert resp.status_code == 201
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                text("SELECT canonical_username FROM users WHERE canonical_username = 'brandnew'")
+            )
+        ).scalar_one_or_none()
+    assert row == "brandnew"
+
+
+@pytest.mark.asyncio
+async def test_enroll_merges_into_an_existing_user_of_the_same_username(client):
+    """A second device reporting a username that already exists on the hub
+    (e.g. the same account on another machine) should alias into the same
+    User row rather than erroring or creating a duplicate."""
+    await _seed_user("alpha")
+
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "second-pc",
+            "machine_id": "m2",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["alpha"],
+        },
+    )
+    assert resp.status_code == 201
+    device_id = resp.json()["device_id"]
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        count = (
+            await session.execute(text("SELECT count(*) FROM users WHERE canonical_username = 'alpha'"))
+        ).scalar_one()
+        alias_user_id = (
+            await session.execute(
+                text("SELECT user_id FROM user_aliases WHERE device_id = :d AND local_username = 'alpha'"),
+                {"d": device_id},
+            )
+        ).scalar_one_or_none()
+        user_id = (
+            await session.execute(text("SELECT id FROM users WHERE canonical_username = 'alpha'"))
+        ).scalar_one()
+    assert count == 1
+    assert alias_user_id == user_id
+
+
+@pytest.mark.asyncio
+async def test_enrolled_device_is_immediately_active_and_can_sync(client):
+    """Phase 2 "code implies approval": a parent-minted enrollment code is
+    itself the approval -- there's no separate un-authenticated approval
+    step to actually gate anything, and the old 'pending' default just
+    added a step that could sync anyway (auth.py only rejected 'revoked')."""
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    enroll_resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h",
+            "machine_id": "m",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["carol"],
+        },
+    )
+    assert enroll_resp.status_code == 201
+    token = enroll_resp.json()["device_token"]
+
+    sync_resp = await client.post(
+        "/api/v1/sync",
+        json={
+            "agent_time": "2026-09-09T00:00:00+00:00",
+            "tz": "UTC",
+            "ntp_synced": True,
+            "agent_version": "0.1.0",
+            "users": [],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert sync_resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_enroll_response_includes_hub_tz(client):
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h",
+            "machine_id": "m",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["dave"],
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["hub_tz"] == "UTC"  # settings.hub_tz default, echoed back
+    assert resp.json()["new_users"] == ["dave"]
+    assert "dave" in resp.json()["policies"]
+
+
+@pytest.mark.asyncio
+async def test_enroll_seeds_policy_from_device_snapshot_for_a_new_user(client):
+    """Phase 5a: a brand-new hub user's policy should start from what the
+    enrolling device already has configured, not always the 1h/day
+    placeholder."""
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h",
+            "machine_id": "m",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["erin"],
+            "local_policies": {
+                "erin": {
+                    "daily_limits_s": [7200] * 7,
+                    "weekly_limit_s": 50400,
+                    "monthly_limit_s": 216000,
+                    "allowed_weekdays": ["1", "2", "3", "4", "5", "6", "7"],
+                }
+            },
+        },
+    )
+    assert resp.status_code == 201
+    policy = resp.json()["policies"]["erin"]
+    assert policy["daily_limits_s"] == [7200] * 7
+    assert policy["weekly_limit_s"] == 50400
+
+
+@pytest.mark.asyncio
+async def test_enroll_does_not_reseed_policy_for_an_existing_user(client):
+    """A second device enrolling the same (already-known) username must not
+    overwrite that user's existing policy with its own local snapshot --
+    only a brand-new user gets seeded."""
+    await _seed_user("frank")
+
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h2",
+            "machine_id": "m2",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["frank"],
+            "local_policies": {
+                "frank": {
+                    "daily_limits_s": [7200] * 7,
+                    "weekly_limit_s": 50400,
+                    "monthly_limit_s": 216000,
+                    "allowed_weekdays": ["1", "2", "3", "4", "5", "6", "7"],
+                }
+            },
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["new_users"] == []
+    # _seed_user leaves current_policy_id unset, so this hits the
+    # create_initial_policy(session, user.id) default-policy fallback --
+    # 1h/day, not the 7200s snapshot the device reported.
+    assert resp.json()["policies"]["frank"]["daily_limits_s"] == [3600] * 7
+
+
+@pytest.mark.asyncio
+async def test_ui_enrollment_code_snippet_uses_the_real_flag_names(client):
+    """Regression test: the UI used to print `--hub` (not a real flag) and
+    omit the required `--users`, so copy-pasting it into a terminal failed."""
+    resp = await client.post("/ui/enrollment-codes")
+    assert resp.status_code == 200
+    assert "--hub-url" in resp.text
+    assert "--hub " not in resp.text
+
+
+@pytest.mark.asyncio
 async def test_sync_requires_device_token(client):
     resp = await client.post(
         "/api/v1/sync",

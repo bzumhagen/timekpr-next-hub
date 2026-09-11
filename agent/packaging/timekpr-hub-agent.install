@@ -1,0 +1,21 @@
+post_install() {
+	# pacman's own systemd hooks already run systemd-sysusers,
+	# systemd-tmpfiles --create, and systemctl daemon-reload after this
+	# script -- nothing to do here for those (previously documented as a
+	# manual README step; that step is gone now).
+	cat <<-EOF
+	==> timekpr-hub-agent installed. Next step:
+	==>   sudo timekpr-hub-agent enroll --hub-url http://<hub>:8000 --code <code>
+	==> (get <code> from the hub's web UI "Generate enrollment code" button --
+	==> it prints this exact command with the code filled in.)
+	EOF
+}
+
+post_upgrade() {
+	cat <<-EOF
+	==> timekpr-hub-agent upgraded. An already-enrolled device needs no
+	==> action -- the service picks up the new code on its next restart
+	==> (systemctl restart timekpr-hub-agent, or it happens automatically
+	==> next time it's restarted for any other reason).
+	EOF
+}

@@ -42,6 +42,18 @@ class GrantSource(str, Enum):
 # --------------------------------------------------------------------------
 
 
+class LocalPolicySnapshot(BaseModel):
+    """A device's own currently-configured limits for one local user, sent
+    at enroll time (Phase 5a) so a brand-new hub user's policy is seeded
+    from what's actually configured on the first device to report it,
+    rather than always starting from the hub's 1h/day placeholder default."""
+
+    daily_limits_s: list[int] = Field(min_length=7, max_length=7)
+    weekly_limit_s: int
+    monthly_limit_s: int
+    allowed_weekdays: list[str] = Field(default_factory=list)
+
+
 class EnrollRequest(BaseModel):
     enrollment_code: str
     hostname: str
@@ -50,13 +62,26 @@ class EnrollRequest(BaseModel):
     tz: str
     agent_version: str
     local_users: list[str] = Field(default_factory=list)
+    local_policies: dict[str, LocalPolicySnapshot] = Field(default_factory=dict)
+    """Keyed by local username, a subset of `local_users`. Only used to
+    seed a policy for a username the hub doesn't already know -- ignored
+    for one that merges into an existing hub user (see
+    hub/timekpr_hub/api/enroll.py)."""
 
 
 class EnrollResponse(BaseModel):
     device_id: str
     device_token: str
     hub_time: str
+    hub_tz: str
     next_poll_ms: int
+    new_users: list[str] = Field(default_factory=list)
+    """Which of `local_users` got a freshly-created hub `User` (vs. merged
+    into one the hub already knew) -- lets `enroll` tell a parent "new hub
+    user, policy seeded from this device" vs. "joined an existing user"."""
+    policies: dict[str, PolicyPayload] = Field(default_factory=dict)
+    """Each reported user's current effective policy, so `enroll` can print
+    a "this device: Xh/day -> hub: Yh/day" diff instead of enrolling silently."""
 
 
 # --------------------------------------------------------------------------
@@ -121,6 +146,7 @@ class SyncUserResponse(BaseModel):
 
 class SyncResponse(BaseModel):
     hub_time: str
+    hub_tz: str
     day: str
     iso_week: str
     month: str

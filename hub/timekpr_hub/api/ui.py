@@ -114,8 +114,40 @@ async def grant_from_ui(
 @router.get("/ui/devices-fragment", response_class=HTMLResponse)
 async def devices_fragment(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     result = await session.execute(select(Device))
-    devices = [{"id": str(d.id), "name": d.name, "status": d.status} for d in result.scalars().all()]
+    now = datetime.now(UTC)
+    devices = []
+    for d in result.scalars().all():
+        if d.last_seen_at is None:
+            seen_label, stale = "never synced", True
+        else:
+            age_s = (now - d.last_seen_at).total_seconds()
+            # "Stale" at 3x the poll interval (docs/best-practices-review.md
+            # / Phase 3 "hub device health") -- a couple of missed ticks is
+            # normal jitter, three in a row means the device is actually
+            # unreachable, asleep, or the agent has stopped.
+            stale = age_s > 3 * (settings.default_next_poll_ms / 1000)
+            seen_label = _relative_time(age_s)
+        devices.append(
+            {
+                "id": str(d.id),
+                "name": d.name,
+                "status": d.status,
+                "agent_version": d.agent_version or "?",
+                "last_seen": seen_label,
+                "stale": stale,
+            }
+        )
     return templates.TemplateResponse(request, "_devices_fragment.html", {"devices": devices})
+
+
+def _relative_time(age_s: float) -> str:
+    if age_s < 90:
+        return f"{int(age_s)}s ago"
+    if age_s < 5400:
+        return f"{int(age_s / 60)}m ago"
+    if age_s < 172800:
+        return f"{int(age_s / 3600)}h ago"
+    return f"{int(age_s / 86400)}d ago"
 
 
 @router.post("/ui/devices/{device_id}/approve", response_class=HTMLResponse)
@@ -137,8 +169,15 @@ async def create_enrollment_code_ui(
     from timekpr_hub.api.parent import create_enrollment_code
 
     result = await create_enrollment_code(session)
+    # The real flag is --hub-url (not --hub), and --users is required --
+    # both were wrong here before (docs/best-practices-review.md), which
+    # meant copy-pasting this line straight into a terminal failed. Built
+    # from the request's own host:port so it works for a LAN hostname or
+    # Tailscale address too, not just whatever URL happened to be typed
+    # into a README example.
+    command = f"sudo timekpr-hub-agent enroll --hub-url {request.base_url} --code {result['code']}"
     return HTMLResponse(
         f"<p>Code: <code>{result['code']}</code> (expires {result['expires_at']}). "
-        f"Run on the new device: <code>timekpr-hub-agent enroll --hub &lt;url&gt; "
-        f"--code {result['code']}</code></p>"
+        f"Run on the new device:</p><pre>{command}</pre>"
+        "<p>(prompts for which local users to manage if you don't pass <code>--users</code>)</p>"
     )

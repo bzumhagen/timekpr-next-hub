@@ -15,11 +15,11 @@
 # network or a WireGuard/Tailscale tunnel -- never expose plain HTTP to the
 # internet.
 
-{$HUB_DOMAIN:localhost} {
-	reverse_proxy hub:8000
-}
+#{$HUB_DOMAIN:localhost} {
+#	reverse_proxy hub:8000
+#}
 
 # --- LAN-only alternative (no public DNS, no TLS) ---
-# :80 {
-# 	reverse_proxy hub:8000
-# }
+:80 {	
+  reverse_proxy hub:8000
+}

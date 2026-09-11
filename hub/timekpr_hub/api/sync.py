@@ -158,6 +158,7 @@ async def sync(
 
     return SyncResponse(
         hub_time=now.isoformat(),
+        hub_tz=settings.hub_tz,
         day=stamp.day_str,
         iso_week=stamp.iso_week_str,
         month=stamp.month_str,

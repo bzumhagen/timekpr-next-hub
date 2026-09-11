@@ -1,9 +1,19 @@
 # Maintainer: (you)
 # PLAN reference: "Tech stack" -- PKGBUILD for Arch/CachyOS (the user's
-# actual platform). Builds the agent's --system-site-packages venv (so it
-# gets dbus-python/PyGObject from the system, and pip-installs httpx +
-# pydantic on top -- see docs/phase0-findings.md §4 and CHECKLIST.md for why
-# a plain venv without --system-site-packages doesn't work here).
+# actual platform).
+#
+# No venv (Phase 4 "Multi-distro support" prep, docs/best-practices-review.md):
+# the agent's own code has exactly one third-party dependency (httpx) and
+# never imports pydantic itself (only timekpr_hub_core.models does, which
+# the agent doesn't use) -- both httpx and dbus-python/PyGObject are
+# available as ordinary Arch packages at the versions this repo is tested
+# against, so `depends=` on them directly and install straight into system
+# site-packages under a fixed, Python-version-independent path
+# (/usr/lib/timekpr-hub-agent/). This means an Arch Python minor upgrade
+# (3.14 -> 3.15, say) needs no rebuild of this package at all -- the
+# previous --system-site-packages venv under /opt was pinned to whatever
+# `python3 -m venv` picked at build time, and a version mismatch after a
+# system upgrade would silently break `import httpx` until rebuilt.
 pkgname=timekpr-hub-agent
 pkgver=0.1.0
 pkgrel=1
@@ -11,37 +21,51 @@ pkgdesc="Sidecar agent that pools timekpr-next screen-time budgets across multip
 arch=('any')
 url="https://github.com/YOUR_ORG/timekpr-next-hub"
 license=('GPL3')
-depends=('python' 'python-dbus' 'python-gobject' 'timekpr-next' 'systemd')
-makedepends=('python-pip' 'python-virtualenv')
+depends=('python' 'python-dbus' 'python-gobject' 'python-httpx' 'python-pydantic' 'timekpr-next' 'systemd')
+install=timekpr-hub-agent.install
 backup=('etc/timekpr-hub-agent/agent.env')
-source=()  # populated by your packaging pipeline (git archive, release tarball, ...)
+# No release tarball/packaging pipeline yet (see docs/best-practices-review.md
+# "Dependency hygiene" / PKGBUILD issues) -- builds directly from this
+# checkout via $startdir instead of $srcdir, which only exists when
+# `source=()` actually names something makepkg fetches.
+source=()
 sha256sums=()
+_repo_root="$startdir/../.."
+_libdir="/usr/lib/timekpr-hub-agent"
 
 package() {
-    local venv_dir="$pkgdir/opt/timekpr-hub-agent/venv"
+    # timekpr_hub_agent and timekpr_hub_core straight into system
+    # site-packages, no venv -- see the header comment above. Excludes
+    # __pycache__/packaging so an interactive dev checkout with stale
+    # bytecode doesn't leak into the package.
+    install -dm755 "$pkgdir$_libdir/timekpr_hub_agent"
+    cp -r "$_repo_root/agent/timekpr_hub_agent"/*.py "$pkgdir$_libdir/timekpr_hub_agent/"
+    cp -r "$_repo_root/core/timekpr_hub_core" "$pkgdir$_libdir/"
+    find "$pkgdir$_libdir" -name '__pycache__' -exec rm -rf {} +
 
-    install -dm755 "$pkgdir/opt/timekpr-hub-agent"
-    python -m venv --system-site-packages "$venv_dir"
-    "$venv_dir/bin/pip" install --no-cache-dir httpx pydantic pydantic-core
+    install -Dm755 "$_repo_root/agent/packaging/timekpr-hub-agent" \
+        "$pkgdir/usr/bin/timekpr-hub-agent"
 
-    install -dm755 "$venv_dir/lib/python3*/site-packages/timekpr_hub_agent"
-    cp -r "$srcdir/agent/timekpr_hub_agent"/* \
-        "$venv_dir"/lib/python3*/site-packages/timekpr_hub_agent/
-    cp -r "$srcdir/core/timekpr_hub_core" \
-        "$venv_dir"/lib/python3*/site-packages/
-
-    install -Dm644 "$srcdir/agent/packaging/timekpr-hub-agent.service" \
+    install -Dm644 "$_repo_root/agent/packaging/timekpr-hub-agent.service" \
         "$pkgdir/usr/lib/systemd/system/timekpr-hub-agent.service"
-    install -Dm644 "$srcdir/agent/packaging/sysusers.d/timekpr-hub-agent.conf" \
+    install -Dm644 "$_repo_root/agent/packaging/sysusers.d/timekpr-hub-agent.conf" \
         "$pkgdir/usr/lib/sysusers.d/timekpr-hub-agent.conf"
-    install -Dm644 "$srcdir/agent/packaging/tmpfiles.d/timekpr-hub-agent.conf" \
+    install -Dm644 "$_repo_root/agent/packaging/tmpfiles.d/timekpr-hub-agent.conf" \
         "$pkgdir/usr/lib/tmpfiles.d/timekpr-hub-agent.conf"
 
+    # Comments only -- `enroll` writes the real values here itself
+    # (agent/timekpr_hub_agent/config.py). Shipping a fake hub.example.com
+    # here used to mean an un-enrolled `run` would crash-loop trying to
+    # reach it; `run` now recognizes an empty TIMEKPR_HUB_URL and waits
+    # instead (main.py "never exit on a transient condition").
     install -Dm640 /dev/null "$pkgdir/etc/timekpr-hub-agent/agent.env"
     cat > "$pkgdir/etc/timekpr-hub-agent/agent.env" <<'EOF'
-# Filled in by `timekpr-hub-agent enroll` or manually:
-TIMEKPR_HUB_URL=https://hub.example.com
-TIMEKPR_HUB_MANAGED_USERS=
-TIMEKPR_HUB_TZ=UTC
+# Written by `timekpr-hub-agent enroll` -- do not edit by hand; re-run
+# enroll (with a new code from the hub) to change the hub URL, managed
+# users, or timezone.
+#TIMEKPR_HUB_URL=
+#TIMEKPR_HUB_MANAGED_USERS=
+#TIMEKPR_HUB_TZ=UTC
+#TIMEKPR_HUB_CA_CERT=
 EOF
 }

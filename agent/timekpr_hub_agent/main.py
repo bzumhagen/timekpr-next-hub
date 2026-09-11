@@ -11,10 +11,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import socket
+import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from timekpr_hub_core.calendar import canonical_stamp
 from timekpr_hub_core.convergence import (
     ConvergenceConfig,
     CumulativeState,
@@ -26,21 +32,51 @@ from timekpr_hub_core.convergence import (
     reset_for_new_canonical_day,
 )
 
+from timekpr_hub_agent import config as config_mod
 from timekpr_hub_agent import state as state_mod
 from timekpr_hub_agent.enforcer import TimekprEnforcer
-from timekpr_hub_agent.hubclient import DeviceRevokedError, HubClient, HubClientConfig, HubUnreachableError
+from timekpr_hub_agent.hubclient import (
+    DEFAULT_TOKEN_PATH,
+    DeviceRevokedError,
+    EnrollError,
+    HubClient,
+    HubClientConfig,
+    HubUnreachableError,
+)
+from timekpr_hub_agent.notify import sd_notify
+from timekpr_hub_agent.timekpr_paths import TimekprNotFoundError
 
 log = logging.getLogger("timekpr_hub_agent")
 
 CFG = ConvergenceConfig()
+AGENT_VERSION = "0.1.0"
+MACHINE_ID_PATHS = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
+SERVICE_UNIT = "timekpr-hub-agent.service"
 
 # PLAN "Offline / hub-unreachable behavior" defaults.
 DEFAULT_OFFLINE_GRACE_S = 900
 DEFAULT_OFFLINE_CAP_S = 1800
 
 
-def _canonical_day_str(dt: datetime) -> str:
-    return dt.date().isoformat()
+def _canonical_day_str(dt: datetime, tz_name: str) -> str:
+    """The agent's own best guess at "today", in the household's timezone
+    (cached from the hub's last EnrollResponse/SyncResponse -- see
+    AgentState.hub_tz), not UTC. Used to decide day rollover *before* the
+    hub is contacted this tick, and as the sole source of truth while
+    offline. Falls back to UTC if `tz_name` is empty or invalid (e.g. no
+    successful sync yet) rather than crashing the tick.
+
+    A wrong guess here only matters for the single tick straddling the
+    actual boundary -- the very next sync corrects `AgentState.hub_tz` from
+    the hub's authoritative answer, and this function is re-evaluated fresh
+    every tick. See docs/best-practices-review.md "agent computes its
+    canonical day/rollover in UTC, not HUB_TZ" (this fixes that gap).
+    """
+    try:
+        tz = ZoneInfo(tz_name) if tz_name else ZoneInfo("UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = ZoneInfo("UTC")
+    return canonical_stamp(dt, tz).day_str
 
 
 def run_tick(
@@ -58,18 +94,30 @@ def run_tick(
     now = datetime.now(UTC)
     sync_users = []
     observations: dict[str, tuple] = {}
+    today_str = _canonical_day_str(now, state.hub_tz or tz_name)
 
     for username in managed_users:
         obs = enforcer.get_user_observation(username)
         if obs is None:
+            log.warning("%s: not found in timekpr (check --users / the hub's device enrollment)", username)
             continue
 
         user_state = state.user(username)
-        today_str = _canonical_day_str(now)
         force_absolute = False
         cum_local_before = user_state.cum_local_s
 
-        if user_state.day != today_str:
+        if user_state.day == "":
+            # First tick ever for this user on this device (fresh enrollment,
+            # or a state.json that predates this user being managed): credit
+            # whatever timekpr already shows as spent today, rather than
+            # silently forgiving it. See docs/best-practices-review.md /
+            # Phase 5f -- pre-enrollment usage used to vanish because the
+            # baseline was unconditionally 0.
+            cum_state = CumulativeState(cum_local_s=obs.spent_day_s, raw_prev_s=obs.spent_day_s)
+            user_state.day = today_str
+            force_absolute = True
+            cum_local_before = 0
+        elif user_state.day != today_str:
             # Canonical day rollover (PLAN "Canonical rollover"): baseline at
             # whatever the device currently shows, whatever its own local
             # clock/rollover state is.
@@ -129,6 +177,8 @@ def run_tick(
         )
         next_poll_ms = response.get("next_poll_ms", next_poll_ms)
 
+        state.hub_tz = response.get("hub_tz") or state.hub_tz
+
         by_username = {u["username"]: u for u in response["users"]}
         for username, (obs, force_absolute) in observations.items():
             user_state = state.user(username)
@@ -138,9 +188,36 @@ def run_tick(
 
             user_state.last_effective_limit_today_s = resp_user["effective_limit_today_s"]
             user_state.last_global_spent_s = resp_user["global_spent_s"]
-            user_state.last_hub_contact_monotonic = time.monotonic()
-            if resp_user.get("policy_version"):
-                user_state.policy_version_applied = resp_user["policy_version"]
+            user_state.last_hub_contact_utc = now.timestamp()
+            user_state.cum_local_at_contact_s = user_state.cum_local_s
+
+            policy_payload = resp_user.get("policy")
+            if policy_payload:
+                # Only mark the version applied once every write in the
+                # policy actually succeeds -- previously this was set
+                # unconditionally off `policy_version` (present on every
+                # response, not just a changed one), which told the hub the
+                # push had landed on tick 1 even though nothing was ever
+                # written to timekpr, and the hub then never sent the
+                # payload again.
+                if _apply_policy_push(enforcer, username, policy_payload):
+                    user_state.policy_version_applied = resp_user["policy_version"]
+                else:
+                    log.warning("%s: policy push failed, will retry next tick", username)
+
+            if resp_user.get("enforcement") == "observe":
+                # Either an unmapped local username (hub doesn't know this
+                # account) or a device explicitly set to observe-only. The
+                # hub sends effective_limit_today_s=0/global_spent_s=0 for
+                # this case, which would otherwise converge the child
+                # straight to locked out -- skip convergence entirely
+                # instead, and say so once per transition rather than every
+                # 20s tick.
+                if user_state.last_enforcement != "observe":
+                    log.warning("%s: hub enforcement is 'observe' -- not writing any local limit", username)
+                user_state.last_enforcement = "observe"
+                continue
+            user_state.last_enforcement = "enforce"
 
             _apply_convergence(
                 enforcer=enforcer,
@@ -167,6 +244,7 @@ def run_tick(
                 offline_policy="closed",
                 offline_grace_s=0,
                 offline_cap_s=0,
+                now=now,
             )
     except HubUnreachableError as exc:
         log.warning("hub unreachable: %s -- applying offline policy", exc)
@@ -180,6 +258,7 @@ def run_tick(
                 offline_policy="capped",  # PLAN default; per-user override is hub-side (Phase 2 wiring)
                 offline_grace_s=DEFAULT_OFFLINE_GRACE_S,
                 offline_cap_s=DEFAULT_OFFLINE_CAP_S,
+                now=now,
             )
         next_poll_ms = min(next_poll_ms * 2, 300_000)
 
@@ -195,26 +274,75 @@ def _apply_convergence(*, enforcer, username, obs, target, user_state, force_abs
         cfg=CFG,
     )
     if result.op is not Op.NOOP:
+        log.info("%s: setTimeLeft(%s, %ds) -- %s", username, result.op.value, result.seconds, result.reason)
         enforcer.set_time_left(username, result.op.value, result.seconds)
     user_state.applied_offset_s = result.new_applied_offset_s
 
 
+def _apply_policy_push(enforcer: TimekprEnforcer, username: str, policy: dict) -> bool:
+    """Apply a hub policy payload to the local timekpr config. Only the
+    daily/weekly/monthly limits and allowed weekdays are pushed today --
+    allowed_hours, lockout_type and PlayTime have no hub-side editor yet
+    (docs/best-practices-review.md), so they're deliberately left alone.
+    In particular an empty `allowed_hours` must never be pushed: timekpr
+    could read that as "no hours allowed" rather than "unrestricted"."""
+    daily_limits = [int(x) for x in policy["daily_limits_s"]]
+    if len(daily_limits) != 7:
+        log.error(
+            "%s: policy has %d daily limits, timekpr requires 7 -- not applying", username, len(daily_limits)
+        )
+        return False
+
+    ok = True
+    allowed_weekdays = policy.get("allowed_weekdays") or []
+    if allowed_weekdays:
+        ok &= enforcer.set_allowed_days(username, allowed_weekdays)
+    ok &= enforcer.set_time_limit_for_days(username, daily_limits)
+    ok &= enforcer.set_time_limit_for_week(username, int(policy["weekly_limit_s"]))
+    ok &= enforcer.set_time_limit_for_month(username, int(policy["monthly_limit_s"]))
+    return ok
+
+
 def _apply_offline_policy(
-    *, enforcer, username, obs, user_state, offline_policy, offline_grace_s, offline_cap_s
+    *, enforcer, username, obs, user_state, offline_policy, offline_grace_s, offline_cap_s, now
 ) -> None:
-    """PLAN "Offline / hub-unreachable behavior" table."""
-    seconds_since_contact = time.monotonic() - user_state.last_hub_contact_monotonic
-    in_grace = seconds_since_contact < offline_grace_s
+    """PLAN "Offline / hub-unreachable behavior" table.
+
+    Uses wall-clock time (epoch seconds), never time.monotonic(): monotonic's
+    epoch is arbitrary and resets on reboot, which used to make
+    seconds_since_contact deeply negative after a restart -- in_grace read
+    True forever and the agent silently stayed unenforced while genuinely
+    offline (docs/best-practices-review.md). A negative or implausibly large
+    elapsed time here is treated as grace already expired, erring toward
+    `capped`/`closed`, never toward silently staying `open`.
+    """
+    seconds_since_contact = now.timestamp() - user_state.last_hub_contact_utc
+    in_grace = 0 <= seconds_since_contact < offline_grace_s
 
     if offline_policy == "open" or in_grace:
         return  # keep enforcing against the frozen last-known target; no new write needed
 
+    # Estimate today's global spend without ever refunding local activity
+    # that happened after the last hub contact -- naively converging to the
+    # stale `last_global_spent_s` every tick (the original bug) would
+    # refund everything used locally since then, so an offline device would
+    # stop counting time at all for as long as it's offline.
+    local_since_contact = max(user_state.cum_local_s - user_state.cum_local_at_contact_s, 0)
+    estimated_global_spent = user_state.last_global_spent_s + local_since_contact
+
     if offline_policy == "capped":
+        # The ceiling is anchored to the *frozen* last-known spend, not the
+        # live estimate -- anchoring it to `estimated_global_spent` instead
+        # (a tempting-looking simplification, caught by
+        # test_offline_capped_policy_still_enforces_the_cap) would make the
+        # cap always trail `offline_cap_s` ahead of current usage and never
+        # actually bind, defeating the entire point of an offline cap. The
+        # *target* still uses the live, never-refunded estimate, so time
+        # left correctly shrinks toward 0 as offline usage approaches it.
         capped_limit = min(
-            user_state.last_effective_limit_today_s,
-            user_state.cum_local_s + offline_cap_s,
+            user_state.last_effective_limit_today_s, user_state.last_global_spent_s + offline_cap_s
         )
-        target = HubTarget(limit_today_s=capped_limit, global_spent_s=user_state.last_global_spent_s)
+        target = HubTarget(limit_today_s=capped_limit, global_spent_s=estimated_global_spent)
         _apply_convergence(
             enforcer=enforcer,
             username=username,
@@ -235,22 +363,165 @@ def _apply_offline_policy(
         )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="timekpr-hub-agent")
-    parser.add_argument("--hub-url", required=True)
-    parser.add_argument("--users", required=True, help="comma-separated list of local usernames to manage")
-    parser.add_argument("--tz", default="UTC")
-    parser.add_argument("--state-path", default=str(state_mod.DEFAULT_STATE_PATH))
-    parser.add_argument("--once", action="store_true", help="run a single tick and exit (for testing)")
-    args = parser.parse_args()
+def _read_machine_id() -> str:
+    for path in MACHINE_ID_PATHS:
+        try:
+            return path.read_text().strip()
+        except OSError:
+            continue
+    raise RuntimeError(f"could not read a machine id from any of {[str(p) for p in MACHINE_ID_PATHS]}")
 
-    logging.basicConfig(level=logging.INFO)
 
-    enforcer = TimekprEnforcer()
-    hub = HubClient(HubClientConfig(base_url=args.hub_url))
+def _add_hub_connection_args(parser: argparse.ArgumentParser, env_values: dict[str, str]) -> None:
+    parser.add_argument(
+        "--hub-url",
+        default=config_mod.env_default("TIMEKPR_HUB_URL", env_values),
+        required=config_mod.env_default("TIMEKPR_HUB_URL", env_values) is None,
+    )
+    parser.add_argument(
+        "--token-path", default=str(DEFAULT_TOKEN_PATH), help="where the device bearer token lives"
+    )
+    parser.add_argument(
+        "--ca-cert",
+        default=config_mod.env_default("TIMEKPR_HUB_CA_CERT", env_values),
+        help="path to a CA bundle, for a hub with a self-signed cert",
+    )
+
+
+def _validate_users(enforcer: TimekprEnforcer, requested: list[str]) -> list[str]:
+    """Reject usernames timekpr doesn't know about, instead of silently
+    skipping them tick after tick (docs/best-practices-review.md /
+    Phase 2). Best-effort: if the user list can't be read at all (e.g.
+    timekprd not reachable right now), fall back to trusting the caller
+    rather than blocking enrollment on a transient DBUS hiccup."""
+    known = enforcer.get_user_list()
+    if not known:
+        return requested
+    unknown = [u for u in requested if u not in known]
+    if unknown:
+        raise SystemExit(
+            f"error: {', '.join(unknown)} not found in timekpr. "
+            f"Users timekpr knows about: {', '.join(known) or '(none configured)'}"
+        )
+    return requested
+
+
+def _prompt_for_users(enforcer: TimekprEnforcer) -> str:
+    known = enforcer.get_user_list()
+    if not known:
+        raise SystemExit(
+            "error: --users not given and could not list timekpr's users -- pass --users explicitly"
+        )
+    print(f"Users timekpr knows about: {', '.join(known)}")
+    chosen = input("Which should this hub manage? (comma-separated): ").strip()
+    if not chosen:
+        raise SystemExit("error: no users selected")
+    return chosen
+
+
+def _cmd_enroll(args: argparse.Namespace) -> None:
+    try:
+        enforcer = TimekprEnforcer()
+        timekprd_ok = enforcer.connect()
+    except TimekprNotFoundError as exc:
+        raise SystemExit(f"error: {exc}") from None
+    print(
+        "✓ timekpr-next found"
+        + (" and timekprd reachable" if timekprd_ok else " (timekprd not reachable yet -- continuing anyway)")
+    )
+
+    users_arg = args.users
+    if not users_arg:
+        if not sys.stdin.isatty():
+            raise SystemExit("error: --users is required when not running interactively")
+        users_arg = _prompt_for_users(enforcer)
+    local_users = [u.strip() for u in users_arg.split(",") if u.strip()]
+    if timekprd_ok:
+        local_users = _validate_users(enforcer, local_users)
+
+    local_policies = {}
+    for username in local_users:
+        snapshot = enforcer.get_user_policy_snapshot(username) if timekprd_ok else None
+        if snapshot:
+            local_policies[username] = snapshot
+
+    hub = HubClient(
+        HubClientConfig(base_url=args.hub_url, token_path=Path(args.token_path), ca_cert=args.ca_cert)
+    )
+    hostname = args.hostname or socket.gethostname()
+    machine_id = args.machine_id or _read_machine_id()
+
+    try:
+        data = hub.enroll(
+            enrollment_code=args.code,
+            hostname=hostname,
+            machine_id=machine_id,
+            os=args.os,
+            tz=args.tz,
+            agent_version=AGENT_VERSION,
+            local_users=local_users,
+            local_policies=local_policies,
+        )
+    except EnrollError as exc:
+        raise SystemExit(f"error: {exc}") from None
+
+    config_mod.chown_to_service_user(Path(args.token_path))
+    print(f"✓ enrolled as device {data['device_id']} (token written to {args.token_path}, mode 0600)")
+
+    hub_tz = data.get("hub_tz") or args.tz
+    for username in local_users:
+        policy = data.get("policies", {}).get(username)
+        if username in data.get("new_users", []):
+            note = (
+                "new hub user, policy seeded from this device"
+                if local_policies.get(username)
+                else "new hub user, hub default policy (1h/day) applied"
+            )
+        else:
+            note = "joined an existing hub user -- pooling with its other device(s)"
+        if policy:
+            hours = policy["daily_limits_s"][0] / 3600
+            print(f"  {username}: hub daily limit {hours:g}h ({note})")
+        else:
+            print(f"  {username}: {note}")
+
+    config_mod.write_env_file(
+        hub_url=args.hub_url, managed_users=",".join(local_users), tz=hub_tz, ca_cert=args.ca_cert
+    )
+    print(f"✓ config written to {config_mod.DEFAULT_ENV_PATH}")
+
+    if not args.no_start:
+        try:
+            subprocess.run(["systemctl", "enable", "--now", SERVICE_UNIT], check=True)
+            print(f"✓ {SERVICE_UNIT} enabled and started")
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"! could not enable/start the service automatically ({exc}); run:")
+            print(f"    sudo systemctl enable --now {SERVICE_UNIT}")
+
+
+def _cmd_run(args: argparse.Namespace) -> None:
+    hub = HubClient(
+        HubClientConfig(base_url=args.hub_url, token_path=Path(args.token_path), ca_cert=args.ca_cert)
+    )
     state_path = Path(args.state_path)
     state = state_mod.load(state_path)
     managed_users = [u.strip() for u in args.users.split(",") if u.strip()]
+
+    # Never exit on a transient condition -- timekprd not up yet, the hub
+    # unreachable, or (before the first successful enroll+config) missing
+    # settings altogether. Restart=always would bring the process back
+    # anyway, but that's a 10s outage window on every blip for no reason;
+    # looping here means the *next* tick just works once the transient
+    # condition clears. Only a genuinely unrecoverable setup problem
+    # (nothing here currently raises one after argparse) should exit.
+    enforcer: TimekprEnforcer | None = None
+    ready_sent = False
+    while enforcer is None:
+        try:
+            enforcer = TimekprEnforcer()
+        except TimekprNotFoundError as exc:
+            log.error("%s -- retrying in 30s", exc)
+            time.sleep(30)
 
     while True:
         next_poll_ms = run_tick(
@@ -258,13 +529,164 @@ def main() -> None:
             hub=hub,
             state=state,
             managed_users=managed_users,
-            agent_version="0.1.0",
+            agent_version=AGENT_VERSION,
             tz_name=args.tz,
         )
         state_mod.save(state, state_path)
+        if not ready_sent:
+            # First tick has completed (whether or not it reached the hub --
+            # that's exactly what the watchdog/offline handling is for), so
+            # systemd can stop waiting and consider the unit started.
+            sd_notify("READY=1")
+            ready_sent = True
+        sd_notify("WATCHDOG=1")
         if args.once:
             break
         time.sleep(next_poll_ms / 1000)
+
+
+def _check(label: str, ok: bool, detail: str = "") -> bool:
+    mark = "✓" if ok else "✗"
+    print(f"{mark} {label}" + (f" -- {detail}" if detail and not ok else ""))
+    return ok
+
+
+def _cmd_status(args: argparse.Namespace) -> None:
+    """`timekpr-hub-agent status`: one line per check, so a parent (or this
+    agent's own `run` at startup) can see exactly which link in the chain
+    is broken instead of a bare "it's not working" (docs/best-practices-
+    review.md / Phase 3)."""
+    all_ok = True
+
+    try:
+        enforcer = TimekprEnforcer()
+        all_ok &= _check("timekpr-next installed", True)
+    except TimekprNotFoundError as exc:
+        _check("timekpr-next installed", False, str(exc))
+        enforcer = None
+        all_ok = False
+
+    if enforcer is not None:
+        connected = enforcer.connect()
+        all_ok &= _check(
+            "timekprd reachable over DBUS", connected, "check group membership / timekprd status"
+        )
+
+    env_values = config_mod.read_env_file()
+    hub_url = config_mod.env_default("TIMEKPR_HUB_URL", env_values)
+    all_ok &= _check(
+        "config present", bool(hub_url), f"run `timekpr-hub-agent enroll` ({config_mod.DEFAULT_ENV_PATH})"
+    )
+
+    token_path = Path(args.token_path)
+    token_ok = token_path.exists() and os.access(token_path, os.R_OK)
+    all_ok &= _check("device token present and readable", token_ok, str(token_path))
+
+    try:
+        enabled = subprocess.run(
+            ["systemctl", "is-enabled", SERVICE_UNIT], capture_output=True, text=True, check=False
+        ).stdout.strip()
+        active = subprocess.run(
+            ["systemctl", "is-active", SERVICE_UNIT], capture_output=True, text=True, check=False
+        ).stdout.strip()
+        all_ok &= _check(f"service enabled ({enabled or 'unknown'})", enabled == "enabled")
+        all_ok &= _check(f"service active ({active or 'unknown'})", active == "active")
+    except OSError:
+        _check("service enabled/active", False, "systemctl not available")
+
+    if hub_url:
+        try:
+            hub = HubClient(
+                HubClientConfig(
+                    base_url=hub_url,
+                    token_path=token_path,
+                    ca_cert=config_mod.env_default("TIMEKPR_HUB_CA_CERT", env_values),
+                )
+            )
+            hub.sync(
+                {
+                    "agent_time": datetime.now(UTC).isoformat(),
+                    "tz": config_mod.env_default("TIMEKPR_HUB_TZ", env_values) or "UTC",
+                    "ntp_synced": True,
+                    "agent_version": AGENT_VERSION,
+                    "users": [],
+                }
+            )
+            all_ok &= _check("hub reachable", True)
+        except (HubUnreachableError, DeviceRevokedError) as exc:
+            all_ok &= _check("hub reachable", False, str(exc))
+
+    state = state_mod.load(Path(args.state_path))
+    managed_users = [
+        u.strip()
+        for u in (config_mod.env_default("TIMEKPR_HUB_MANAGED_USERS", env_values) or "").split(",")
+        if u.strip()
+    ]
+    for username in managed_users:
+        user_state = state.users.get(username)
+        if user_state is None:
+            print(f"  {username}: no sync recorded yet")
+            continue
+        last_sync = (
+            datetime.fromtimestamp(user_state.last_hub_contact_utc, UTC).isoformat()
+            if user_state.last_hub_contact_utc
+            else "never"
+        )
+        print(
+            f"  {username}: last sync {last_sync}, global spent {user_state.last_global_spent_s}s / "
+            f"limit {user_state.last_effective_limit_today_s}s, policy v{user_state.policy_version_applied}, "
+            f"enforcement={user_state.last_enforcement or 'unknown'}"
+        )
+
+    sys.exit(0 if all_ok else 1)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    env_values = config_mod.read_env_file()
+
+    parser = argparse.ArgumentParser(prog="timekpr-hub-agent")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = subparsers.add_parser("run", help="run the tick loop against an enrolled hub")
+    _add_hub_connection_args(run_parser, env_values)
+    run_parser.add_argument(
+        "--users",
+        default=config_mod.env_default("TIMEKPR_HUB_MANAGED_USERS", env_values),
+        required=config_mod.env_default("TIMEKPR_HUB_MANAGED_USERS", env_values) is None,
+        help="comma-separated list of local usernames to manage",
+    )
+    run_parser.add_argument("--tz", default=config_mod.env_default("TIMEKPR_HUB_TZ", env_values) or "UTC")
+    run_parser.add_argument("--state-path", default=str(state_mod.DEFAULT_STATE_PATH))
+    run_parser.add_argument("--once", action="store_true", help="run a single tick and exit (for testing)")
+    run_parser.set_defaults(func=_cmd_run)
+
+    enroll_parser = subparsers.add_parser(
+        "enroll", help="redeem an enrollment code, store the token, write config, and start the service"
+    )
+    _add_hub_connection_args(enroll_parser, env_values)
+    enroll_parser.add_argument("--code", required=True, help="one-time enrollment code from the hub")
+    enroll_parser.add_argument(
+        "--users",
+        default=None,
+        help="comma-separated local usernames this device reports (prompted interactively if omitted)",
+    )
+    enroll_parser.add_argument("--tz", default="UTC", help="overridden by the hub's HUB_TZ once enrolled")
+    enroll_parser.add_argument("--hostname", default=None, help="default: this machine's hostname")
+    enroll_parser.add_argument("--machine-id", default=None, help="default: /etc/machine-id")
+    enroll_parser.add_argument("--os", default="linux")
+    enroll_parser.add_argument(
+        "--no-start", action="store_true", help="don't run `systemctl enable --now` after enrolling"
+    )
+    enroll_parser.set_defaults(func=_cmd_enroll)
+
+    status_parser = subparsers.add_parser("status", help="check every link in the chain, one line per check")
+    status_parser.add_argument("--token-path", default=str(DEFAULT_TOKEN_PATH))
+    status_parser.add_argument("--state-path", default=str(state_mod.DEFAULT_STATE_PATH))
+    status_parser.set_defaults(func=_cmd_status)
+
+    args = parser.parse_args()
+    args.func(args)
 
 
 if __name__ == "__main__":

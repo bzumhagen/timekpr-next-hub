@@ -40,8 +40,13 @@ term in it at all. Computing it as `G - O` instead (an offset that still
 contains `+s`) is a tempting-looking but wrong simplification; it was caught
 by `tests/integration/test_multi_device_simulation.py`, whose multi-day
 simulation immediately diverged under it. Both a relative op and an absolute
-'=' converge BALANCE itself to exactly G; the only difference between them is
-whether `s` (the measurement) survives the write intact.
+'=' converge BALANCE itself to exactly G *when the device's own configured
+limit already equals the hub's effective limit*; see `HubTarget.limit_today_s`
+and `plan()`'s `target_balance` for the general case (mismatched limits,
+hub-side grants) where BALANCE converges to `G + L_dev - L_eff` instead so
+that time left still comes out to `L_eff - G` regardless of `L_dev`. The
+only difference between a relative op and an absolute '=' is whether `s`
+(the measurement) survives the write intact.
 """
 
 from __future__ import annotations
@@ -111,6 +116,15 @@ class HubTarget:
     """What the hub told the agent this tick."""
 
     limit_today_s: int
+    """L_eff: the hub's effective daily limit for this user (policy + grants).
+    Not necessarily equal to `Observation.limit_today_s` (the device's own
+    currently-configured limit, L_dev) -- they only agree once a policy push
+    has landed on this device via setTimeLimitForDays. Before that (every
+    device in Phase 1, since policy push wasn't wired up yet) or after a
+    hub-side grant (which never gets pushed as a limit change), L_eff and
+    L_dev can differ, and the target below is built to converge correctly
+    either way -- see `plan()`."""
+
     global_spent_s: int
     """G: the hub's canonical total spent today for this user, across all devices."""
 
@@ -180,12 +194,20 @@ def plan(
             reason="suppressed_one_device_at_a_time",
         )
 
-    # correction = R - O, where R = G - s (time spent *elsewhere*) and
-    # O = B - s. Expanding: (G - s) - (B - s) = G - B. Deliberately computed
-    # directly against observed.balance_s (not via observed_offset) so it
-    # carries no spent_local_s term at all: a relative op moves B by exactly
-    # `correction`, landing it on B == G, independent of s.
-    correction = target.global_spent_s - observed.balance_s
+    # Target BALANCE this tick is B* = G + (L_dev - L_eff), NOT plain G.
+    # Time left is always (device's limit) - BALANCE, so this makes time
+    # left come out to L_dev - B* = L_eff - G regardless of L_dev -- i.e.
+    # correct whether or not a policy push has landed on this device yet,
+    # and correct after a hub-side grant changes L_eff without ever being
+    # pushed down as a local limit change. When L_dev == L_eff (the
+    # steady-state case, once policy push has landed and there's no grant)
+    # this is exactly B* = G, the original behavior.
+    #
+    # correction = B* - B, expanded so it's computed directly against
+    # observed.balance_s (no spent_local_s term at all): a relative op
+    # moves B by exactly `correction`, landing it on B* independent of s.
+    target_balance = target.global_spent_s + observed.limit_today_s - target.limit_today_s
+    correction = target_balance - observed.balance_s
 
     needs_absolute = (
         force_absolute
@@ -199,23 +221,26 @@ def plan(
 
     if needs_absolute:
         # setTimeLeft(user, '=', secs) => BALANCE := DEVICE'S limit - secs.
-        # We want BALANCE == G, so secs := DEVICE'S limit - G. Using
-        # target.limit_today_s here instead (the hub's belief, which may not
-        # equal what's actually configured on this device until a policy push
-        # has landed) was a real bug, caught only by running the agent
-        # against a live daemon: BALANCE ended up at (local_limit - hub_limit)
-        # + G instead of G. See docs/agent-live-test-findings.md.
-        seconds = observed.limit_today_s - target.global_spent_s
+        # We want BALANCE == target_balance == G + L_dev - L_eff, so
+        #   secs := L_dev - target_balance = L_eff - G.
+        # Note this is independent of L_dev, and looks identical to the
+        # very bug fixed in docs/agent-live-test-findings.md (using
+        # target.limit_today_s where observed.limit_today_s was needed) --
+        # it isn't the same bug, because the *target* changed to compensate
+        # (see target_balance above): BALANCE still lands on
+        # G + L_dev - L_eff exactly, so time left is still L_eff - G. When
+        # L_dev == L_eff this reduces to the original `L_dev - G` formula.
+        seconds = target.limit_today_s - target.global_spent_s
         return Plan(
             op=Op.SET,
             seconds=seconds,
-            new_applied_offset_s=target.global_spent_s - observed.spent_local_s,
+            new_applied_offset_s=target_balance - observed.spent_local_s,
             local_grant_s=local_grant_s,
             reason=(
                 "force_absolute_rollover"
                 if force_absolute
                 else "balance_exceeds_limit"
-                if observed.balance_s > target.limit_today_s
+                if observed.balance_s > observed.limit_today_s
                 else "large_divergence"
             ),
         )

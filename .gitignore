@@ -13,3 +13,6 @@ dist/
 build/
 .coverage
 htmlcov/
+agent/packaging/pkg/
+agent/packaging/src/
+agent/packaging/*.pkg.tar.zst

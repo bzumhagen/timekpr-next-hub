@@ -13,15 +13,17 @@ picking any of these up, and update this file's status when you do.
 
 ## High — open
 
-- **No parent authentication, and the Caddyfile is set up for a public TLS
-  domain.** Every route in `hub/timekpr_hub/api/parent.py` and
-  `api/ui.py` has no auth dependency — anyone who can reach the hub can
-  grant screen time, approve devices, and mint enrollment codes. The
-  `Parent`/`ParentSession` tables (`hub/timekpr_hub/db/models.py:48-67`)
-  exist but nothing uses them. `CHECKLIST.md` already tracks this as
-  deferred to Phase 2 — flagging here so it isn't missed before any
-  deployment beyond a trusted LAN. **Do not point `deploy/Caddyfile`'s
-  `HUB_DOMAIN` at a real public domain until this lands.**
+- ~~**No parent authentication, and the Caddyfile is set up for a public
+  TLS domain.**~~ — **fixed**: every route in `api/parent.py` and
+  `api/ui.py` now requires a logged-in parent (`get_current_parent_api` /
+  `get_current_parent_ui` in `api/parent_auth.py`, applied router-level in
+  `app.py`), password hashed with argon2id, session cookie mirroring the
+  device-token pattern in `api/auth.py` (random token, only its sha256
+  persisted, in the existing `Parent`/`ParentSession` tables). First account
+  is created via a first-run `/setup` page that 404s once a parent exists —
+  a startup-time warning names the unclaimed-hub window until then. The
+  `deploy/Caddyfile` warning below still applies until that first account is
+  actually claimed on a given deployment.
 - ~~**Each device enforces its own local timekpr limit against the pooled
   total, not the hub's effective limit.**~~ — **fixed**: `plan()`
   (`core/timekpr_hub_core/convergence.py`) previously converged BALANCE to
@@ -66,23 +68,24 @@ picking any of these up, and update this file's status when you do.
 
 ## Medium — open
 
-- **Unvalidated input reaches the database and can 500.**
-  `EnrollRequest` (`core/timekpr_hub_core/models.py:45-52`) has no
-  `max_length` on any field, while the backing columns are bounded
-  (`name`/`hostname` `String(128)`, `machine_id` `String(64)`,
-  `agent_version` `String(32)`, `tz` `String(64)` — see
-  `hub/timekpr_hub/db/models.py`); an oversized value raises an unhandled
-  asyncpg `StringDataRightTruncationError`. `GrantCreate.seconds`
-  (`models.py:191`) has no bounds either, and `hub/timekpr_hub/api/ui.py`'s
-  form field is a bare `int`. `hub/timekpr_hub/api/sync.py:112` calls
-  `datetime.fromisoformat()` on raw strings with no `start < end` check.
-- **Enrollment-code and first-policy races.** `api/enroll.py:35-45` reads
+- ~~**Unvalidated input reaches the database and can 500.**~~ — **fixed**:
+  `EnrollRequest` now bounds every field with `max_length` matching its
+  backing column; `GrantCreate.seconds`/`reason` are bounded (±86400s,
+  255 chars) and the UI's grant form field carries the same bound;
+  `PolicyUpdate` (new) validates each daily limit is `0..86400`; and
+  `api/sync.py` now skips any `active_span`/`active_spans` entry where
+  `end <= start` instead of letting a malformed one reach `tstzrange`.
+- **Enrollment-code and first-policy races.** `api/enroll.py:39-46` reads
   the code row with a plain `SELECT`, not `SELECT ... FOR UPDATE` or a
   conditional `UPDATE ... WHERE used_at IS NULL`; two concurrent enrolls
   with the same code can both pass the check. Similarly,
-  `hub/timekpr_hub/services/policy.py:48-61`'s `create_initial_policy` can
+  `hub/timekpr_hub/services/policy.py`'s `create_initial_policy` can
   be raced by two devices syncing a brand-new user for the first time,
   raising on `uq_policies_user_version`. Neither path has rate limiting.
+  ~~`update_policy`'s own version of this race~~ — **fixed**: it now takes
+  `SELECT ... FOR UPDATE` on the user row for the duration
+  (`services/policy.py`'s `update_policy`, doc'd there) — only
+  `create_initial_policy` (the enroll-time / first-sync path) is still open.
 - **The engine, session factory, and settings are all built at import
   time.** `hub/timekpr_hub/db/session.py:15-22` and
   `hub/timekpr_hub/settings.py:23` — this is why `pyproject.toml` has to
@@ -97,12 +100,11 @@ picking any of these up, and update this file's status when you do.
   logic) each run ~3 queries per user; `/sync`
   (`hub/timekpr_hub/api/sync.py`) runs roughly 8 queries per reported
   user. A join or `IN`-batch would collapse most of these.
-- **No indexes for the hot `(user_id, day)` lookups** on
-  `activity_intervals` or `grants` (see
-  `hub/migrations/versions/fafdbdc4fd31_initial_schema.py`). `Base` has no
-  `MetaData(naming_convention=...)`
-  (`hub/timekpr_hub/db/models.py:35`), so constraints in that migration
-  are unnamed, which makes future Alembic autogenerate diffs noisier.
+- ~~**No indexes for the hot `(user_id, day)` lookups**~~ — **fixed** for
+  `activity_intervals` and `grants` (migration `8f3c2a1e9b04`); also added
+  the same for `usage_counters`, which had the same gap. `Base` still has
+  no `MetaData(naming_convention=...)` (`hub/timekpr_hub/db/models.py:35`),
+  so unrelated constraints remain unnamed — untouched here.
 - **Agent gaps:** `post_events` (`hubclient.py:99`) posts to
   `/api/v1/events`, which the hub does not implement, and `enforcer.py`
   still reaches into `timekprAdminConnector`'s private
@@ -152,9 +154,10 @@ picking any of these up, and update this file's status when you do.
 
 ## Low — open
 
-- Four parent-API endpoints (`create_grant`, `create_enrollment_code`,
-  `list_devices`, `approve_device` in `api/parent.py`) and `healthz`
-  (`app.py:23`) return bare `dict`s with no `response_model`.
+- Parent-API endpoints (`create_grant`, `create_enrollment_code`,
+  `list_devices`, `approve_device`, `revoke_device`, `delete_device` in
+  `api/parent.py`) and `healthz` (`app.py:70`) return bare `dict`s with no
+  `response_model`.
 - Handlers use `session: AsyncSession = Depends(get_session)` rather than
   an `Annotated[AsyncSession, Depends(...)]` type alias; `settings` is
   imported as a module-level global rather than injected, so it can't be
@@ -169,7 +172,7 @@ picking any of these up, and update this file's status when you do.
 - `hub/timekpr_hub/web/templates/index.html` loads htmx from a CDN with no
   Subresource Integrity hash.
 - The version string `0.1.0` is duplicated across every package's
-  `pyproject.toml`, `app.py:14`, `agent/timekpr_hub_agent/main.py:252`, and
+  `pyproject.toml`, `app.py:47`, `agent/timekpr_hub_agent/main.py:52`, and
   the PKGBUILD — nothing keeps them in sync.
 - **No LICENSE file exists.** `agent/packaging/PKGBUILD` declares
   `license=('GPL3')`, and the agent imports timekpr-next's own (GPL-3)

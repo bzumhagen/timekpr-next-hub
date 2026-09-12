@@ -152,3 +152,70 @@ async def test_wallclock_union_replay_is_idempotent(db_session):
     await db_session.commit()
 
     assert await global_spent_wallclock(db_session, user_id=user_id, day=today) == 600
+
+
+@pytest.mark.asyncio
+async def test_wallclock_floor_self_heals_a_union_that_lost_spans_to_an_outage(db_session):
+    """global_spent_wallclock must never read BELOW a single device's own
+    absolute counter -- that counter is idempotently MAX-merged and can
+    only be an honest floor. This is what makes the hub UI self-heal
+    minutes an outage would otherwise permanently erase from the union
+    (docs/agent-live-test-findings.md-style live discrepancy): the device's
+    cumulative_spent_s reflects everything it ever burned, even ticks whose
+    active_spans never made it to the hub before a later successful sync
+    replays them (main.py's pending_spans) -- and even before that replay
+    lands, this floor already reports the true total."""
+    user_id, (dev_a,) = await _make_user_and_devices(db_session, n_devices=1)
+    today = date(2026, 9, 9)
+
+    # Only a 5-minute span made it into activity_intervals (as if an outage
+    # swallowed the rest), but the absolute counter -- reported in the same
+    # /sync call -- already reflects 40 real minutes spent.
+    await insert_activity_interval(
+        db_session,
+        user_id=user_id,
+        device_id=dev_a,
+        day=today,
+        start=datetime(2026, 9, 9, 0, 0, 0, tzinfo=UTC),
+        end=datetime(2026, 9, 9, 0, 5, 0, tzinfo=UTC),
+        window_end_ts=datetime(2026, 9, 9, 0, 5, 0, tzinfo=UTC),
+    )
+    await upsert_usage_counter(db_session, user_id=user_id, device_id=dev_a, day=today, spent_seconds=2400)
+    await db_session.commit()
+
+    assert await global_spent_wallclock(db_session, user_id=user_id, day=today) == 2400
+
+
+@pytest.mark.asyncio
+async def test_wallclock_floor_does_not_override_a_larger_simultaneous_union(db_session):
+    """The floor must never pull the total DOWN either -- when the union
+    (two devices, non-overlapping) is already larger than any single
+    device's own counter, the union stays authoritative."""
+    user_id, (dev_a, dev_b) = await _make_user_and_devices(db_session, n_devices=2)
+    today = date(2026, 9, 9)
+
+    await insert_activity_interval(
+        db_session,
+        user_id=user_id,
+        device_id=dev_a,
+        day=today,
+        start=datetime(2026, 9, 9, 0, 0, 0, tzinfo=UTC),
+        end=datetime(2026, 9, 9, 0, 30, 0, tzinfo=UTC),
+        window_end_ts=datetime(2026, 9, 9, 0, 30, 0, tzinfo=UTC),
+    )
+    await insert_activity_interval(
+        db_session,
+        user_id=user_id,
+        device_id=dev_b,
+        day=today,
+        start=datetime(2026, 9, 9, 1, 0, 0, tzinfo=UTC),
+        end=datetime(2026, 9, 9, 1, 30, 0, tzinfo=UTC),
+        window_end_ts=datetime(2026, 9, 9, 1, 30, 0, tzinfo=UTC),
+    )
+    await upsert_usage_counter(db_session, user_id=user_id, device_id=dev_a, day=today, spent_seconds=1800)
+    await upsert_usage_counter(db_session, user_id=user_id, device_id=dev_b, day=today, spent_seconds=1800)
+    await db_session.commit()
+
+    # Union: 30min + 30min, non-overlapping -> 3600. Each device's own
+    # counter is only 1800 -- the floor must not clamp the total down to that.
+    assert await global_spent_wallclock(db_session, user_id=user_id, day=today) == 3600

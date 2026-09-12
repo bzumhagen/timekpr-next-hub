@@ -28,6 +28,7 @@ async def upsert_usage_counter(
     spent_seconds: int,
     raw_balance_s: int | None = None,
     raw_limit_today_s: int | None = None,
+    activity_state: str | None = None,
 ) -> None:
     """Idempotent MAX-merge: replaying the same (or an older) absolute
     counter is always safe, out-of-order arrival is harmless. See PLAN
@@ -39,6 +40,7 @@ async def upsert_usage_counter(
         spent_seconds=spent_seconds,
         raw_balance_s=raw_balance_s,
         raw_limit_today_s=raw_limit_today_s,
+        activity_state=activity_state,
     )
     stmt = stmt.on_conflict_do_update(
         index_elements=[UsageCounter.user_id, UsageCounter.device_id, UsageCounter.day],
@@ -46,6 +48,7 @@ async def upsert_usage_counter(
             "spent_seconds": text("GREATEST(usage_counters.spent_seconds, EXCLUDED.spent_seconds)"),
             "raw_balance_s": stmt.excluded.raw_balance_s,
             "raw_limit_today_s": stmt.excluded.raw_limit_today_s,
+            "activity_state": stmt.excluded.activity_state,
             "updated_at": text("now()"),
         },
     )
@@ -82,23 +85,66 @@ async def global_spent_wallclock(session: AsyncSession, *, user_id: uuid.UUID, d
     """Wall-clock union of all devices' activity for (user, day) -- the
     'burn once' accounting mode. Validated against real Postgres 16 with an
     overlapping two-device scenario (30min + 30min overlapping by 15min ->
-    45min, not 60min) during Phase 1 implementation."""
+    45min, not 60min) during Phase 1 implementation.
+
+    Floored at MAX(usage_counters.spent_seconds) across devices: that
+    absolute, idempotently MAX-merged counter is a hard lower bound on the
+    true total (a single device alone has definitely been active at least
+    that long), and self-heals anything the union under-counts -- a sync
+    that failed to reach the hub before the agent buffered/retried it
+    (main.py's pending_spans), or a tick's span that had to be trimmed
+    against the previous one (main.py's last_tick_utc clamp). The union
+    stays authoritative for the *simultaneous, multi-device* "burn once"
+    case, which this floor cannot express (summing per-device counters would
+    double-count concurrent sessions) -- this only ever pulls the total up
+    to what a single device's own honest counter already proves happened."""
     result = await session.execute(
         text(
             """
-            SELECT COALESCE(
-                (SELECT EXTRACT(EPOCH FROM SUM(upper(r) - lower(r)))::bigint
-                 FROM unnest(
-                     (SELECT range_agg(span) FROM activity_intervals
-                      WHERE user_id = :user_id AND day = :day)
-                 ) AS r),
-                0
+            SELECT GREATEST(
+                COALESCE(
+                    (SELECT EXTRACT(EPOCH FROM SUM(upper(r) - lower(r)))::bigint
+                     FROM unnest(
+                         (SELECT range_agg(span) FROM activity_intervals
+                          WHERE user_id = :user_id AND day = :day)
+                     ) AS r),
+                    0
+                ),
+                COALESCE(
+                    (SELECT MAX(spent_seconds) FROM usage_counters
+                     WHERE user_id = :user_id AND day = :day),
+                    0
+                )
             ) AS global_spent_s
             """
         ),
         {"user_id": user_id, "day": day},
     )
     return int(result.scalar_one())
+
+
+async def latest_activity_state(
+    session: AsyncSession, *, user_id: uuid.UUID, day: date
+) -> tuple[str, datetime | None]:
+    """The most recently updated device's reported activity_state for this
+    user today, plus that update's timestamp (so a caller can apply its own
+    staleness rule -- see hub/timekpr_hub/api/ui.py's 3x-poll-interval rule
+    -- rather than trusting a state a device stopped reporting hours ago)."""
+    result = await session.execute(
+        text(
+            """
+            SELECT activity_state, updated_at FROM usage_counters
+            WHERE user_id = :user_id AND day = :day AND activity_state IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ),
+        {"user_id": user_id, "day": day},
+    )
+    row = result.first()
+    if row is None:
+        return "logged_out", None
+    return str(row[0]), row[1]
 
 
 async def global_spent_parallel(session: AsyncSession, *, user_id: uuid.UUID, day: date) -> int:

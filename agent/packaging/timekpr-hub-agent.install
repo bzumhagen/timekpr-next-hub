@@ -6,8 +6,11 @@ post_install() {
 	cat <<-EOF
 	==> timekpr-hub-agent installed. Next step:
 	==>   sudo timekpr-hub-agent enroll --hub-url http://<hub>:8000 --code <code>
-	==> (get <code> from the hub's web UI "Generate enrollment code" button --
-	==> it prints this exact command with the code filled in.)
+	==> or just:
+	==>   sudo timekpr-hub-agent enroll
+	==> (it prompts for the hub URL, the code, and which local users to
+	==> manage. Get <code> from the hub's web UI "Generate enrollment code"
+	==> button.)
 	EOF
 }
 

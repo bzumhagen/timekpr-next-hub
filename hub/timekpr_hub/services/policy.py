@@ -11,7 +11,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from timekpr_hub_core.models import PolicyPayload
+from timekpr_hub_core.models import PolicyPayload, PolicyUpdate
 
 from timekpr_hub.db.models import Policy, User
 
@@ -74,4 +74,52 @@ async def create_initial_policy(
     )
     session.add(policy)
     await session.flush()
+    return policy
+
+
+async def update_policy(
+    session: AsyncSession, *, user: User, update: PolicyUpdate, created_by: str
+) -> Policy:
+    """A parent-initiated change: PUT /users/{u}/policy (api/parent.py) and
+    the UI's per-day-minutes form both funnel through here. Policies are
+    append-only (PLAN "Policy push, and the 'a parent edited it locally'
+    problem") -- this always inserts version + 1 and repoints
+    `current_policy_id` rather than mutating a row in place, so `sync.py`'s
+    `policy_version_applied != policy.version` check picks it up and pushes
+    it to every device on their very next tick.
+
+    Only the fields `PolicyUpdate` exposes (daily/weekly/monthly limits,
+    allowed weekdays) are settable through this Phase 1 editor;
+    allowed_hours/lockout_type/wake window/track_inactive/note carry forward
+    from the current policy unchanged, since there's no UI for them yet
+    (docs/best-practices-review.md).
+
+    `SELECT ... FOR UPDATE` on the user row for the duration guards against
+    two concurrent edits both reading the same current version and racing on
+    `uq_policies_user_version` (the same race flagged for enrollment in
+    docs/best-practices-review.md, now closed here too)."""
+    locked = await session.execute(select(User).where(User.id == user.id).with_for_update())
+    locked_user = locked.scalar_one()
+    current = await get_current_policy(session, locked_user)
+    next_version = (current.version + 1) if current else 1
+
+    policy = Policy(
+        user_id=locked_user.id,
+        version=next_version,
+        created_by=created_by,
+        daily_limits_json=update.daily_limits_s,
+        allowed_hours_json=current.allowed_hours_json if current else {},
+        allowed_weekdays_json=update.allowed_weekdays
+        or (current.allowed_weekdays_json if current else ["1", "2", "3", "4", "5", "6", "7"]),
+        weekly_limit_s=update.weekly_limit_s,
+        monthly_limit_s=update.monthly_limit_s,
+        lockout_type=current.lockout_type if current else "lock",
+        wake_from=current.wake_from if current else None,
+        wake_to=current.wake_to if current else None,
+        track_inactive=current.track_inactive if current else False,
+        note=current.note if current else None,
+    )
+    session.add(policy)
+    await session.flush()
+    locked_user.current_policy_id = policy.id
     return policy

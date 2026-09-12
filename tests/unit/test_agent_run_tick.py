@@ -1,7 +1,9 @@
 """run_tick-level regression tests for Phase 5e/5f and observe-mode handling,
 using FakeTimekprDaemon (already validated against the real daemon -- see
 fake_timekpr.py's module docstring) behind a minimal fake enforcer, and a
-scripted fake hub client instead of a real HubClient/httpx.
+scripted fake hub client instead of a real HubClient. (tests/e2e drives the
+real HubClient/urllib and a real hub against this same run_tick -- see its
+harness.py module docstring for why both are worth having.)
 """
 
 from __future__ import annotations
@@ -9,34 +11,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from timekpr_hub_agent import state as state_mod
-from timekpr_hub_agent.enforcer import UserObservation
 from timekpr_hub_agent.fake_timekpr import FakeTimekprDaemon
 from timekpr_hub_agent.hubclient import HubUnreachableError
 from timekpr_hub_agent.main import DEFAULT_OFFLINE_CAP_S, DEFAULT_OFFLINE_GRACE_S, run_tick
 
-
-class FakeEnforcer:
-    """Wraps one FakeTimekprDaemon per username -- just enough of
-    TimekprEnforcer's interface for run_tick."""
-
-    def __init__(self, daemons: dict[str, FakeTimekprDaemon]):
-        self.daemons = daemons
-
-    def get_user_observation(self, username: str) -> UserObservation | None:
-        d = self.daemons.get(username)
-        if d is None:
-            return None
-        return UserObservation(
-            balance_s=d.balance_s,
-            spent_day_s=d.spent_day_s,
-            limit_today_s=d.limit_today_s,
-            logged_in=True,
-            active=True,
-        )
-
-    def set_time_left(self, username: str, op: str, seconds: int) -> bool:
-        self.daemons[username].set_time_left(op, seconds)
-        return True
+from tests.e2e.harness import FakeEnforcer
 
 
 class ScriptedHub:
@@ -230,3 +209,152 @@ def test_offline_grace_and_cap_defaults_are_positive():
     # zeroed -- the tests above rely on a real grace window existing.
     assert DEFAULT_OFFLINE_GRACE_S > 0
     assert DEFAULT_OFFLINE_CAP_S > 0
+
+
+def test_active_span_start_never_overlaps_the_previous_ticks_end():
+    """The hub-undercount fix: a span's start is clamped to the previous
+    tick's own emitted end (state.last_tick_utc), not fabricated as
+    `now - burned_s` from scratch every time. Real wall-clock time between
+    the two run_tick() calls below is milliseconds, far less than the 300s
+    burned each tick -- without the clamp, the second span's naive start
+    (now2 - 300s) would land well BEFORE the first span's end, and the
+    hub's range_agg union would silently swallow that overlap."""
+    daemon = FakeTimekprDaemon(limit_today_s=7200)
+    enforcer = FakeEnforcer({"alice": daemon})
+    state = state_mod.AgentState()
+
+    daemon.tick(300, active=True)
+    hub = ScriptedHub([_sync_response("alice", effective_limit_today_s=7200, global_spent_s=300)])
+    run_tick(
+        enforcer=enforcer, hub=hub, state=state, managed_users=["alice"], agent_version="0.1.0", tz_name="UTC"
+    )
+    first_spans = hub.payloads[0]["users"][0]["active_spans"]
+    assert len(first_spans) == 1
+    first_end = datetime.fromisoformat(first_spans[0]["end"])
+
+    daemon.tick(300, active=True)
+    hub2 = ScriptedHub([_sync_response("alice", effective_limit_today_s=7200, global_spent_s=600)])
+    run_tick(
+        enforcer=enforcer,
+        hub=hub2,
+        state=state,
+        managed_users=["alice"],
+        agent_version="0.1.0",
+        tz_name="UTC",
+    )
+    second_spans = hub2.payloads[0]["users"][0]["active_spans"]
+    assert len(second_spans) == 1
+    second_start = datetime.fromisoformat(second_spans[0]["start"])
+
+    assert second_start >= first_end
+
+
+def test_failed_sync_buffers_the_span_and_the_next_success_replays_it():
+    """A sync that fails to reach the hub must not lose that tick's
+    activity from the wall-clock union forever -- it's buffered
+    (UserState.pending_spans) and resent alongside the next successful
+    tick's own span."""
+    daemon = FakeTimekprDaemon(limit_today_s=7200)
+    enforcer = FakeEnforcer({"alice": daemon})
+    state = state_mod.AgentState()
+
+    daemon.tick(300, active=True)
+    hub_fail = ScriptedHub([HubUnreachableError("down")])
+    run_tick(
+        enforcer=enforcer,
+        hub=hub_fail,
+        state=state,
+        managed_users=["alice"],
+        agent_version="0.1.0",
+        tz_name="UTC",
+    )
+    assert len(state.users["alice"].pending_spans) == 1
+
+    daemon.tick(300, active=True)
+    hub_ok = ScriptedHub([_sync_response("alice", effective_limit_today_s=7200, global_spent_s=600)])
+    run_tick(
+        enforcer=enforcer,
+        hub=hub_ok,
+        state=state,
+        managed_users=["alice"],
+        agent_version="0.1.0",
+        tz_name="UTC",
+    )
+
+    sent_spans = hub_ok.payloads[0]["users"][0]["active_spans"]
+    assert len(sent_spans) == 2  # the buffered one, then this tick's own
+    assert state.users["alice"].pending_spans == []  # cleared once it reaches the hub
+
+
+def test_now_override_is_ignored_without_debug_clock():
+    """The `now=`/`debug_clock=` escape hatch (tests/e2e/harness.py) must be
+    inert unless debug_clock=True is passed explicitly -- a caller that
+    passes `now=` alone (accidentally or otherwise) must still get the real
+    wall clock, so the guard can't be quietly bypassed later."""
+    daemon = FakeTimekprDaemon(limit_today_s=7200)
+    enforcer = FakeEnforcer({"alice": daemon})
+    hub = ScriptedHub([_sync_response("alice", effective_limit_today_s=7200, global_spent_s=0)])
+    state = state_mod.AgentState()
+
+    far_future = datetime(2999, 1, 1, tzinfo=UTC)
+    run_tick(
+        enforcer=enforcer,
+        hub=hub,
+        state=state,
+        managed_users=["alice"],
+        agent_version="0.1.0",
+        tz_name="UTC",
+        now=far_future,  # debug_clock deliberately omitted (defaults False)
+    )
+
+    sent_agent_time = datetime.fromisoformat(hub.payloads[0]["agent_time"])
+    assert sent_agent_time.year != 2999
+
+
+def test_now_override_is_honored_with_debug_clock():
+    daemon = FakeTimekprDaemon(limit_today_s=7200)
+    enforcer = FakeEnforcer({"alice": daemon})
+    hub = ScriptedHub([_sync_response("alice", effective_limit_today_s=7200, global_spent_s=0)])
+    state = state_mod.AgentState()
+
+    fixed = datetime(2030, 6, 15, 12, 0, 0, tzinfo=UTC)
+    run_tick(
+        enforcer=enforcer,
+        hub=hub,
+        state=state,
+        managed_users=["alice"],
+        agent_version="0.1.0",
+        tz_name="UTC",
+        debug_clock=True,
+        now=fixed,
+    )
+
+    assert hub.payloads[0]["agent_time"] == fixed.isoformat()
+
+
+def test_activity_state_is_draining_when_burning_and_idle_when_not():
+    """Ground truth for draining vs. idle is the tick-over-tick burn delta,
+    not a separate idle-hint field -- a tick with no new activity while
+    still logged in must report 'idle', not 'draining'."""
+    daemon = FakeTimekprDaemon(limit_today_s=7200)
+    enforcer = FakeEnforcer({"alice": daemon})
+    state = state_mod.AgentState()
+
+    daemon.tick(300, active=True)
+    hub = ScriptedHub([_sync_response("alice", effective_limit_today_s=7200, global_spent_s=300)])
+    run_tick(
+        enforcer=enforcer, hub=hub, state=state, managed_users=["alice"], agent_version="0.1.0", tz_name="UTC"
+    )
+    assert hub.payloads[0]["users"][0]["observed"]["activity_state"] == "draining"
+
+    # No new daemon.tick() this time -- nothing burned.
+    hub2 = ScriptedHub([_sync_response("alice", effective_limit_today_s=7200, global_spent_s=300)])
+    run_tick(
+        enforcer=enforcer,
+        hub=hub2,
+        state=state,
+        managed_users=["alice"],
+        agent_version="0.1.0",
+        tz_name="UTC",
+    )
+    assert hub2.payloads[0]["users"][0]["observed"]["activity_state"] == "idle"

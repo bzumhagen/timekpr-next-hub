@@ -132,6 +132,26 @@ def test_enroll_unreachable_hub_raises_enroll_error(tmp_path):
         )
 
 
+def test_enroll_with_a_schemeless_base_url_raises_enroll_error_not_a_traceback(tmp_path):
+    """A bare `urllib.request.Request` raises `ValueError: unknown url type`
+    for a scheme-less URL (e.g. "192.168.1.5:8000") -- neither URLError nor
+    OSError, so it used to escape every handler as a raw traceback instead
+    of the friendly EnrollError every other failure mode gets. The CLI
+    layer normalizes this away in practice (config.normalize_hub_url), but
+    this is the defensive second line in _post itself."""
+    client = HubClient(HubClientConfig(base_url="192.168.1.5:1", token_path=tmp_path / "token"))
+    with pytest.raises(EnrollError):
+        client.enroll(
+            enrollment_code="CODE1",
+            hostname="h",
+            machine_id="m",
+            os="linux",
+            tz="UTC",
+            agent_version="0.1.0",
+            local_users=["alice"],
+        )
+
+
 def test_sync_sends_bearer_token_and_returns_body(server, tmp_path):
     _, handler = server
     (tmp_path / "token").write_text("tkh_existing")

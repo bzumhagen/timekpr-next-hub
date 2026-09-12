@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 
+import pytest
 from timekpr_hub_agent import config as config_mod
 
 
@@ -79,3 +80,34 @@ def test_chown_to_service_user_is_a_noop_without_permission(tmp_path):
     # succeed harmlessly or raise -- either way this must not propagate.
     config_mod.chown_to_service_user(path, username=os.environ.get("USER", "root"))
     assert path.read_text() == "secret"
+
+
+def test_normalize_hub_url_inserts_missing_scheme():
+    assert config_mod.normalize_hub_url("hub.local:8000") == "http://hub.local:8000"
+    assert config_mod.normalize_hub_url("192.168.1.5:8000") == "http://192.168.1.5:8000"
+
+
+def test_normalize_hub_url_leaves_an_explicit_scheme_alone():
+    assert config_mod.normalize_hub_url("https://hub.local:8000") == "https://hub.local:8000"
+    assert config_mod.normalize_hub_url("HTTP://hub.local") == "HTTP://hub.local"
+
+
+def test_normalize_hub_url_strips_trailing_slash():
+    # Matters because the hub UI's own enrollment snippet is built from
+    # request.base_url, which always carries a trailing slash -- and
+    # write_env_file persists whatever this returns verbatim.
+    assert config_mod.normalize_hub_url("http://hub.local:8000/") == "http://hub.local:8000"
+
+
+def test_normalize_hub_url_strips_surrounding_whitespace():
+    assert config_mod.normalize_hub_url("  hub.local:8000  ") == "http://hub.local:8000"
+
+
+def test_normalize_hub_url_rejects_empty_input():
+    with pytest.raises(config_mod.InvalidHubUrlError):
+        config_mod.normalize_hub_url("   ")
+
+
+def test_normalize_hub_url_rejects_a_non_http_scheme():
+    with pytest.raises(config_mod.InvalidHubUrlError):
+        config_mod.normalize_hub_url("ftp://hub.local")

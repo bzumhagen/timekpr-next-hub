@@ -251,12 +251,102 @@ Proceeding to Phase 1.
   one-active-device leases, per-device weighting
 
 ### Phase 1 acceptance test (PLAN "Layer 5 — end-to-end acceptance")
-- [ ] Two devices, user with 1h limit: burn 40min on A, log into B, confirm ~20min left
-      within one sync interval
-- [ ] Burn remaining 20min on B, confirm both lock
-- [ ] Wall-clock test: both active simultaneously for 30min, confirm ~30min consumed not 60
+- [x] Two devices, user with 1h limit: burn 40min on A, log into B, confirm ~20min left
+      within one sync interval — `tests/e2e/test_acceptance.py::test_sequential_two_device_handoff`,
+      driving the real agent tick loop + real convergence math against a real hub over real HTTP
+      (see `tests/e2e/harness.py`)
+- [x] Burn remaining 20min on B, confirm both lock —
+      `test_both_devices_lock_at_the_shared_limit`, also checks the PLAN overshoot bound
+- [x] Wall-clock test: both active simultaneously for 30min, confirm ~30min consumed not 60 —
+      `test_wallclock_accounting_counts_overlapping_use_once`, the one scenario that drives real
+      overlapping `activity_intervals` through the real `range_agg` union
 
 ---
+
+## Phase 1.5 — Accuracy, device lifecycle, policy editor, parent auth
+
+Prompted by live dogfooding after Phase 1: the hub UI read noticeably less
+elapsed time than timekpr's own UI, uninstalling/reinstalling the agent
+silently forked a duplicate device, `enroll` couldn't be run fully
+interactively, and the two largest remaining UI/security gaps (no limit
+editor beyond additive grants, no parent auth at all) were closed together.
+
+- [x] **Time-accuracy fix** — `global_spent_wallclock` (`services/
+      aggregate.py`) now floors the `range_agg` union at
+      `MAX(usage_counters.spent_seconds)` across devices: that absolute,
+      idempotently MAX-merged counter is a hard lower bound on the true
+      total and self-heals anything the union under-counts, without
+      disturbing the union's authority for the genuinely-simultaneous
+      multi-device case. The agent (`main.py`) now clamps each tick's
+      `active_span` start to the *previous* tick's own emitted end
+      (`UserState.last_tick_utc`) instead of fabricating `now - burned_s`
+      from scratch, which used to reach backwards past the prior span
+      whenever a tick was delayed (the union then silently swallowed the
+      overlap — the dominant source of the discrepancy). A sync that fails
+      to reach the hub now buffers its span (`UserState.pending_spans`,
+      capped) and resends it with the next successful tick instead of
+      losing that activity from the union forever. Wire format changed
+      `active_span: ActiveSpan | None` → `active_spans: list[ActiveSpan]` to
+      carry replayed spans alongside the current tick's own.
+- [x] **Active/idle/offline indicator** — `UserObservation.active` used to
+      be a bare alias for `logged_in`; ground truth is now the tick-over-
+      tick burn delta (`draining` when it moved, `idle` when logged in but
+      not burning, `logged_out` otherwise) — no new DBUS field needed. Hub
+      stores `usage_counters.activity_state` and serves the most recent
+      non-stale device's value; the UI shows a badge per user and ticks the
+      displayed elapsed time live (extrapolating from `as_of`) while
+      draining, rather than only ever showing a value up to one 20s poll old.
+- [x] **Device rebind on re-enroll** (`api/enroll.py`) — a known,
+      non-revoked `machine_id` now rotates that device's token and reuses
+      its row (history intact) instead of creating a duplicate; `enroll`
+      prints `↻ re-bound to existing device …`. A partial unique index
+      (`uq_devices_machine_id_live`, migration `8f3c2a1e9b04`) enforces this
+      at the DB level while still letting a *revoked* device's machine_id
+      be reused by a genuinely new row. Added `revoke` (reversible, kills
+      the token immediately) and `delete` (hard, erases history) device
+      actions to both the parent API and the hub UI — previously `approve`
+      was the only device action available.
+- [x] **Fully interactive `enroll`** — `--code` is no longer
+      argparse-required and `--hub-url` is prompted for exactly like
+      `--users` already was (shared via a new `_prompt_or_die` helper);
+      typing a scheme-less host (`hub.local:8000`) is normalized to
+      `http://` (`config.normalize_hub_url`), and a malformed URL that
+      reaches `HubClient._post` anyway now raises a friendly `EnrollError`
+      instead of an uncaught `ValueError` traceback.
+- [x] **Daily-limit / policy editor** — `PUT /api/v1/users/{u}/policy` and
+      an inline hub-UI form insert a new append-only `Policy` version and
+      repoint `current_policy_id` (`services/policy.py::update_policy`,
+      `SELECT … FOR UPDATE`-guarded against the version race); the agent
+      already had the push/apply path built (Phase 1's Phase 5 work), so
+      this was the missing write path. This is now the only way to change a
+      child's *limit* through the hub — grants stay additive/day-scoped.
+- [x] **Parent authentication** — every route under `api/parent.py` and
+      `api/ui.py` now requires a logged-in parent (`api/parent_auth.py`'s
+      `get_current_parent_api`/`_ui`, applied router-level in `app.py`):
+      argon2id password hash, session cookie mirroring the device-token
+      pattern (`api/auth.py`) rather than a second scheme, first account
+      created via a first-run `/setup` page that 404s once claimed. Closes
+      the one open HIGH finding in `docs/best-practices-review.md`.
+- [x] Folded in three smaller `docs/best-practices-review.md` MEDIUM
+      findings while touching this code: `EnrollRequest`/`GrantCreate`/the
+      new `PolicyUpdate` now bound every field (previously an oversized
+      value could 500 as a raw asyncpg error); a malformed
+      `start >= end` span is now skipped rather than reaching `tstzrange`;
+      added the missing `(user_id, day)` indexes on `usage_counters`,
+      `activity_intervals`, and `grants`.
+- [x] **Closed**: `tests/e2e/harness.py` wires `FakeTimekprDaemon` + the real
+      agent tick loop (`run_tick`) + the real convergence math + a real hub
+      (uvicorn on an ephemeral port) + real Postgres into one process. The
+      Phase 1 acceptance boxes above and Verification Layer 5 below are now
+      checked from it (`tests/e2e/test_acceptance.py`), plus a Layer 6 chaos
+      starter (`tests/e2e/test_chaos.py`: a multi-tick hub outage with
+      buffer/replay, a backwards clock jump). `run_tick` gained an optional
+      `now`/`debug_clock` pair (default off, gated so a stray `now=` alone
+      is inert) to let the harness compress tens of minutes of simulated
+      activity into milliseconds without touching the real agent's clock
+      path. `make test-e2e` runs just this directory; `make test-all`
+      includes it. Layer 3 (a real-daemon `TK_DEV_ACTIVE` harness) is still
+      open — this closes the *simulated-daemon* end-to-end gap, not that one.
 
 ## Phase 2 — Robustness & centralized policy (PLAN: "Phase 2")
 - [ ] Full policy push w/ per-field change detection
@@ -290,12 +380,15 @@ README. The agent should eventually run on all of them; today only the
 Arch PKGBUILD exists. Systemd distros only (timekpr-next itself depends on
 logind for session tracking).
 
-- [ ] Make the agent stdlib-only: replace `httpx` (the agent's only
+- [x] Make the agent stdlib-only: replace `httpx` (the agent's only
       third-party dependency — it never imports `pydantic` itself) with
       `urllib.request`. The two POST calls it makes (enroll, sync) don't
       need more than the stdlib gives, and this drops the agent's runtime
       dependencies to just `python3`/`python3-dbus`/`python3-gi`, which
-      timekpr-next already requires on every supported distro.
+      timekpr-next already requires on every supported distro. Done —
+      `agent/timekpr_hub_agent/hubclient.py` is built on `urllib.request`,
+      and `agent/pyproject.toml` declares no `httpx` dependency (only
+      `timekpr-hub-core`, for its pure convergence/calendar logic).
 - [ ] Build `.deb`/`.rpm`/Arch packages from one payload (e.g.
       [nfpm](https://nfpm.goreleaser.com/)) in CI, attached to GitHub
       Releases — this also finally gives the Arch PKGBUILD a real
@@ -334,15 +427,22 @@ logind for session tracking).
       what caught the `G−O` vs `G−B` correction-formula bug above.**
 - [ ] Layer 3: `TK_DEV_ACTIVE` real-daemon integration harness (session bus, dev paths)
 - [x] Layer 4: FastAPI + httpx `AsyncClient` + real throwaway Postgres 16 (podman container) —
-      `tests/integration/test_aggregate_postgres.py` (3 tests: idempotent MAX-merge,
-      out-of-order arrival, wall-clock union via real `range_agg`) and
-      `tests/integration/test_hub_api.py` (6 tests: full enroll/approve/sync flow, single-use
-      codes, auth required, revoked-device fail-closed, two-device burn-once via real HTTP).
-      DST/ISO-week boundary coverage is in Layer 1 (`test_calendar.py`) since that logic is
-      pure and doesn't need Postgres. **46/46 tests passing** across all layers implemented so
-      far (skips gracefully to 40/40 if Postgres isn't reachable).
-- [ ] Layer 5: docker-compose e2e acceptance (see Phase 1 acceptance test above) — the
-      two-device scenarios in Layers 2 and 4 above already cover this logically; the
-      docker-compose packaging (real systemd agent + real timekprd containers) is still open
-- [ ] Layer 6: chaos tests (hub 500s, partitions, clock jumps, daemon restarts, corrupted state)
+      `tests/integration/test_aggregate_postgres.py` (7 tests: idempotent MAX-merge,
+      out-of-order arrival, wall-clock union via real `range_agg`, the `GREATEST` absolute-
+      counter floor self-healing a union that lost spans and NOT overriding a larger genuine
+      union) and `tests/integration/test_hub_api.py` (23 tests: full enroll/approve/sync flow,
+      single-use codes, auth required, revoked-device fail-closed, two-device burn-once via
+      real HTTP, machine_id rebind/revoke-then-reenroll, policy PUT + push-on-next-sync, the
+      full parent-auth login/setup/logout flow). DST/ISO-week boundary coverage is in Layer 1
+      (`test_calendar.py`) since that logic is pure and doesn't need Postgres. **119/119 tests
+      passing** across all layers implemented so far (skips gracefully if Postgres isn't
+      reachable) — see `make check`/`make test-all`.
+- [x] Layer 5: `tests/e2e/` (see Phase 1 acceptance test above) — the real agent tick loop
+      against a real hub (uvicorn) + real Postgres, not docker-compose packaging specifically
+      (a real systemd agent + real timekprd containers, still open) but the same logical gap
+      Layers 2 and 4 individually left unclosed
+- [x] Layer 6 (starter): `tests/e2e/test_chaos.py` — a multi-tick hub outage with span
+      buffer/replay, a backwards clock jump. Partitions, daemon restarts mid-tick, and a wider
+      sweep of corrupted-state variants are still open (some corrupted-state cases are already
+      covered without a DB in `tests/unit/test_agent_state.py`)
 - [ ] Layer 7: `--dry-run` against real machines for a week before enforcing

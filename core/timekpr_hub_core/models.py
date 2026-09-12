@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class EnforcementMode(str, Enum):
@@ -55,12 +55,17 @@ class LocalPolicySnapshot(BaseModel):
 
 
 class EnrollRequest(BaseModel):
-    enrollment_code: str
-    hostname: str
-    machine_id: str
-    os: str
-    tz: str
-    agent_version: str
+    # max_length values mirror the column sizes in hub/timekpr_hub/db/models.py
+    # (Device.hostname/machine_id/agent_version/tz, UserAlias.local_username)
+    # -- unbounded input here used to reach the DB and 500 as a raw
+    # asyncpg.StringDataRightTruncationError instead of a 422 (docs/best-
+    # practices-review.md).
+    enrollment_code: str = Field(max_length=16)
+    hostname: str = Field(max_length=255)
+    machine_id: str = Field(max_length=64)
+    os: str = Field(max_length=255)
+    tz: str = Field(max_length=64)
+    agent_version: str = Field(max_length=32)
     local_users: list[str] = Field(default_factory=list)
     local_policies: dict[str, LocalPolicySnapshot] = Field(default_factory=dict)
     """Keyed by local username, a subset of `local_users`. Only used to
@@ -82,6 +87,15 @@ class EnrollResponse(BaseModel):
     policies: dict[str, PolicyPayload] = Field(default_factory=dict)
     """Each reported user's current effective policy, so `enroll` can print
     a "this device: Xh/day -> hub: Yh/day" diff instead of enrolling silently."""
+    rebound: bool = False
+    """True when this enrollment matched an existing device by machine_id
+    and rotated its token in place, rather than creating a new device row --
+    see hub/timekpr_hub/api/enroll.py. Lets `enroll` tell a parent "re-bound
+    to your existing device" instead of quietly forking a second history for
+    the same machine after a reinstall."""
+    previously_enrolled_at: str | None = None
+    """ISO8601 -- when the rebound device was originally enrolled. None
+    unless `rebound` is True."""
 
 
 # --------------------------------------------------------------------------
@@ -101,12 +115,23 @@ class ActiveSpan(BaseModel):
     fed to `convergence.advance_cumulative`, not just `end - start`."""
 
 
+class ActivityState(str, Enum):
+    DRAINING = "draining"
+    """This tick burned real local activity -- the balance is actively moving."""
+
+    IDLE = "idle"
+    """Logged in, but nothing was burned this tick (locked screen, AFK)."""
+
+    LOGGED_OUT = "logged_out"
+
+
 class SyncObserved(BaseModel):
     balance_s: int
     spent_day_s: int
     limit_today_s: int
     logged_in: bool
     active: bool
+    activity_state: ActivityState = ActivityState.LOGGED_OUT
 
 
 class SyncUserRequest(BaseModel):
@@ -117,7 +142,13 @@ class SyncUserRequest(BaseModel):
     rollover."""
 
     cumulative_spent_s: int
-    active_span: ActiveSpan | None = None
+    active_spans: list[ActiveSpan] = Field(default_factory=list)
+    """Usually this tick's single span, but may carry more than one: any
+    spans a previous tick couldn't reach the hub with are buffered
+    (agent's UserState.pending_spans) and resent here rather than lost from
+    the wall-clock union forever -- insert_activity_interval is idempotent
+    on (device_id, window_end_ts), so replaying an already-recorded span is
+    a no-op."""
     observed: SyncObserved
     local_grant_s: int = 0
     policy_version_applied: int = 0
@@ -215,8 +246,8 @@ class EventBatch(BaseModel):
 
 
 class GrantCreate(BaseModel):
-    seconds: int
-    reason: str = ""
+    seconds: int = Field(ge=-86400, le=86400)
+    reason: str = Field(default="", max_length=255)
 
 
 class UserSummary(BaseModel):
@@ -226,3 +257,29 @@ class UserSummary(BaseModel):
     today_global_spent_s: int
     today_effective_limit_s: int
     devices_active_today: list[str] = Field(default_factory=list)
+    activity_state: ActivityState = ActivityState.LOGGED_OUT
+    """The most recent non-stale device's activity_state for this user (see
+    hub/timekpr_hub/api/ui.py's staleness rule) -- degrades to LOGGED_OUT once
+    no device has checked in recently."""
+    as_of: str | None = None
+    """ISO8601 timestamp of the sync that produced today_global_spent_s --
+    lets a viewer (the UI) extrapolate forward while DRAINING instead of
+    only ever showing a value up to one poll interval stale."""
+
+
+class PolicyUpdate(BaseModel):
+    """A parent-initiated change to a user's policy -- PUT /users/{u}/policy.
+    Always creates a new `Policy` version rather than mutating one in place
+    (see services/policy.py::update_policy)."""
+
+    daily_limits_s: list[int] = Field(min_length=7, max_length=7)
+    weekly_limit_s: int = Field(ge=0, le=7 * 86400)
+    monthly_limit_s: int = Field(ge=0, le=31 * 86400)
+    allowed_weekdays: list[str] = Field(default_factory=list)
+
+    @field_validator("daily_limits_s")
+    @classmethod
+    def _each_day_within_a_day(cls, value: list[int]) -> list[int]:
+        if any(v < 0 or v > 86400 for v in value):
+            raise ValueError("each daily limit must be between 0 and 86400 seconds")
+        return value

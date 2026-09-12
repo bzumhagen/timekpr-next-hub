@@ -102,16 +102,30 @@ async def sync(
             spent_seconds=user_sync.cumulative_spent_s,
             raw_balance_s=user_sync.observed.balance_s,
             raw_limit_today_s=user_sync.observed.limit_today_s,
+            activity_state=user_sync.observed.activity_state.value,
         )
-        if user_sync.active_span is not None:
+        for span in user_sync.active_spans:
+            # Each span is inserted independently and idempotently on
+            # (device_id, window_end_ts) -- normally exactly one (this
+            # tick's), but replayed buffered spans from an outage the agent
+            # couldn't reach the hub with (main.py's pending_spans) land here
+            # too, and re-inserting an already-recorded one is a no-op.
+            start = datetime.fromisoformat(span.start)
+            end = datetime.fromisoformat(span.end)
+            if end <= start:
+                # Malformed/zero-width span (clock oddity, bad buffering) --
+                # skip rather than let tstzrange or the union computation
+                # choke on it (docs/best-practices-review.md: unvalidated
+                # input can 500).
+                continue
             await insert_activity_interval(
                 session,
                 user_id=user.id,
                 device_id=device.id,
                 day=stamp.day,
-                start=datetime.fromisoformat(user_sync.active_span.start),
-                end=datetime.fromisoformat(user_sync.active_span.end),
-                window_end_ts=datetime.fromisoformat(user_sync.active_span.end),
+                start=start,
+                end=end,
+                window_end_ts=end,
             )
 
         # 2. recompute the global total per this user's accounting mode

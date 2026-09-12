@@ -16,7 +16,9 @@ import pytest_asyncio
 from asgi_lifespan import LifespanManager
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from timekpr_hub.api.parent_auth import get_current_parent_api, get_current_parent_ui
 from timekpr_hub.app import app
+from timekpr_hub.db.models import Parent
 from timekpr_hub.db.session import get_session
 
 from tests.dbutil import TEST_DATABASE_URL, require_db
@@ -50,6 +52,20 @@ async def _override_get_session():
         yield session
 
 
+# A stand-in parent for every test that isn't specifically exercising the
+# login flow itself -- most of this file predates parent auth and is
+# testing enroll/sync/device/grant behavior that has nothing to do with it,
+# so `client` bypasses the two get_current_parent_* dependencies the same
+# way it overrides get_session. `test_login_flow_*` and
+# `test_parent_and_ui_routes_require_login` below use `unauthenticated_client`
+# instead, which does NOT install this override.
+_FAKE_PARENT = Parent(id=uuid.uuid4(), email="test-parent@example.com", password_hash="unused-in-tests")
+
+
+async def _override_get_current_parent():
+    return _FAKE_PARENT
+
+
 @pytest_asyncio.fixture
 async def client():
     await require_db()
@@ -59,7 +75,37 @@ async def client():
         await session.execute(
             text(
                 "TRUNCATE users, devices, activity_intervals, usage_counters, "
-                "policies, enrollment_codes, grants CASCADE"
+                "policies, enrollment_codes, grants, parents, parent_sessions CASCADE"
+            )
+        )
+        await session.commit()
+
+    app.dependency_overrides[get_session] = _override_get_session
+    app.dependency_overrides[get_current_parent_api] = _override_get_current_parent
+    app.dependency_overrides[get_current_parent_ui] = _override_get_current_parent
+    try:
+        async with LifespanManager(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+                yield ac
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        app.dependency_overrides.pop(get_current_parent_api, None)
+        app.dependency_overrides.pop(get_current_parent_ui, None)
+
+
+@pytest_asyncio.fixture
+async def unauthenticated_client():
+    """Like `client`, but leaves the real parent-auth dependencies in place
+    -- for tests of the auth gate and the login/setup flow themselves."""
+    await require_db()
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        await session.execute(
+            text(
+                "TRUNCATE users, devices, activity_intervals, usage_counters, "
+                "policies, enrollment_codes, grants, parents, parent_sessions CASCADE"
             )
         )
         await session.commit()
@@ -433,7 +479,7 @@ async def test_full_enroll_approve_sync_flow_two_devices_wallclock_burn_once(cli
                         "username": "alpha",
                         "day": "2026-09-09",
                         "cumulative_spent_s": cumulative_s,
-                        "active_span": {"start": start, "end": end, "burned_s": cumulative_s},
+                        "active_spans": [{"start": start, "end": end, "burned_s": cumulative_s}],
                         "observed": {
                             "balance_s": cumulative_s,
                             "spent_day_s": cumulative_s,
@@ -456,3 +502,273 @@ async def test_full_enroll_approve_sync_flow_two_devices_wallclock_burn_once(cli
 
     assert result_a["global_spent_s"] == 1800
     assert result_b["global_spent_s"] == 1800  # same union, not 3600
+
+
+@pytest.mark.asyncio
+async def test_reenroll_with_known_machine_id_rebinds_instead_of_duplicating(client):
+    """The reported bug: uninstalling and reinstalling the agent (same
+    machine, same /etc/machine-id) used to enroll as a brand-new device
+    every time. It should now rebind to the existing device row, rotating
+    its token but keeping its id and history."""
+    await _seed_user("gina")
+
+    code1 = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    first = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code1,
+            "hostname": "gina-laptop",
+            "machine_id": "fixed-machine-id",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["gina"],
+        },
+    )
+    assert first.status_code == 201
+    first_device_id = first.json()["device_id"]
+    first_token = first.json()["device_token"]
+    assert first.json()["rebound"] is False
+
+    code2 = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    second = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code2,
+            "hostname": "gina-laptop",
+            "machine_id": "fixed-machine-id",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.2.0",
+            "local_users": ["gina"],
+        },
+    )
+    assert second.status_code == 201
+    assert second.json()["rebound"] is True
+    assert second.json()["device_id"] == first_device_id
+    assert second.json()["previously_enrolled_at"] is not None
+    # Token was rotated -- the old one no longer works.
+    second_token = second.json()["device_token"]
+    assert second_token != first_token
+
+    devices = (await client.get("/api/v1/devices")).json()
+    assert len(devices) == 1  # not two rows for the same machine
+
+    old_token_sync = await client.post(
+        "/api/v1/sync",
+        headers={"Authorization": f"Bearer {first_token}"},
+        json={
+            "agent_time": "2026-09-09T00:00:00+00:00",
+            "tz": "UTC",
+            "ntp_synced": True,
+            "agent_version": "0.1.0",
+            "users": [],
+        },
+    )
+    assert old_token_sync.status_code == 401
+
+    new_token_sync = await client.post(
+        "/api/v1/sync",
+        headers={"Authorization": f"Bearer {second_token}"},
+        json={
+            "agent_time": "2026-09-09T00:00:00+00:00",
+            "tz": "UTC",
+            "ntp_synced": True,
+            "agent_version": "0.2.0",
+            "users": [],
+        },
+    )
+    assert new_token_sync.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_revoked_device_can_be_reenrolled_as_a_genuinely_new_row(client):
+    """A parent who explicitly revokes a device (rather than it just being
+    reinstalled) should get a fresh device row on the next enroll with that
+    machine_id -- the partial unique index only covers non-revoked rows."""
+    await _seed_user("hank")
+
+    code1 = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    first = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code1,
+            "hostname": "hank-pc",
+            "machine_id": "hank-machine",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["hank"],
+        },
+    )
+    device_id = first.json()["device_id"]
+    revoke_resp = await client.post(f"/api/v1/devices/{device_id}/revoke")
+    assert revoke_resp.status_code == 200
+    assert revoke_resp.json()["status"] == "revoked"
+
+    code2 = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    second = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code2,
+            "hostname": "hank-pc",
+            "machine_id": "hank-machine",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["hank"],
+        },
+    )
+    assert second.status_code == 201
+    assert second.json()["rebound"] is False
+    assert second.json()["device_id"] != device_id
+
+
+@pytest.mark.asyncio
+async def test_policy_update_bumps_version_and_agent_receives_it_on_next_sync(client):
+    """PUT /users/{u}/policy is the only way to change a limit through the
+    hub (as opposed to an additive grant) -- confirm it creates a new policy
+    version and that the very next /sync carries the new payload down."""
+    await _seed_user("iris")
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    enroll_resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "iris-pc",
+            "machine_id": "iris-machine",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["iris"],
+        },
+    )
+    token = enroll_resp.json()["device_token"]
+    initial_version = enroll_resp.json()["policies"]["iris"]["version"]
+
+    update_resp = await client.put(
+        "/api/v1/users/iris/policy",
+        json={
+            "daily_limits_s": [5400] * 7,
+            "weekly_limit_s": 37800,
+            "monthly_limit_s": 162000,
+            "allowed_weekdays": ["1", "2", "3", "4", "5", "6", "7"],
+        },
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["version"] == initial_version + 1
+    assert update_resp.json()["daily_limits_s"] == [5400] * 7
+
+    sync_resp = await client.post(
+        "/api/v1/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "agent_time": "2026-09-09T00:00:00+00:00",
+            "tz": "UTC",
+            "ntp_synced": True,
+            "agent_version": "0.1.0",
+            "users": [
+                {
+                    "username": "iris",
+                    "day": "2026-09-09",
+                    "cumulative_spent_s": 0,
+                    "observed": {
+                        "balance_s": 0,
+                        "spent_day_s": 0,
+                        "limit_today_s": 3600,
+                        "logged_in": False,
+                        "active": False,
+                    },
+                    "local_grant_s": 0,
+                    "policy_version_applied": initial_version,  # stale -- hasn't seen the update yet
+                }
+            ],
+        },
+    )
+    assert sync_resp.status_code == 200
+    resp_user = sync_resp.json()["users"][0]
+    assert resp_user["policy_version"] == initial_version + 1
+    assert resp_user["policy"] is not None
+    assert resp_user["policy"]["daily_limits_s"] == [5400] * 7
+    assert resp_user["effective_limit_today_s"] == 5400
+
+
+@pytest.mark.asyncio
+async def test_policy_update_rejects_out_of_range_daily_limit(client):
+    await _seed_user("jax")
+    resp = await client.put(
+        "/api/v1/users/jax/policy",
+        json={
+            "daily_limits_s": [999999] + [3600] * 6,  # over 86400
+            "weekly_limit_s": 25200,
+            "monthly_limit_s": 108000,
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_parent_and_ui_routes_require_login(unauthenticated_client):
+    """Every parent/UI route 401s (JSON) or redirects to /login (HTML)
+    without a valid session -- the fix for the "everything is open on the
+    LAN" finding."""
+    c = unauthenticated_client
+    api_resp = await c.get("/api/v1/users")
+    assert api_resp.status_code == 401
+
+    ui_resp = await c.get("/ui/users-fragment", follow_redirects=False)
+    assert ui_resp.status_code in (302, 303, 307)
+    assert ui_resp.headers["location"] == "/login"
+
+
+@pytest.mark.asyncio
+async def test_login_flow_setup_then_login_then_logout(unauthenticated_client):
+    c = unauthenticated_client
+
+    # No parent exists yet -- /setup is reachable, /login bounces to it.
+    login_before_setup = await c.get("/login", follow_redirects=False)
+    assert login_before_setup.status_code == 303
+    assert login_before_setup.headers["location"] == "/setup"
+
+    setup_resp = await c.post(
+        "/setup", data={"email": "parent@example.com", "password": "correcthorsebattery"}
+    )
+    assert setup_resp.status_code == 303
+    assert setup_resp.headers["location"] == "/"
+    assert "tkh_session" in setup_resp.cookies
+
+    # /setup is now locked -- a second account can't be created this way.
+    setup_again = await c.get("/setup")
+    assert setup_again.status_code == 404
+
+    # The session cookie httpx just captured authenticates subsequent calls.
+    authed_resp = await c.get("/api/v1/users")
+    assert authed_resp.status_code == 200
+
+    logout_resp = await c.post("/logout")
+    assert logout_resp.status_code == 303
+    assert logout_resp.headers["location"] == "/login"
+
+    # Cookie is gone/invalidated -- back to 401.
+    after_logout = await c.get("/api/v1/users")
+    assert after_logout.status_code == 401
+
+    # And logging back in with the right password works.
+    login_resp = await c.post(
+        "/login", data={"email": "parent@example.com", "password": "correcthorsebattery"}
+    )
+    assert login_resp.status_code == 303
+    assert login_resp.headers["location"] == "/"
+    assert (await c.get("/api/v1/users")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_login_with_wrong_password_is_rejected(unauthenticated_client):
+    c = unauthenticated_client
+    await c.post("/setup", data={"email": "parent2@example.com", "password": "correcthorsebattery"})
+    await c.post("/logout")
+
+    resp = await c.post("/login", data={"email": "parent2@example.com", "password": "wrong-password"})
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login?error=1"
+    assert (await c.get("/api/v1/users")).status_code == 401

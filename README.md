@@ -205,15 +205,34 @@ command to run, with the hub's own URL and the code already filled in:
 sudo timekpr-hub-agent enroll --hub-url http://<hub>:8000 --code K7F29Q
 ```
 
-This preflights the local timekpr install, prompts for which local users
-to manage if `--users` isn't given (validating each against timekpr's own
-user list), redeems the code, writes the device token (`0600`, owned by
-the service's own user — safe to re-run against a device that's already
-been running for a while), writes `/etc/timekpr-hub-agent/agent.env`, and
-enables + starts the service. A parent-minted code is itself the
-approval — there's no separate "approve this device" step to do
-afterward. Pass `--no-start` to skip the last step, or `--ca-cert` for a
-hub with a self-signed certificate.
+Or just run it bare:
+
+```sh
+sudo timekpr-hub-agent enroll
+```
+
+`enroll` prompts for anything you didn't pass on the command line: the hub
+URL (typing just `hub.local:8000` is fine — `http://` is assumed if you
+leave off a scheme), the enrollment code, and which local users to manage
+(from timekpr's own user list, validated against it). Flags always take
+precedence, so scripted/unattended enrollment (e.g. from a provisioning
+tool) is unaffected — pass everything and nothing is prompted.
+
+This preflights the local timekpr install, redeems the code, writes the
+device token (`0600`, owned by the service's own user — safe to re-run
+against a device that's already been running for a while), writes
+`/etc/timekpr-hub-agent/agent.env`, and enables + starts the service. A
+parent-minted code is itself the approval — there's no separate "approve
+this device" step to do afterward. Pass `--no-start` to skip the last
+step, or `--ca-cert` for a hub with a self-signed certificate.
+
+Re-enrolling from the same machine (e.g. after `pacman -R` + `pacman -U`,
+or a fresh OS install machine-id aside) is detected by `machine_id` and
+**rebinds** to the existing device row instead of creating a duplicate —
+`enroll` prints `↻ re-bound to existing device …` when this happens, and
+that device's history (past usage, activity) is preserved. A parent who
+wants a clean slate for a machine should revoke or delete the old device
+in the hub UI first.
 
 Check `sudo timekpr-hub-agent status` afterward — one ✓/✗ line per link in
 the chain (timekpr installed, DBUS reachable, config present, token
@@ -227,8 +246,10 @@ user's last sync and current balance.
   sitting there looking alive), and deliberately has no `After=`/`Requires=`
   ordering against `timekprd` or `dbus` — it retries its own DBUS
   connection every tick, so starting in any order is fine. `enroll` runs
-  `systemctl enable --now`, so a fresh enrollment survives a reboot without
-  a separate step.
+  `systemctl enable` + `restart`, so a fresh enrollment survives a reboot
+  without a separate step, and a re-enroll (e.g. a rebind after a
+  reinstall) always picks up its new token immediately rather than leaving
+  an already-running service on the old one.
 - Its offline-grace clock is wall-clock, not `time.monotonic()` (whose
   epoch resets on reboot) — so a reboot while the hub is unreachable can't
   make the agent think it's still "recently in contact" and stay
@@ -251,24 +272,22 @@ user's last sync and current balance.
 | `DATABASE_URL` | `postgresql+asyncpg://timekpr_hub:timekpr_hub@localhost:5432/timekpr_hub` | Set explicitly in any real deployment |
 | `HUB_TZ` | `UTC` | The one household timezone every day/week/month boundary is computed in |
 
-**Agent** (`timekpr-hub-agent` CLI flags / `agent.env`, written by `enroll` —
-see "Enrolling a device" above): three subcommands, `enroll`, `run`, and
-`status`. `enroll` and `run` both take `--hub-url`, `--token-path` (default
-`/var/lib/timekpr-hub-agent/device_token`) and `--ca-cert`; a flag always
-overrides the matching env var, which overrides `agent.env`.
+**Agent** (`timekpr-hub-agent` CLI flags / `agent.env`): two subcommands,
+`enroll` and `run`; both take `--hub-url`, `--token-path` (default
+`/var/lib/timekpr-hub-agent/device_token`) and `--ca-cert` (for a
+self-signed hub).
 
 | Flag | env var (via `agent.env`) | Notes |
 |---|---|---|
-| `run`/`enroll --hub-url` | `TIMEKPR_HUB_URL` | Required unless already set via env/`agent.env` |
-| `run --users` | `TIMEKPR_HUB_MANAGED_USERS` | Comma-separated local usernames |
-| `run`/`enroll --ca-cert` | `TIMEKPR_HUB_CA_CERT` | For a hub with a self-signed certificate |
-| `run --tz` | `TIMEKPR_HUB_TZ` | Overwritten by the hub's `HUB_TZ` on the next successful sync |
-| `run --state-path` / `status --state-path` | | Default `/var/lib/timekpr-hub-agent/state.json` |
+| `run --hub-url` (required) / `enroll --hub-url` | `TIMEKPR_HUB_URL` | `run` requires it up front (it's what systemd launches non-interactively); `enroll` prompts if omitted, and normalizes a scheme-less value to `http://` |
+| `run --users` (required) | `TIMEKPR_HUB_MANAGED_USERS` | Comma-separated local usernames |
+| `run --tz` / `enroll --tz` | `TIMEKPR_HUB_TZ` | Default `UTC` — see the review's note that this isn't yet used for the agent's own day-rollover math |
+| `run --state-path` | | Default `/var/lib/timekpr-hub-agent/state.json` |
 | `run --once` | | Run a single tick and exit, for testing |
-| `enroll --code` (required) | | One-time enrollment code from the hub |
+| `enroll --code` | | One-time enrollment code from the hub; prompted if omitted |
 | `enroll --users` | | Comma-separated; prompted interactively (from timekpr's own user list) if omitted |
-| `enroll --no-start` | | Don't `systemctl enable --now` after enrolling |
 | `enroll --hostname` / `--machine-id` / `--os` | | Default to the local machine's own values |
+| `enroll --no-start` | | Don't enable/restart the service after enrolling |
 
 ## Further reading
 

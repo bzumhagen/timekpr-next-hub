@@ -79,16 +79,27 @@ class HubClient:
         both `OSError` subtypes it can wrap, but are caught the same way by
         callers below either way)."""
         url = self._config.base_url.rstrip("/") + path
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/json", **(headers or {})},
-        )
         try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json", **(headers or {})},
+            )
             with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=self._ssl_context) as resp:
                 body = resp.read()
                 return resp.status, (json.loads(body) if body else {})
+        except ValueError as exc:
+            # A scheme-less or otherwise malformed base_url (e.g.
+            # "192.168.1.5:8000") makes urllib.request.Request itself raise
+            # "ValueError: unknown url type" -- neither URLError nor
+            # OSError, so it used to escape every handler below (and every
+            # caller's) as a raw traceback instead of a friendly
+            # HubUnreachableError/EnrollError. config.normalize_hub_url
+            # prevents this at the CLI layer already; this is the defensive
+            # second line in case base_url reaches here some other way (a
+            # hand-edited agent.env, a future caller).
+            raise urllib.error.URLError(str(exc)) from exc
         except urllib.error.HTTPError as exc:
             # Still a completed HTTP exchange (the hub responded, just with
             # an error status) -- urllib raises this instead of returning it

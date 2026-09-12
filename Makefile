@@ -23,7 +23,7 @@ PROD_COMPOSE := $(COMPOSE) -f deploy/docker-compose.yml --env-file deploy/.env
 DEV_DATABASE_URL ?= postgresql+asyncpg://timekpr_hub:timekpr_hub@127.0.0.1:55432/timekpr_hub_dev
 TEST_DATABASE_URL ?= postgresql+asyncpg://timekpr_hub:timekpr_hub@127.0.0.1:55432/timekpr_hub_test
 
-.PHONY: help install lock upgrade fmt lint typecheck test test-db test-all check \
+.PHONY: help install lock upgrade fmt lint typecheck test test-db test-e2e test-all check \
         db-up db-down db-shell migrate migrate-test revision dev \
         build build-wheels image deploy-up deploy-down deploy-logs clean distclean
 
@@ -69,6 +69,10 @@ test: .venv/.synced ## Run tests that need no external services (unit/property/s
 test-db: .venv/.synced db-up migrate-test ## Run only the Postgres-backed tests (starts/migrates the dev DB first)
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" TIMEKPR_HUB_REQUIRE_DB=1 \
 		$(UV) run pytest -m db $(PYTEST_ARGS)
+
+test-e2e: .venv/.synced db-up migrate-test ## Run only the end-to-end acceptance/chaos tests (real agent tick loop + real hub + real Postgres)
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" TIMEKPR_HUB_REQUIRE_DB=1 \
+		$(UV) run pytest tests/e2e $(PYTEST_ARGS)
 
 test-all: .venv/.synced db-up migrate-test ## Run the full suite in one process, DB required (this is CI's gate)
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" TIMEKPR_HUB_REQUIRE_DB=1 \

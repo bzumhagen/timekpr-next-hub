@@ -57,6 +57,13 @@ SERVICE_UNIT = "timekpr-hub-agent.service"
 DEFAULT_OFFLINE_GRACE_S = 900
 DEFAULT_OFFLINE_CAP_S = 1800
 
+# Cap on UserState.pending_spans -- bounds how much state.json can grow
+# during a long hub outage. Oldest buffered spans are dropped first; only
+# the wall-clock union's accuracy for that window is affected (the absolute
+# cumulative_spent_s counter, and hence enforcement, is never lost either
+# way -- see docs for global_spent_wallclock's GREATEST floor).
+MAX_PENDING_SPANS = 200
+
 
 def _canonical_day_str(dt: datetime, tz_name: str) -> str:
     """The agent's own best guess at "today", in the household's timezone
@@ -87,13 +94,29 @@ def run_tick(
     managed_users: list[str],
     agent_version: str,
     tz_name: str,
+    debug_clock: bool = False,
+    now: datetime | None = None,
 ) -> int:
     """One full tick across every managed user. Returns the next poll delay
     in milliseconds (hub-provided when reachable, a local fallback
-    otherwise -- PLAN "Overshoot bound and sync interval")."""
-    now = datetime.now(UTC)
+    otherwise -- PLAN "Overshoot bound and sync interval").
+
+    `now`/`debug_clock` exist only for tests/e2e's compressed-time simulation
+    (tests/e2e/harness.py) -- `now` is honored ONLY when `debug_clock=True`,
+    so a stray `now=` reaching this function some other way is inert rather
+    than silently overriding the agent's notion of "today", which drives
+    canonical-day rollover, offline grace, and every emitted activity span.
+    `_cmd_run` (the systemd/production path) never sets either, and neither
+    is exposed as a `run` CLI flag -- nothing a parent or a unit file can
+    type should be able to move this clock.
+    """
+    if debug_clock and now is not None:
+        log.debug("run_tick: debug_clock override active, now=%s", now.isoformat())
+    else:
+        now = datetime.now(UTC)
     sync_users = []
     observations: dict[str, tuple] = {}
+    this_tick_spans: dict[str, dict | None] = {}
     today_str = _canonical_day_str(now, state.hub_tz or tz_name)
 
     for username in managed_users:
@@ -139,25 +162,55 @@ def run_tick(
         # negative -- advance_cumulative never decreases cum_local_s).
         burned_this_tick_s = max(cum_state.cum_local_s - cum_local_before, 0)
 
+        # Ground truth for draining vs. idle: the burn delta is exactly what
+        # moved the counter this tick, so it needs no separate idle-hint
+        # field from timekpr. A first tick (no prior state) has nothing to
+        # diff against, so it falls back to `logged_in`.
+        if burned_this_tick_s > 0:
+            activity_state = "draining"
+        elif obs.logged_in:
+            activity_state = "idle"
+        else:
+            activity_state = "logged_out"
+
+        span = None
+        if obs.active and burned_this_tick_s > 0:
+            # Clamp the start to the end of the previous tick's own emitted
+            # span (last_tick_utc) rather than always backdating by
+            # burned_this_tick_s from `now`: a delayed tick, a suspend/
+            # resume, or the first-tick baseline (which credits the whole of
+            # today's pre-existing spent_day_s as one big delta) would
+            # otherwise fabricate a start that reaches *before* the previous
+            # span's end, and the hub's range_agg union silently swallows
+            # that overlap (this was the dominant source of the hub reading
+            # low against timekpr's own UI). last_tick_utc == 0.0 means "no
+            # prior span this device has ever reported" -- nothing to clamp
+            # against yet.
+            start = now - timedelta(seconds=burned_this_tick_s)
+            if user_state.last_tick_utc:
+                start = max(start, datetime.fromtimestamp(user_state.last_tick_utc, UTC))
+            span = {"start": start.isoformat(), "end": now.isoformat(), "burned_s": burned_this_tick_s}
+
+        this_tick_spans[username] = span
         observations[username] = (obs, force_absolute)
         sync_users.append(
             {
                 "username": username,
                 "day": today_str,
                 "cumulative_spent_s": user_state.cum_local_s,
-                "active_span": {
-                    "start": (now - timedelta(seconds=max(burned_this_tick_s, 1))).isoformat(),
-                    "end": now.isoformat(),
-                    "burned_s": burned_this_tick_s,
-                }
-                if obs.active and burned_this_tick_s > 0
-                else None,
+                # Buffered spans from a previous failed sync (see the
+                # exception handlers below) go out first, oldest first, so
+                # the hub's wall-clock union never permanently loses activity
+                # to an outage -- insert_activity_interval is idempotent, so
+                # replaying an already-recorded one is free.
+                "active_spans": user_state.pending_spans + ([span] if span else []),
                 "observed": {
                     "balance_s": obs.balance_s,
                     "spent_day_s": obs.spent_day_s,
                     "limit_today_s": obs.limit_today_s,
                     "logged_in": obs.logged_in,
                     "active": obs.active,
+                    "activity_state": activity_state,
                 },
                 "local_grant_s": 0,  # unexplained-offset detection happens per-user below
                 "policy_version_applied": user_state.policy_version_applied,
@@ -190,6 +243,13 @@ def run_tick(
             user_state.last_global_spent_s = resp_user["global_spent_s"]
             user_state.last_hub_contact_utc = now.timestamp()
             user_state.cum_local_at_contact_s = user_state.cum_local_s
+
+            # Everything buffered (plus this tick's own span) reached the
+            # hub successfully -- drop the buffer, and remember where this
+            # tick's span ended so the next tick clamps against it.
+            user_state.pending_spans = []
+            if this_tick_spans.get(username):
+                user_state.last_tick_utc = now.timestamp()
 
             policy_payload = resp_user.get("policy")
             if policy_payload:
@@ -236,6 +296,7 @@ def run_tick(
         log.error("device token revoked -- entering closed enforcement immediately")
         for username, (obs, _force) in observations.items():
             user_state = state.user(username)
+            _buffer_unsent_span(user_state, this_tick_spans.get(username))
             _apply_offline_policy(
                 enforcer=enforcer,
                 username=username,
@@ -250,6 +311,7 @@ def run_tick(
         log.warning("hub unreachable: %s -- applying offline policy", exc)
         for username, (obs, _force) in observations.items():
             user_state = state.user(username)
+            _buffer_unsent_span(user_state, this_tick_spans.get(username))
             _apply_offline_policy(
                 enforcer=enforcer,
                 username=username,
@@ -263,6 +325,20 @@ def run_tick(
         next_poll_ms = min(next_poll_ms * 2, 300_000)
 
     return next_poll_ms
+
+
+def _buffer_unsent_span(user_state: state_mod.UserState, span: dict | None) -> None:
+    """This tick's span never reached the hub (sync raised) -- buffer it so
+    the next successful sync replays it instead of the activity vanishing
+    from the wall-clock union forever (see UserState.pending_spans). Caps at
+    MAX_PENDING_SPANS, dropping the oldest first; cumulative_spent_s (and
+    therefore enforcement) is unaffected regardless -- only the union's
+    accuracy for whatever gets dropped would be."""
+    if span is None:
+        return
+    user_state.pending_spans.append(span)
+    if len(user_state.pending_spans) > MAX_PENDING_SPANS:
+        user_state.pending_spans = user_state.pending_spans[-MAX_PENDING_SPANS:]
 
 
 def _apply_convergence(*, enforcer, username, obs, target, user_state, force_absolute) -> None:
@@ -372,11 +448,23 @@ def _read_machine_id() -> str:
     raise RuntimeError(f"could not read a machine id from any of {[str(p) for p in MACHINE_ID_PATHS]}")
 
 
-def _add_hub_connection_args(parser: argparse.ArgumentParser, env_values: dict[str, str]) -> None:
+def _add_hub_connection_args(
+    parser: argparse.ArgumentParser, env_values: dict[str, str], *, prompt_if_missing: bool = False
+) -> None:
     parser.add_argument(
         "--hub-url",
         default=config_mod.env_default("TIMEKPR_HUB_URL", env_values),
-        required=config_mod.env_default("TIMEKPR_HUB_URL", env_values) is None,
+        # `run` (prompt_if_missing=False) keeps today's behavior: argparse
+        # itself rejects a missing value up front, since `run` is what
+        # systemd launches non-interactively and a clear "the following
+        # arguments are required" beats a confusing failure three calls
+        # later. `enroll` (prompt_if_missing=True) never argparse-requires
+        # it -- a parent running it bare gets prompted instead (see
+        # _prompt_or_die in _cmd_enroll), and a non-interactive caller still
+        # gets a clean, equivalent error from that same helper.
+        required=(not prompt_if_missing) and config_mod.env_default("TIMEKPR_HUB_URL", env_values) is None,
+        help="e.g. http://hub.local:8000 (http:// is assumed if you omit a scheme)"
+        + ("; prompted if omitted" if prompt_if_missing else ""),
     )
     parser.add_argument(
         "--token-path", default=str(DEFAULT_TOKEN_PATH), help="where the device bearer token lives"
@@ -386,6 +474,22 @@ def _add_hub_connection_args(parser: argparse.ArgumentParser, env_values: dict[s
         default=config_mod.env_default("TIMEKPR_HUB_CA_CERT", env_values),
         help="path to a CA bundle, for a hub with a self-signed cert",
     )
+
+
+def _prompt_or_die(value: str | None, *, label: str, flag: str) -> str:
+    """The interactive-input pattern shared by every prompted `enroll`
+    argument (users, hub URL, code): fall through to a clean, actionable
+    error rather than blocking forever when stdin isn't a terminal (a
+    systemd unit, a script, CI) -- bare `input()` there would hang or raise
+    EOFError instead of naming the flag to pass explicitly."""
+    if value:
+        return value
+    if not sys.stdin.isatty():
+        raise SystemExit(f"error: {flag} is required when not running interactively")
+    entered = input(f"{label}: ").strip()
+    if not entered:
+        raise SystemExit(f"error: no {label.lower()} given")
+    return entered
 
 
 def _validate_users(enforcer: TimekprEnforcer, requested: list[str]) -> list[str]:
@@ -445,15 +549,22 @@ def _cmd_enroll(args: argparse.Namespace) -> None:
         if snapshot:
             local_policies[username] = snapshot
 
-    hub = HubClient(
-        HubClientConfig(base_url=args.hub_url, token_path=Path(args.token_path), ca_cert=args.ca_cert)
+    hub_url_input = _prompt_or_die(
+        args.hub_url, label="Hub URL (e.g. http://hub.local:8000)", flag="--hub-url"
     )
+    try:
+        hub_url = config_mod.normalize_hub_url(hub_url_input)
+    except config_mod.InvalidHubUrlError as exc:
+        raise SystemExit(f"error: {exc}") from None
+    code = _prompt_or_die(args.code, label="Enrollment code", flag="--code")
+
+    hub = HubClient(HubClientConfig(base_url=hub_url, token_path=Path(args.token_path), ca_cert=args.ca_cert))
     hostname = args.hostname or socket.gethostname()
     machine_id = args.machine_id or _read_machine_id()
 
     try:
         data = hub.enroll(
-            enrollment_code=args.code,
+            enrollment_code=code,
             hostname=hostname,
             machine_id=machine_id,
             os=args.os,
@@ -466,7 +577,20 @@ def _cmd_enroll(args: argparse.Namespace) -> None:
         raise SystemExit(f"error: {exc}") from None
 
     config_mod.chown_to_service_user(Path(args.token_path))
-    print(f"✓ enrolled as device {data['device_id']} (token written to {args.token_path}, mode 0600)")
+    if data.get("rebound"):
+        # Same machine_id as an existing, non-revoked device -- the hub
+        # rotated that device's token and reused its row instead of forking
+        # a second history for the same machine (e.g. after `pacman -R` +
+        # `pacman -U` and a re-enroll). Say so explicitly: silently doing
+        # this without telling the parent looks identical to a fresh
+        # enrollment, and they may reasonably expect a new device to appear.
+        since = data.get("previously_enrolled_at", "")
+        print(
+            f"↻ re-bound to existing device {data['device_id']} "
+            f"(first enrolled {since or 'previously'}; token rotated, history preserved)"
+        )
+    else:
+        print(f"✓ enrolled as device {data['device_id']} (token written to {args.token_path}, mode 0600)")
 
     hub_tz = data.get("hub_tz") or args.tz
     for username in local_users:
@@ -486,17 +610,34 @@ def _cmd_enroll(args: argparse.Namespace) -> None:
             print(f"  {username}: {note}")
 
     config_mod.write_env_file(
-        hub_url=args.hub_url, managed_users=",".join(local_users), tz=hub_tz, ca_cert=args.ca_cert
+        hub_url=hub_url, managed_users=",".join(local_users), tz=hub_tz, ca_cert=args.ca_cert
     )
     print(f"✓ config written to {config_mod.DEFAULT_ENV_PATH}")
 
     if not args.no_start:
         try:
-            subprocess.run(["systemctl", "enable", "--now", SERVICE_UNIT], check=True)
-            print(f"✓ {SERVICE_UNIT} enabled and started")
+            # `enable --now` is a no-op on an *already-running* unit -- it
+            # only ensures the unit is enabled and started, neither of
+            # which changes for a unit that's already both. That silently
+            # orphaned the token this enroll just wrote: a re-enroll while
+            # the service was already active (e.g. a rebind after a
+            # reinstall) left the running process holding the OLD token in
+            # memory (HubClient loads it once, at __init__) while the DB
+            # now expects the new one, and every subsequent /sync 401'd --
+            # which the agent treats as DeviceRevokedError and enters
+            # `closed` enforcement immediately, i.e. the child looks locked
+            # out for no reason even though the hub thinks everything is
+            # fine. `enable` (idempotent, no restart) followed by an
+            # unconditional `restart` (starts a stopped unit, restarts a
+            # running one) covers both the first-ever enroll and every
+            # re-enroll after it with the same two commands.
+            subprocess.run(["systemctl", "enable", SERVICE_UNIT], check=True)
+            subprocess.run(["systemctl", "restart", SERVICE_UNIT], check=True)
+            print(f"✓ {SERVICE_UNIT} enabled and (re)started")
         except (OSError, subprocess.CalledProcessError) as exc:
-            print(f"! could not enable/start the service automatically ({exc}); run:")
+            print(f"! could not enable/restart the service automatically ({exc}); run:")
             print(f"    sudo systemctl enable --now {SERVICE_UNIT}")
+            print(f"    sudo systemctl restart {SERVICE_UNIT}")
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
@@ -664,8 +805,10 @@ def main() -> None:
     enroll_parser = subparsers.add_parser(
         "enroll", help="redeem an enrollment code, store the token, write config, and start the service"
     )
-    _add_hub_connection_args(enroll_parser, env_values)
-    enroll_parser.add_argument("--code", required=True, help="one-time enrollment code from the hub")
+    _add_hub_connection_args(enroll_parser, env_values, prompt_if_missing=True)
+    enroll_parser.add_argument(
+        "--code", default=None, help="one-time enrollment code from the hub (prompted if omitted)"
+    )
     enroll_parser.add_argument(
         "--users",
         default=None,

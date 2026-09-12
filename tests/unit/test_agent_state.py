@@ -85,3 +85,23 @@ def test_user_creates_default_state_on_first_access():
     state = AgentState()
     assert state.user("bob") == UserState()
     assert "bob" in state.users
+
+
+def test_save_and_load_round_trip_pending_spans_and_last_tick_utc(tmp_path):
+    """The A1/A2 accuracy fix's new fields: a buffered span (from a failed
+    sync) and the previous tick's end must survive a restart just like
+    everything else in state.json."""
+    path = tmp_path / "state.json"
+    original = AgentState()
+    original.user("alice").last_tick_utc = 1_700_000_100.0
+    original.user("alice").pending_spans = [
+        {"start": "2026-01-01T00:00:00+00:00", "end": "2026-01-01T00:05:00+00:00", "burned_s": 300}
+    ]
+
+    save(original, path)
+    loaded = load(path)
+
+    assert loaded.users["alice"].last_tick_utc == 1_700_000_100.0
+    assert loaded.users["alice"].pending_spans == [
+        {"start": "2026-01-01T00:00:00+00:00", "end": "2026-01-01T00:05:00+00:00", "burned_s": 300}
+    ]

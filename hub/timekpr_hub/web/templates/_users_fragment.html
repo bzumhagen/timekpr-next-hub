@@ -1,17 +1,51 @@
 {% for u in users %}
-<div class="user-card">
+<div class="user-card"
+     data-activity="{{ u.activity_state }}"
+     data-as-of="{{ u.as_of or '' }}"
+     data-spent-s="{{ u.today_global_spent_s }}"
+     data-limit-s="{{ u.today_effective_limit_s }}">
   <div class="row">
     <strong>{{ u.display_name }}</strong>
-    <span>{{ u.today_global_spent_s // 60 }} / {{ u.today_effective_limit_s // 60 }} min today</span>
+    <span class="badge {{ u.activity_state }}">
+      {%- if u.activity_state == 'draining' -%}
+        &#9679; active now
+      {%- elif u.activity_state == 'idle' -%}
+        &#9679; idle
+      {%- else -%}
+        &#9675; offline
+      {%- endif -%}
+    </span>
+  </div>
+  <div class="row">
+    <span>
+      <span class="spent-display">{{ "%d:%02d" | format(u.today_global_spent_s // 3600, (u.today_global_spent_s % 3600) // 60) }}</span>
+      / {{ "%d:%02d" | format(u.today_effective_limit_s // 3600, (u.today_effective_limit_s % 3600) // 60) }} today
+    </span>
   </div>
   <div class="bar-track">
     {% set pct = (u.today_global_spent_s / u.today_effective_limit_s * 100) if u.today_effective_limit_s else 0 %}
     <div class="bar-fill {% if pct >= 100 %}over{% endif %}" style="width: {{ [pct, 100] | min }}%;"></div>
   </div>
-  <form hx-post="/ui/users/{{ u.username }}/grants" hx-target="closest .user-card" hx-swap="outerHTML">
-    <input type="hidden" name="seconds" value="1800">
-    <button type="submit">+30 min</button>
-  </form>
+  <div class="actions">
+    <form hx-post="/ui/users/{{ u.username }}/grants" hx-target="closest .user-card" hx-swap="outerHTML">
+      <input type="hidden" name="seconds" value="1800">
+      <button type="submit">+30 min</button>
+    </form>
+    <form hx-post="/ui/users/{{ u.username }}/grants" hx-target="closest .user-card" hx-swap="outerHTML">
+      <input type="hidden" name="seconds" value="-1800">
+      <button type="submit">-30 min</button>
+    </form>
+  </div>
+  <details>
+    <summary>Edit daily limit</summary>
+    <form hx-post="/ui/users/{{ u.username }}/policy" hx-target="closest .user-card" hx-swap="outerHTML" class="policy-form">
+      <label>
+        Minutes/day (every day)
+        <input type="number" name="minutes_per_day" min="0" max="1440" value="{{ u.daily_limit_minutes }}">
+      </label>
+      <button type="submit">Save</button>
+    </form>
+  </details>
 </div>
 {% else %}
 <p>No users yet.</p>

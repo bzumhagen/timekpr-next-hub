@@ -1,13 +1,15 @@
-"""Minimal Phase 1 UI (PLAN: "One UI page: per-user usage bar split by
+"""Minimal Phase 1+ UI (PLAN: "One UI page: per-user usage bar split by
 device, +30 min button, daily-limit editor, device list (Jinja2 + HTMX)").
 
 Deliberately thin: reuses the same service functions as the JSON parent API
 (`api/parent.py`) rather than duplicating logic, and renders server-side
 HTML fragments that HTMX swaps in on a poll interval -- no client-side JS
-beyond htmx.min.js itself, matching PLAN's "no npm, no build step" choice.
+beyond htmx.min.js itself and a small inline ticker (see _users_fragment.html),
+matching PLAN's "no npm, no build step" choice.
 
-Daily-limit editing is not wired yet (still todo -- tracked in
-CHECKLIST.md); the usage bar, device list/approval, and +30 min grant are.
+Every route here (and every /api/v1/* parent route) requires an
+authenticated parent session -- see `get_current_parent` in
+`api/parent_auth.py`, applied router-level in `app.py`.
 """
 
 from __future__ import annotations
@@ -22,12 +24,17 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.calendar import canonical_stamp
+from timekpr_hub_core.models import PolicyUpdate
 
 from timekpr_hub.db.models import Device, Grant, User
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.aggregate import global_spent_parallel, global_spent_wallclock
+from timekpr_hub.services.aggregate import (
+    global_spent_parallel,
+    global_spent_wallclock,
+    latest_activity_state,
+)
 from timekpr_hub.services.limits import effective_daily_limit
-from timekpr_hub.services.policy import get_current_policy
+from timekpr_hub.services.policy import get_current_policy, update_policy
 from timekpr_hub.settings import settings
 
 router = APIRouter()
@@ -39,14 +46,28 @@ async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html", {})
 
 
-async def _user_summaries(session: AsyncSession) -> list[dict]:
+async def _user_summaries(session: AsyncSession, *, usernames: list[str] | None = None) -> list[dict]:
     now = datetime.now(UTC)
     stamp = canonical_stamp(now, settings.tz)
 
-    result = await session.execute(select(User))
+    query = select(User)
+    if usernames is not None:
+        query = query.where(User.canonical_username.in_(usernames))
+    result = await session.execute(query)
+
     summaries = []
     for user in result.scalars().all():
         policy = await get_current_policy(session, user)
+        activity_state, activity_as_of = await latest_activity_state(session, user_id=user.id, day=stamp.day)
+        # Degrade a stale device's last-reported state to "logged_out" using
+        # the same 3x-poll-interval rule as the devices fragment below --
+        # otherwise a device that stopped syncing hours ago would leave the
+        # badge stuck on whatever it last reported (often "draining").
+        if activity_as_of is None or (now - activity_as_of).total_seconds() > 3 * (
+            settings.default_next_poll_ms / 1000
+        ):
+            activity_state = "logged_out"
+
         if policy is None:
             summaries.append(
                 {
@@ -54,6 +75,9 @@ async def _user_summaries(session: AsyncSession) -> list[dict]:
                     "display_name": user.display_name,
                     "today_global_spent_s": 0,
                     "today_effective_limit_s": 0,
+                    "activity_state": activity_state,
+                    "as_of": activity_as_of.isoformat() if activity_as_of else None,
+                    "daily_limit_minutes": 0,
                 }
             )
             continue
@@ -68,6 +92,13 @@ async def _user_summaries(session: AsyncSession) -> list[dict]:
                 "display_name": user.display_name,
                 "today_global_spent_s": spent,
                 "today_effective_limit_s": limit_today,
+                "activity_state": activity_state,
+                "as_of": activity_as_of.isoformat() if activity_as_of else None,
+                # Seed value for the editor's "minutes/day" field -- the
+                # policy's Monday entry, converted for display only; the
+                # editor always writes all seven days at once (Phase 1
+                # scope, see services/policy.py::update_policy).
+                "daily_limit_minutes": policy.daily_limits_json[0] // 60,
             }
         )
     return summaries
@@ -83,7 +114,7 @@ async def users_fragment(request: Request, session: AsyncSession = Depends(get_s
 async def grant_from_ui(
     request: Request,
     username: str,
-    seconds: int = Form(...),
+    seconds: int = Form(..., ge=-86400, le=86400),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     result = await session.execute(select(User).where(User.canonical_username == username))
@@ -91,24 +122,50 @@ async def grant_from_ui(
     if user is not None:
         now = datetime.now(UTC)
         stamp = canonical_stamp(now, settings.tz)
+        minutes = seconds / 60
         session.add(
             Grant(
                 id=uuid.uuid4(),
                 user_id=user.id,
                 day=stamp.day,
                 seconds=seconds,
-                reason="+30 min (UI)",
+                reason=f"{minutes:+g} min (UI)",
                 source="parent",
                 granted_by="ui",
             )
         )
         await session.commit()
 
-    users = await _user_summaries(session)
-    this_user = next((u for u in users if u["username"] == username), None)
-    return templates.TemplateResponse(
-        request, "_users_fragment.html", {"users": [this_user] if this_user else []}
-    )
+    users = await _user_summaries(session, usernames=[username])
+    return templates.TemplateResponse(request, "_users_fragment.html", {"users": users})
+
+
+@router.post("/ui/users/{username}/policy", response_class=HTMLResponse)
+async def update_policy_ui(
+    request: Request,
+    username: str,
+    minutes_per_day: int = Form(..., ge=0, le=1440),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """The simple case of the policy editor: one minutes/day value applied
+    to all seven days. Per-day overrides go through the JSON API
+    (PUT /api/v1/users/{username}/policy) until there's demand for a richer
+    per-day form here."""
+    result = await session.execute(select(User).where(User.canonical_username == username))
+    user = result.scalar_one_or_none()
+    if user is not None:
+        seconds_per_day = minutes_per_day * 60
+        body = PolicyUpdate(
+            daily_limits_s=[seconds_per_day] * 7,
+            weekly_limit_s=seconds_per_day * 7,
+            monthly_limit_s=seconds_per_day * 30,
+            allowed_weekdays=["1", "2", "3", "4", "5", "6", "7"],
+        )
+        await update_policy(session, user=user, update=body, created_by="ui")
+        await session.commit()
+
+    users = await _user_summaries(session, usernames=[username])
+    return templates.TemplateResponse(request, "_users_fragment.html", {"users": users})
 
 
 @router.get("/ui/devices-fragment", response_class=HTMLResponse)
@@ -162,6 +219,40 @@ async def approve_device_ui(
     return await devices_fragment(request, session)
 
 
+@router.post("/ui/devices/{device_id}/revoke", response_class=HTMLResponse)
+async def revoke_device_ui(
+    request: Request, device_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """Kills the device's token immediately (get_current_device 403s a
+    revoked device on its very next sync) without touching any history it
+    already contributed -- the reversible, default action. See
+    /ui/devices/{id} (DELETE) for the destructive alternative."""
+    result = await session.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is not None:
+        device.status = "revoked"
+        await session.commit()
+    return await devices_fragment(request, session)
+
+
+@router.post("/ui/devices/{device_id}/delete", response_class=HTMLResponse)
+async def delete_device_ui(
+    request: Request, device_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """Hard delete -- FK cascades drop this device's usage_counters,
+    activity_intervals and user_aliases too, which *rewrites* that user's
+    historical totals for any day this device contributed to. Revoke is the
+    button offered by default; this one sits behind the template's own
+    confirm() and is for "I enrolled the wrong thing" cleanup, not routine
+    device retirement."""
+    result = await session.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is not None:
+        await session.delete(device)
+        await session.commit()
+    return await devices_fragment(request, session)
+
+
 @router.post("/ui/enrollment-codes", response_class=HTMLResponse)
 async def create_enrollment_code_ui(
     request: Request, session: AsyncSession = Depends(get_session)
@@ -169,15 +260,15 @@ async def create_enrollment_code_ui(
     from timekpr_hub.api.parent import create_enrollment_code
 
     result = await create_enrollment_code(session)
-    # The real flag is --hub-url (not --hub), and --users is required --
-    # both were wrong here before (docs/best-practices-review.md), which
-    # meant copy-pasting this line straight into a terminal failed. Built
-    # from the request's own host:port so it works for a LAN hostname or
-    # Tailscale address too, not just whatever URL happened to be typed
-    # into a README example.
+    # The real flag is --hub-url (not --hub) -- previously wrong here
+    # (docs/best-practices-review.md), which meant copy-pasting this line
+    # straight into a terminal failed. Built from the request's own
+    # host:port so it works for a LAN hostname or Tailscale address too, not
+    # just whatever URL happened to be typed into a README example.
     command = f"sudo timekpr-hub-agent enroll --hub-url {request.base_url} --code {result['code']}"
     return HTMLResponse(
         f"<p>Code: <code>{result['code']}</code> (expires {result['expires_at']}). "
         f"Run on the new device:</p><pre>{command}</pre>"
-        "<p>(prompts for which local users to manage if you don't pass <code>--users</code>)</p>"
+        "<p>Or just run <code>sudo timekpr-hub-agent enroll</code> with no flags at all -- "
+        "it prompts for the hub URL, the code, and which local users to manage.</p>"
     )

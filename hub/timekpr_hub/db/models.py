@@ -23,9 +23,11 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSTZRANGE, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -153,6 +155,18 @@ class Device(Base):
     __table_args__ = (
         CheckConstraint("status IN ('pending', 'active', 'revoked')", name="ck_devices_status"),
         CheckConstraint("enforcement IN ('enforce', 'observe')", name="ck_devices_enforcement"),
+        # Partial: a revoked device's machine_id must not block a *new*
+        # device row from later reusing that machine, but any live
+        # (pending/active) device is looked up by machine_id at enroll time
+        # to rebind instead of forking a second history for the same
+        # machine (hub/timekpr_hub/api/enroll.py) -- this is what makes that
+        # lookup race-safe under concurrent enrolls of the same machine.
+        Index(
+            "uq_devices_machine_id_live",
+            "machine_id",
+            unique=True,
+            postgresql_where=text("status <> 'revoked'"),
+        ),
     )
 
 
@@ -210,9 +224,12 @@ class UsageCounter(Base):
     spent_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     raw_balance_s: Mapped[int | None] = mapped_column(BigInteger)
     raw_limit_today_s: Mapped[int | None] = mapped_column(BigInteger)
+    activity_state: Mapped[str | None] = mapped_column(String(16))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    __table_args__ = (Index("ix_usage_counters_user_day", "user_id", "day"),)
 
 
 class ActivityInterval(Base):
@@ -230,6 +247,7 @@ class ActivityInterval(Base):
 
     __table_args__ = (
         UniqueConstraint("device_id", "window_end_ts", name="uq_activity_intervals_device_window"),
+        Index("ix_activity_intervals_user_day", "user_id", "day"),
     )
 
 
@@ -252,6 +270,7 @@ class Grant(Base):
 
     __table_args__ = (
         CheckConstraint("source IN ('parent', 'local_timekpra', 'auto_carryover')", name="ck_grants_source"),
+        Index("ix_grants_user_day", "user_id", "day"),
     )
 
 
@@ -294,5 +313,11 @@ class EnrollmentCode(Base):
     code: Mapped[str] = mapped_column(String(16), primary_key=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    used_by_device_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("devices.id"))
+    # SET NULL (not CASCADE): deleting a device should not delete the
+    # historical fact that a code was redeemed and by when -- it just no
+    # longer points at a device that exists. Originally had no ondelete
+    # action at all (defaulting to RESTRICT), which made every device
+    # delete 500 with a foreign-key violation (every enrolled device has a
+    # code row pointing at it) -- see migration 3f9a1c7d4e21.
+    used_by_device_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("devices.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -16,13 +16,17 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.calendar import canonical_stamp
-from timekpr_hub_core.models import GrantCreate, UserSummary
+from timekpr_hub_core.models import GrantCreate, PolicyPayload, PolicyUpdate, UserSummary
 
 from timekpr_hub.db.models import Device, EnrollmentCode, User
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.aggregate import global_spent_parallel, global_spent_wallclock
+from timekpr_hub.services.aggregate import (
+    global_spent_parallel,
+    global_spent_wallclock,
+    latest_activity_state,
+)
 from timekpr_hub.services.limits import effective_daily_limit
-from timekpr_hub.services.policy import get_current_policy
+from timekpr_hub.services.policy import get_current_policy, policy_to_payload, update_policy
 from timekpr_hub.settings import settings
 
 router = APIRouter()
@@ -39,6 +43,13 @@ async def list_users(session: AsyncSession = Depends(get_session)) -> list[UserS
     summaries = []
     for user in users:
         policy = await get_current_policy(session, user)
+        activity_state, activity_as_of = await latest_activity_state(session, user_id=user.id, day=stamp.day)
+        if activity_as_of is None or (now - activity_as_of).total_seconds() > 3 * (
+            settings.default_next_poll_ms / 1000
+        ):
+            activity_state = "logged_out"
+        as_of_str = activity_as_of.isoformat() if activity_as_of else None
+
         if policy is None:
             summaries.append(
                 UserSummary(
@@ -47,6 +58,8 @@ async def list_users(session: AsyncSession = Depends(get_session)) -> list[UserS
                     accounting_mode=user.accounting_mode,
                     today_global_spent_s=0,
                     today_effective_limit_s=0,
+                    activity_state=activity_state,
+                    as_of=as_of_str,
                 )
             )
             continue
@@ -64,6 +77,8 @@ async def list_users(session: AsyncSession = Depends(get_session)) -> list[UserS
                 accounting_mode=user.accounting_mode,
                 today_global_spent_s=spent,
                 today_effective_limit_s=limit_today,
+                activity_state=activity_state,
+                as_of=as_of_str,
             )
         )
     return summaries
@@ -95,6 +110,26 @@ async def create_grant(
     session.add(grant)
     await session.commit()
     return {"id": str(grant.id), "seconds": grant.seconds, "day": stamp.day_str}
+
+
+@router.put("/users/{username}/policy", response_model=PolicyPayload)
+async def update_user_policy(
+    username: str, body: PolicyUpdate, session: AsyncSession = Depends(get_session)
+) -> PolicyPayload:
+    """The only way to change a child's *limit* (as opposed to grant
+    additive bonus time) through the hub -- see services/policy.py::
+    update_policy. The agent already applies whatever this returns on its
+    next tick (sync.py pushes the payload whenever policy_version_applied
+    disagrees, and the agent already calls setTimeLimitForDays/Week/Month +
+    setAllowedDays -- CHECKLIST.md Phase 5)."""
+    result = await session.execute(select(User).where(User.canonical_username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+
+    policy = await update_policy(session, user=user, update=body, created_by="parent-api")
+    await session.commit()
+    return policy_to_payload(policy)
 
 
 @router.post("/enrollment-codes", status_code=status.HTTP_201_CREATED)
@@ -130,3 +165,37 @@ async def approve_device(device_id: uuid.UUID, session: AsyncSession = Depends(g
     device.status = "active"
     await session.commit()
     return {"id": str(device.id), "status": device.status}
+
+
+@router.post("/devices/{device_id}/revoke")
+async def revoke_device(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
+    """Kills the device's token immediately -- get_current_device 403s a
+    revoked device on its very next sync (auth.py's "never fail open").
+    History (usage_counters/activity_intervals/user_aliases) is untouched,
+    and the device's machine_id is freed for a later re-enroll to bind a
+    *new* row to (the partial unique index on devices.machine_id only
+    applies to non-revoked rows) -- the reversible, non-destructive action;
+    see delete_device for the alternative that also erases history."""
+    result = await session.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
+    device.status = "revoked"
+    await session.commit()
+    return {"id": str(device.id), "status": device.status}
+
+
+@router.delete("/devices/{device_id}")
+async def delete_device(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
+    """Hard delete. FK cascades (ondelete='CASCADE' on user_aliases,
+    usage_counters, activity_intervals) drop this device's contribution
+    entirely, which *rewrites* any day it reported usage for -- unlike
+    revoke, this is not reversible and changes past totals. Offered for
+    "enrolled the wrong thing" cleanup; revoke is the routine action."""
+    result = await session.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
+    await session.delete(device)
+    await session.commit()
+    return {"id": str(device_id), "status": "deleted"}

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.models import EnrollRequest, EnrollResponse
@@ -45,31 +46,62 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
         raise HTTPException(status.HTTP_410_GONE, "enrollment code expired")
 
     raw_token = TOKEN_PREFIX + secrets.token_urlsafe(32)
-    device = Device(
-        id=uuid.uuid4(),
-        name=req.hostname,
-        hostname=req.hostname,
-        machine_id=req.machine_id,
-        token_hash=_hash_token(raw_token),
-        token_prefix=raw_token[:12],
-        # A parent-minted enrollment code is itself the approval -- there's
-        # no separate authentication on either endpoint yet for a second
-        # "approve" step to actually gate anything (docs/best-practices-
-        # review.md), and it becomes properly meaningful once parent auth
-        # lands: minting a code will require being logged in. The old
-        # 'pending' default meant a brand-new device could already sync
-        # (auth.py only rejected 'revoked'), so this also removes a step
-        # that added friction without adding security. `approve_device`
-        # (parent.py) and the UI button are kept for any device enrolled
-        # before this change, or a future opt-in "require approval" mode.
-        status="active",
-        enforcement="enforce",
-        agent_version=req.agent_version,
-        os_info=req.os,
-        tz=req.tz,
-        enrolled_at=now,
+
+    # Rebind onto an existing device with the same machine_id, rather than
+    # forking a second history for the same physical machine -- the
+    # original bug report: uninstalling and reinstalling the agent (or
+    # `pacman -U` over an existing install) re-enrolled as a brand-new
+    # device every time, silently orphaning that machine's past
+    # usage_counters/activity_intervals under the old device row. Only a
+    # non-revoked device counts as "the same live machine"; a parent who
+    # explicitly revoked a device gets a genuinely new row on the next
+    # enroll (the partial unique index on devices.machine_id only covers
+    # status <> 'revoked', so this SELECT and that index agree).
+    existing_device_result = await session.execute(
+        select(Device).where(Device.machine_id == req.machine_id, Device.status != "revoked")
     )
-    session.add(device)
+    existing_device = existing_device_result.scalar_one_or_none()
+    rebound = existing_device is not None
+    previously_enrolled_at = existing_device.enrolled_at if existing_device else None
+
+    if existing_device is not None:
+        device = existing_device
+        device.token_hash = _hash_token(raw_token)
+        device.token_prefix = raw_token[:12]
+        device.name = req.hostname
+        device.hostname = req.hostname
+        device.agent_version = req.agent_version
+        device.os_info = req.os
+        device.tz = req.tz
+        device.status = "active"
+        # enrolled_at is deliberately left untouched -- it's this device's
+        # original enrollment date, not this rebind's.
+    else:
+        device = Device(
+            id=uuid.uuid4(),
+            name=req.hostname,
+            hostname=req.hostname,
+            machine_id=req.machine_id,
+            token_hash=_hash_token(raw_token),
+            token_prefix=raw_token[:12],
+            # A parent-minted enrollment code is itself the approval -- there's
+            # no separate authentication on either endpoint yet for a second
+            # "approve" step to actually gate anything (docs/best-practices-
+            # review.md), and it becomes properly meaningful once parent auth
+            # lands: minting a code will require being logged in. The old
+            # 'pending' default meant a brand-new device could already sync
+            # (auth.py only rejected 'revoked'), so this also removes a step
+            # that added friction without adding security. `approve_device`
+            # (parent.py) and the UI button are kept for any device enrolled
+            # before this change, or a future opt-in "require approval" mode.
+            status="active",
+            enforcement="enforce",
+            agent_version=req.agent_version,
+            os_info=req.os,
+            tz=req.tz,
+            enrolled_at=now,
+        )
+        session.add(device)
     await session.flush()
 
     new_users: list[str] = []
@@ -95,9 +127,17 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
             existing = await session.execute(select(User).where(User.canonical_username == local_username))
             user = existing.scalar_one()
 
-        session.add(
-            UserAlias(id=uuid.uuid4(), user_id=user.id, device_id=device.id, local_username=local_username)
+        # on_conflict_do_nothing rather than a plain insert: a rebind
+        # reuses `device.id`, so re-enrolling with the same local_users (the
+        # common case) would otherwise violate
+        # uq_user_aliases_device_local on a row that's already correct.
+        alias_stmt = pg_insert(UserAlias).values(
+            id=uuid.uuid4(), user_id=user.id, device_id=device.id, local_username=local_username
         )
+        alias_stmt = alias_stmt.on_conflict_do_nothing(
+            index_elements=[UserAlias.device_id, UserAlias.local_username]
+        )
+        await session.execute(alias_stmt)
 
         if is_new:
             new_users.append(local_username)
@@ -138,4 +178,6 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
         next_poll_ms=settings.default_next_poll_ms,
         new_users=new_users,
         policies=policies,
+        rebound=rebound,
+        previously_enrolled_at=previously_enrolled_at.isoformat() if previously_enrolled_at else None,
     )

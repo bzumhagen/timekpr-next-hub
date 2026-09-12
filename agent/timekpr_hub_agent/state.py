@@ -41,6 +41,23 @@ class UserState:
     # refunding it (see main.py's _apply_offline_policy).
     cum_local_at_contact_s: int = 0
 
+    # Wall-clock end of the last tick's active_span (epoch seconds), so the
+    # next tick's span can start exactly where the last one ended instead of
+    # being fabricated as `now - burned_s` (which reaches backwards past the
+    # previous span whenever burned_s exceeds the real gap between ticks,
+    # e.g. after a delayed tick or a suspend/resume -- the hub's range_agg
+    # union then silently swallows the overlap). 0.0 means "no prior span",
+    # i.e. don't backdate past this tick's own start.
+    last_tick_utc: float = 0.0
+    # Spans that failed to reach the hub (sync raised), buffered so the next
+    # successful sync replays them instead of losing that activity from the
+    # wall-clock union forever -- insert_activity_interval is idempotent on
+    # (device_id, window_end_ts), so replay is always safe. Capped so a long
+    # outage can't grow state.json without bound; oldest entries are dropped
+    # first (cumulative_spent_s, the absolute counter, is unaffected either
+    # way -- only the union-mode display would have under-counted).
+    pending_spans: list[dict] = field(default_factory=list)
+
 
 @dataclass
 class AgentState:

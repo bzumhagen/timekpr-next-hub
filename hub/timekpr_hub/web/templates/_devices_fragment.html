@@ -8,6 +8,16 @@
         <button type="submit" style="padding:0 .3rem;">approve</button>
       </form>
     {% endif %}
+    {% if d.status != 'revoked' %}
+      <form style="display:inline" hx-post="/ui/devices/{{ d.id }}/revoke" hx-target="#devices" hx-swap="innerHTML"
+            hx-confirm="Revoke {{ d.name }}? Its token stops working immediately; history is kept.">
+        <button type="submit" style="padding:0 .3rem;">revoke</button>
+      </form>
+    {% endif %}
+    <form style="display:inline" hx-post="/ui/devices/{{ d.id }}/delete" hx-target="#devices" hx-swap="innerHTML"
+          hx-confirm="Permanently delete {{ d.name }}? This also erases its past usage from every day's totals -- this cannot be undone.">
+      <button type="submit" style="padding:0 .3rem;">delete</button>
+    </form>
   </span>
 {% else %}
   <p>No devices enrolled yet.</p>

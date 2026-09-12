@@ -34,6 +34,21 @@ class UserObservation:
     limit_today_s: int
     logged_in: bool
     active: bool
+    inactive_session_s: int = 0
+    """ACTUAL_TIME_INACTIVE_SESSION -- how long the current session has been
+    idle, per timekpr's own idle detection (screen lock / logind idle hint).
+    0 when logged out."""
+    spent_session_s: int = 0
+    """ACTUAL_TIME_SPENT_SESSION -- seconds counted in the current session.
+    Read alongside inactive_session_s only for completeness/debugging; the
+    agent's own activity_state derivation (main.py) uses the tick-over-tick
+    burn delta as ground truth instead, since that's exactly what moved the
+    counter."""
+    track_inactive: bool = False
+    """TRACK_INACTIVE -- whether this user's idle time still counts against
+    their limit. Informational for now; enforcement already reflects it
+    because timekpr itself decides what to count before exposing
+    TIME_SPENT_DAY."""
 
 
 class TimekprEnforcer:
@@ -82,9 +97,13 @@ class TimekprEnforcer:
         if logged_in:
             balance = int(info["ACTUAL_TIME_SPENT_BALANCE"])
             spent_day = int(info["ACTUAL_TIME_SPENT_DAY"])
+            inactive_session_s = int(info.get("ACTUAL_TIME_INACTIVE_SESSION", 0))
+            spent_session_s = int(info.get("ACTUAL_TIME_SPENT_SESSION", 0))
         else:
             balance = int(info["TIME_SPENT_BALANCE"])
             spent_day = int(info["TIME_SPENT_DAY"])
+            inactive_session_s = 0
+            spent_session_s = 0
 
         # `limit_today_s` MUST be the static configured LIMITS_PER_WEEKDAYS
         # entry for today, NOT `TIME_LEFT_DAY + balance`. TIME_LEFT_DAY is a
@@ -108,7 +127,16 @@ class TimekprEnforcer:
             spent_day_s=spent_day,
             limit_today_s=limit_today,
             logged_in=logged_in,
-            active=logged_in,  # refined once activity/idle detection lands (Phase 2)
+            # `active` here is retained only as "is there a session at all" --
+            # main.py's run_tick derives the actual draining/idle distinction
+            # from the tick-over-tick burn delta, which is ground truth (it's
+            # literally what moved the counter), rather than from timekpr's
+            # own idle hint (which would require a second DBUS field and
+            # still lags a screen-lock transition by one tick).
+            active=logged_in,
+            inactive_session_s=inactive_session_s,
+            spent_session_s=spent_session_s,
+            track_inactive=bool(info.get("TRACK_INACTIVE", False)),
         )
 
     def set_time_left(self, username: str, op: str, seconds: int) -> bool:

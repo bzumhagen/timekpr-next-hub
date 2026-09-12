@@ -26,6 +26,31 @@
     {% set pct = (u.today_global_spent_s / u.today_effective_limit_s * 100) if u.today_effective_limit_s else 0 %}
     <div class="bar-fill {% if pct >= 100 %}over{% endif %}" style="width: {{ [pct, 100] | min }}%;"></div>
   </div>
+
+  {% if u.gated_today %}
+    <div class="notice" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;">
+      <span>&#9208; Chores not done -- today's time is on hold</span>
+      <form hx-post="/ui/users/{{ u.username }}/gate-release" hx-target="closest .user-card" hx-swap="outerHTML">
+        <button type="submit">Release today</button>
+      </form>
+    </div>
+  {% elif u.gate_released_today %}
+    <div class="notice">&#10003; Chores done -- today released</div>
+  {% endif %}
+
+  {% if u.tomorrow_override_s is not none %}
+    <div class="notice" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;">
+      <span>
+        Tomorrow ({{ u.tomorrow }}) is set to
+        {{ "%d:%02d" | format(u.tomorrow_override_s // 3600, (u.tomorrow_override_s % 3600) // 60) }}
+      </span>
+      <form hx-post="/ui/users/{{ u.username }}/day-override/clear" hx-target="closest .user-card" hx-swap="outerHTML">
+        <input type="hidden" name="day" value="{{ u.tomorrow }}">
+        <button type="submit">Clear</button>
+      </form>
+    </div>
+  {% endif %}
+
   <div class="actions">
     <form hx-post="/ui/users/{{ u.username }}/grants" hx-target="closest .user-card" hx-swap="outerHTML">
       <input type="hidden" name="seconds" value="1800">
@@ -36,14 +61,30 @@
       <button type="submit">-30 min</button>
     </form>
   </div>
+  <div class="actions">
+    <a class="button-link" href="/users/{{ u.username }}">Edit policy</a>
+    <a class="button-link" href="/users/{{ u.username }}/stats">Usage stats</a>
+    <a class="button-link" href="/users/{{ u.username }}/settings">Settings</a>
+  </div>
+
   <details>
-    <summary>Edit daily limit</summary>
-    <form hx-post="/ui/users/{{ u.username }}/policy" hx-target="closest .user-card" hx-swap="outerHTML" class="policy-form">
-      <label>
-        Minutes/day (every day)
-        <input type="number" name="minutes_per_day" min="0" max="1440" value="{{ u.daily_limit_minutes }}">
-      </label>
-      <button type="submit">Save</button>
+    <summary>Adjust a day</summary>
+    <form hx-post="/ui/users/{{ u.username }}/day-override" hx-target="closest .user-card" hx-swap="outerHTML" class="policy-form" style="flex-wrap:wrap;">
+      <input type="date" name="day" value="{{ u.tomorrow }}" required>
+      <span class="seg small">
+        <input type="radio" name="mode" id="mode-none-{{ u.username }}" value="none" checked>
+        <label for="mode-none-{{ u.username }}">No time at all</label>
+        <input type="radio" name="mode" id="mode-limit-{{ u.username }}" value="limit">
+        <label for="mode-limit-{{ u.username }}">Limit to</label>
+      </span>
+      <span class="hm">
+        <input type="number" name="limit_h" min="0" max="24" value="0" style="width:3rem;">
+        <span class="unit">h</span>
+        <input type="number" name="limit_m" min="0" max="59" value="0" style="width:3rem;">
+        <span class="unit">m</span>
+      </span>
+      <input type="text" name="reason" placeholder="reason (optional)" style="flex:1;min-width:8rem;">
+      <button type="submit">Apply</button>
     </form>
   </details>
 </div>

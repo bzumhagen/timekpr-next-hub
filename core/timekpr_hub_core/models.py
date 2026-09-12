@@ -190,11 +190,72 @@ class SyncResponse(BaseModel):
 # --------------------------------------------------------------------------
 
 
+class LockoutType(str, Enum):
+    """Mirrors timekpr's own restriction-type constants
+    (`common/constants/constants.py` TK_CTRL_RES_*) -- the six values
+    `setLockoutType` accepts. timekpr itself does not validate this at all
+    (any string is written straight to LOCKOUT_TYPE); the hub validates so a
+    typo can't reach the config file."""
+
+    LOCK = "lock"
+    SUSPEND = "suspend"
+    SUSPEND_WAKE = "suspendwake"
+    TERMINATE = "terminate"
+    KILL = "kill"
+    SHUTDOWN = "shutdown"
+
+
 class AllowedHourInterval(BaseModel):
     hour: int = Field(ge=0, le=23)
     start_min: int = Field(ge=0, le=59)
     end_min: int = Field(ge=0, le=60)
     unaccounted: bool = False
+
+
+class PlayTimeActivity(BaseModel):
+    """One PLAYTIME_ACTIVITY_NNN entry. `mask` is a regex matched against a
+    process's executable path (and, if
+    TIMEKPR_PLAYTIME_ENHANCED_ACTIVITY_MONITOR_ENABLED, its cmdline) --
+    `[`/`]` are stripped by timekpr itself since they delimit the
+    description (server/user/playtime.py), so a mask containing either is
+    rejected here rather than silently mangled."""
+
+    mask: str = Field(min_length=1, max_length=255)
+    description: str = Field(default="", max_length=255)
+
+    @field_validator("mask")
+    @classmethod
+    def _no_bracket_chars(cls, value: str) -> str:
+        if "[" in value or "]" in value:
+            raise ValueError(
+                "mask may not contain '[' or ']' -- they delimit the description in timekpr's own format"
+            )
+        return value
+
+
+class PlayTimePayload(BaseModel):
+    """The `[<user>.PLAYTIME]` config section -- a screen-time sub-budget for
+    specific processes, nested inside the normal daily limit. See
+    server/user/playtime.py and README.md's PlayTime section."""
+
+    enabled: bool = False
+    override_enabled: bool = False
+    """When true, normal time only ticks while a matched activity is
+    running, and PlayTime's own limits below are ignored entirely
+    (server/user/userdata.py userActiveEffective = userActivePT)."""
+    unaccounted_intervals_enabled: bool = True
+    """Whether PlayTime activities may run (and count toward PlayTime) during
+    an unaccounted ("!") hour; if false they're killed outright during one."""
+    allowed_weekdays: list[str] = Field(default_factory=lambda: ["1", "2", "3", "4", "5", "6", "7"])
+    daily_limits_s: list[int] = Field(min_length=7, max_length=7, default_factory=lambda: [0] * 7)
+    activities: list[PlayTimeActivity] = Field(default_factory=list)
+
+    @field_validator("daily_limits_s")
+    @classmethod
+    def _each_day_within_a_day(cls, value: list[int]) -> list[int]:
+        if any(v < 0 or v > 86400 for v in value):
+            raise ValueError("each PlayTime daily limit must be between 0 and 86400 seconds")
+        return value
 
 
 class PolicyPayload(BaseModel):
@@ -203,15 +264,20 @@ class PolicyPayload(BaseModel):
     """Seconds, index 0 = Monday .. index 6 = Sunday (ISO weekday - 1)."""
 
     allowed_hours: dict[str, list[AllowedHourInterval]] = Field(default_factory=dict)
-    """Keyed by ISO weekday as a string, "1".."7"."""
+    """Keyed by ISO weekday as a string, "1".."7". An empty dict/day means
+    "unrestricted" at the hub layer (see core/timekpr_hub_core/allowed_hours.py
+    `unrestricted()`) -- it must never be pushed to timekpr as-is, since
+    timekpr's own semantics for an absent hour is "forbidden", not "allowed"."""
 
     allowed_weekdays: list[str] = Field(default_factory=list)
     weekly_limit_s: int
     monthly_limit_s: int
-    lockout_type: str = "lock"
+    lockout_type: LockoutType = LockoutType.LOCK
     wake_from: str | None = None
     wake_to: str | None = None
     track_inactive: bool = False
+    hide_tray_icon: bool = False
+    playtime: PlayTimePayload = Field(default_factory=PlayTimePayload)
     note: str = ""
 
 
@@ -248,6 +314,54 @@ class EventBatch(BaseModel):
 class GrantCreate(BaseModel):
     seconds: int = Field(ge=-86400, le=86400)
     reason: str = Field(default="", max_length=255)
+    day: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    """Canonical day (YYYY-MM-DD) this grant applies to. None means today in
+    the hub's timezone -- unchanged behavior for every existing caller, which
+    always meant today before dated grants existed. Setting it lets a parent
+    adjust a *future* day ("you lose 30 minutes tomorrow") without touching
+    the standing policy. For cancelling a day outright, prefer a
+    DayOverride instead of a large negative grant: a grant's stored
+    second-count stops cancelling correctly the moment that weekday's
+    standing limit changes; an override replaces the base outright."""
+
+
+class DayOverrideCreate(BaseModel):
+    """PUT /users/{u}/day-override -- an absolute per-date limit, replacing
+    (not adding to) the policy's standing limit for that weekday. 0 is a
+    full moratorium; see services/limits.py::set_day_override."""
+
+    day: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    limit_seconds: int = Field(ge=0, le=86400)
+    reason: str = Field(default="", max_length=255)
+
+
+class GateReleaseCreate(BaseModel):
+    """POST /users/{u}/gate-release -- records that a gated day's
+    precondition was met for one date. Releasing an already-released day is
+    a no-op that just refreshes who/why."""
+
+    day: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    note: str = Field(default="", max_length=255)
+
+
+class UserSettingsUpdate(BaseModel):
+    """PUT /users/{u}/settings -- the hub-only per-user knobs that never
+    reach `PolicyPayload` or a device: which weekdays are chore-gated, and
+    the accounting mode. Deliberately NOT part of PolicyUpdate/update_policy
+    -- these have no policy version, no device push, and their own single
+    save button in the UI (see docs/best-practices-review.md's "tab-scoped
+    Apply" anti-pattern this avoids by not sharing a save action with the
+    policy editor)."""
+
+    gated_weekdays: list[str] = Field(default_factory=list)
+    accounting_mode: AccountingMode = AccountingMode.WALLCLOCK
+
+    @field_validator("gated_weekdays")
+    @classmethod
+    def _valid_weekday_tokens(cls, value: list[str]) -> list[str]:
+        if any(v not in {"1", "2", "3", "4", "5", "6", "7"} for v in value):
+            raise ValueError("gated_weekdays entries must be '1'..'7' (Mon..Sun)")
+        return value
 
 
 class UserSummary(BaseModel):
@@ -265,21 +379,48 @@ class UserSummary(BaseModel):
     """ISO8601 timestamp of the sync that produced today_global_spent_s --
     lets a viewer (the UI) extrapolate forward while DRAINING instead of
     only ever showing a value up to one poll interval stale."""
+    gated_today: bool = False
+    """True when today is one of this user's `gated_weekdays` AND it hasn't
+    been released yet -- the state `today_effective_limit_s` is already 0
+    for (see services/limits.py::combine_limit). False both when today isn't
+    a gated weekday at all and when it's gated but already released, so a
+    caller wanting "is this a chore day" needs `gate_released_today` too."""
+    gate_released_today: bool = False
+    """True when today is a gated weekday AND a GateRelease row exists for
+    it. Meaningless (always False) when today isn't gated at all -- check
+    alongside `gated_today` or the user's `gated_weekdays`, not alone."""
 
 
 class PolicyUpdate(BaseModel):
     """A parent-initiated change to a user's policy -- PUT /users/{u}/policy.
     Always creates a new `Policy` version rather than mutating one in place
-    (see services/policy.py::update_policy)."""
+    (see services/policy.py::update_policy). Every field `PolicyPayload`
+    carries is settable here -- the hub's own advanced editor is the last
+    caller that used to need to "carry forward" the fields below unedited."""
 
     daily_limits_s: list[int] = Field(min_length=7, max_length=7)
     weekly_limit_s: int = Field(ge=0, le=7 * 86400)
     monthly_limit_s: int = Field(ge=0, le=31 * 86400)
-    allowed_weekdays: list[str] = Field(default_factory=list)
+    allowed_weekdays: list[str] = Field(default_factory=lambda: ["1", "2", "3", "4", "5", "6", "7"])
+    allowed_hours: dict[str, list[AllowedHourInterval]] = Field(default_factory=dict)
+    lockout_type: LockoutType = LockoutType.LOCK
+    wake_from: str | None = Field(default=None, pattern=r"^([01]?[0-9]|2[0-3])$")
+    wake_to: str | None = Field(default=None, pattern=r"^([01]?[0-9]|2[0-3])$")
+    track_inactive: bool = False
+    hide_tray_icon: bool = False
+    playtime: PlayTimePayload = Field(default_factory=PlayTimePayload)
+    note: str = Field(default="", max_length=500)
 
     @field_validator("daily_limits_s")
     @classmethod
     def _each_day_within_a_day(cls, value: list[int]) -> list[int]:
         if any(v < 0 or v > 86400 for v in value):
             raise ValueError("each daily limit must be between 0 and 86400 seconds")
+        return value
+
+    @field_validator("allowed_weekdays")
+    @classmethod
+    def _valid_weekday_tokens(cls, value: list[str]) -> list[str]:
+        if any(v not in {"1", "2", "3", "4", "5", "6", "7"} for v in value):
+            raise ValueError("allowed_weekdays entries must be '1'..'7' (Mon..Sun)")
         return value

@@ -321,15 +321,33 @@ class FakeEnforcer:
         self._weekly_limits: dict[str, int] = {}
         self._monthly_limits: dict[str, int] = {}
         self._allowed_weekdays: dict[str, list[str]] = {}
+        self._allowed_hours: dict[str, dict[str, dict]] = {}
+        self._track_inactive: dict[str, bool] = {}
+        self._hide_tray_icon: dict[str, bool] = {}
+        self._lockout: dict[str, tuple[str, str, str]] = {}
+        self._playtime_enabled: dict[str, bool] = {}
+        self._playtime_override: dict[str, bool] = {}
+        self._playtime_unaccounted_intervals: dict[str, bool] = {}
+        self._playtime_allowed_weekdays: dict[str, list[str]] = {}
+        self._playtime_daily_limits: dict[str, list[int]] = {}
+        self._playtime_activities: dict[str, list[tuple[str, str]]] = {}
 
     def get_user_observation(self, username: str) -> UserObservation | None:
         d = self.daemons.get(username)
         if d is None:
             return None
         limits = self._daily_limits.get(username)
-        if limits is not None:
+        allowed_weekdays = self._allowed_weekdays.get(username)
+        if limits is not None and allowed_weekdays:
+            # Mirrors real timekpr's positional (not day-keyed) indexing:
+            # server/user/userdata.py:265-270 looks up today's ISO weekday
+            # *within* ALLOWED_WEEKDAYS and uses that same position into
+            # LIMITS_PER_WEEKDAYS -- a day not present in allowed_weekdays
+            # gets limit 0, exactly like the real daemon.
             now = self.clock.now if self.clock is not None else datetime.now(UTC)
-            d.limit_today_s = limits[now.isoweekday() - 1]
+            today = str(now.isoweekday())
+            idx = allowed_weekdays.index(today) if today in allowed_weekdays else -1
+            d.limit_today_s = limits[idx] if 0 <= idx < len(limits) else 0
         return UserObservation(
             balance_s=d.balance_s,
             spent_day_s=d.spent_day_s,
@@ -343,6 +361,10 @@ class FakeEnforcer:
         return True
 
     def set_time_limit_for_days(self, username: str, daily_limits_s: list[int]) -> bool:
+        # `daily_limits_s` here is already projected to the allowed-weekdays
+        # subset (agent/timekpr_hub_agent/main.py::
+        # _project_daily_limits_to_allowed_days), matching the real DBUS
+        # call's positional semantics -- see get_user_observation above.
         self._daily_limits[username] = list(daily_limits_s)
         return True
 
@@ -356,6 +378,48 @@ class FakeEnforcer:
 
     def set_allowed_days(self, username: str, weekdays: list[str]) -> bool:
         self._allowed_weekdays[username] = list(weekdays)
+        return True
+
+    def set_allowed_hours(self, username: str, day_number: str, hours: dict) -> bool:
+        if not hours:
+            return False
+        self._allowed_hours.setdefault(username, {})[day_number] = hours
+        return True
+
+    def set_track_inactive(self, username: str, track_inactive: bool) -> bool:
+        self._track_inactive[username] = track_inactive
+        return True
+
+    def set_hide_tray_icon(self, username: str, hide: bool) -> bool:
+        self._hide_tray_icon[username] = hide
+        return True
+
+    def set_lockout_type(self, username: str, lockout_type: str, wake_from: str, wake_to: str) -> bool:
+        self._lockout[username] = (lockout_type, wake_from, wake_to)
+        return True
+
+    def set_playtime_enabled(self, username: str, enabled: bool) -> bool:
+        self._playtime_enabled[username] = enabled
+        return True
+
+    def set_playtime_limit_override(self, username: str, override: bool) -> bool:
+        self._playtime_override[username] = override
+        return True
+
+    def set_playtime_unaccounted_intervals_enabled(self, username: str, enabled: bool) -> bool:
+        self._playtime_unaccounted_intervals[username] = enabled
+        return True
+
+    def set_playtime_allowed_days(self, username: str, weekdays: list[str]) -> bool:
+        self._playtime_allowed_weekdays[username] = list(weekdays)
+        return True
+
+    def set_playtime_limits_for_days(self, username: str, daily_limits_s: list[int]) -> bool:
+        self._playtime_daily_limits[username] = list(daily_limits_s)
+        return True
+
+    def set_playtime_activities(self, username: str, activities: list[tuple[str, str]]) -> bool:
+        self._playtime_activities[username] = list(activities)
         return True
 
 

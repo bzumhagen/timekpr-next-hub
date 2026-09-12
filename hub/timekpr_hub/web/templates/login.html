@@ -1,20 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>timekpr-next-hub</title>
-  <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, sans-serif; max-width: 360px; margin: 4rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.2rem; }
-    label { display: block; margin: .75rem 0 .25rem; font-size: .9rem; }
-    input { width: 100%; padding: .5rem; border-radius: 6px; border: 1px solid #8886; box-sizing: border-box; }
-    button { margin-top: 1rem; width: 100%; padding: .5rem; border-radius: 6px; border: 1px solid #8886; background: #8881; cursor: pointer; }
-    .error { color: #d55; font-size: .9rem; margin-top: .5rem; }
-  </style>
-</head>
-<body>
+{% extends "_base.html" %}
+{% block page_class %}narrow form-narrow{% endblock %}
+{% block content %}
   <h1>timekpr-next-hub</h1>
   <form method="post" action="/login">
     <label for="email">Email</label>
@@ -24,5 +10,4 @@
     <button type="submit">Log in</button>
   </form>
   {% if error %}<p class="error">Incorrect email or password.</p>{% endif %}
-</body>
-</html>
+{% endblock %}

@@ -1,0 +1,327 @@
+{% extends "_base.html" %}
+{% block title %}{{ display_name }} -- policy -- timekpr-next-hub{% endblock %}
+{% block content %}
+  <div class="topbar">
+    <h1>{{ display_name }}'s policy</h1>
+    <span class="actions" style="margin:0;">
+      <a class="button-link" href="/users/{{ username }}/settings">Settings</a>
+      <a class="button-link" href="/">&larr; Back</a>
+    </span>
+  </div>
+  <p class="lede">
+    Changes apply to <strong>all seven days</strong> unless you switch a section to "Different
+    each day". Saving creates policy version {{ p.version + 1 }} -- every enrolled device picks
+    it up on its next check-in (usually within a few seconds).
+  </p>
+
+  <form method="post" action="/users/{{ username }}/policy" id="policy-form">
+
+    <div class="card">
+      <p class="card-title">Daily time limit</p>
+      <div class="seg" id="daily-mode-seg">
+        <input type="radio" name="daily_mode" id="daily_mode_same" value="same" {% if p.daily_same %}checked{% endif %}>
+        <label for="daily_mode_same">Same every day</label>
+        <input type="radio" name="daily_mode" id="daily_mode_diff" value="different" {% if not p.daily_same %}checked{% endif %}>
+        <label for="daily_mode_diff">Different each day</label>
+      </div>
+
+      <div id="daily-master" style="margin-top:.75rem;{% if not p.daily_same %}display:none;{% endif %}">
+        <span class="hm">
+          <input type="number" id="daily_h" name="daily_h" min="0" max="24" value="{{ p.daily_master.h }}">
+          <span class="unit">h</span>
+          <input type="number" id="daily_m" name="daily_m" min="0" max="59" value="{{ p.daily_master.m }}">
+          <span class="unit">m</span>
+        </span>
+        <span class="chip-row">
+          <button type="button" class="chip" data-hm-preset="#daily_h,#daily_m" data-preset-min="30">30m</button>
+          <button type="button" class="chip" data-hm-preset="#daily_h,#daily_m" data-preset-min="60">1h</button>
+          <button type="button" class="chip" data-hm-preset="#daily_h,#daily_m" data-preset-min="120">2h</button>
+          <button type="button" class="chip" data-hm-preset="#daily_h,#daily_m" data-preset-min="180">3h</button>
+        </span>
+      </div>
+
+      <div id="daily-per-day" style="margin-top:.5rem;{% if p.daily_same %}display:none;{% endif %}">
+        {% for name in weekday_names %}
+          <span class="day-row compact">
+            <label class="day-name" for="daily_h_{{ loop.index0 }}">{{ name }}</label>
+            <span class="hm">
+              <input type="number" id="daily_h_{{ loop.index0 }}" name="daily_h_{{ loop.index0 }}" min="0" max="24" value="{{ p.daily_per_day[loop.index0].h }}">
+              <span class="unit">h</span>
+              <input type="number" name="daily_m_{{ loop.index0 }}" min="0" max="59" value="{{ p.daily_per_day[loop.index0].m }}">
+              <span class="unit">m</span>
+            </span>
+          </span>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="card-title">Allowed times of day</p>
+      <p class="card-subtitle">
+        Most days are "all day" or "between two times". Pick "custom" only for a day that needs
+        more than one window (e.g. before and after school).
+      </p>
+      {% for day in weekday_tokens %}
+        {% set d = p.hours_by_day[day] %}
+        <div class="hours-day">
+          <div class="hours-day-head">
+            <span class="day-name">{{ weekday_names[loop.index0] }}</span>
+            <span class="seg small">
+              <input type="radio" name="hours_mode_{{ day }}" id="hm_{{ day }}_all" value="all" {% if d.mode == 'all' %}checked{% endif %}>
+              <label for="hm_{{ day }}_all">All day</label>
+              <input type="radio" name="hours_mode_{{ day }}" id="hm_{{ day }}_between" value="between" {% if d.mode == 'between' %}checked{% endif %}>
+              <label for="hm_{{ day }}_between">Between</label>
+              <input type="radio" name="hours_mode_{{ day }}" id="hm_{{ day }}_custom" value="custom" {% if d.mode == 'custom' %}checked{% endif %}>
+              <label for="hm_{{ day }}_custom">Custom</label>
+            </span>
+          </div>
+          <div class="hours-day-between">
+            <input type="time" name="hours_from_{{ day }}" value="{{ d.from_str }}" step="900">
+            <span>to</span>
+            <input type="time" name="hours_to_{{ day }}" value="{{ d.to_str }}" step="900">
+          </div>
+          <div class="hours-day-custom">
+            <div class="track-wrap">
+              <div class="track" data-track="{{ day }}">
+                {% for h in range(24) %}
+                  <label class="track-seg {% if h in d.hours %}on{% endif %}" data-hour="{{ h }}">
+                    <input type="checkbox" class="visually-hidden" name="hh_{{ day }}_{{ h }}" {% if h in d.hours %}checked{% endif %}>
+                  </label>
+                {% endfor %}
+              </div>
+              <div class="track-ticks">
+                {% for h in range(24) %}<span>{{ h if h % 3 == 0 else "" }}</span>{% endfor %}
+              </div>
+            </div>
+            <div class="track-summary" data-track-summary="{{ day }}"></div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <details>
+      <summary>Advanced policy settings</summary>
+
+      <div class="card">
+        <p class="card-title">Weekly &amp; monthly caps</p>
+        <p class="hint">Additional ceilings on top of the daily limits above -- whichever limit is reached first applies.</p>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;">
+          <input type="checkbox" name="weekly_cap_enabled" id="weekly_cap_enabled" {% if p.weekly_enabled %}checked{% endif %}>
+          Also cap total time per week
+        </label>
+        <span class="hm" id="weekly-hm" style="{% if not p.weekly_enabled %}opacity:.4;{% endif %}">
+          <input type="number" name="weekly_h" min="0" max="168" value="{{ p.weekly.h }}"> <span class="unit">h</span>
+          <input type="number" name="weekly_m" min="0" max="59" value="{{ p.weekly.m }}"> <span class="unit">m</span>
+        </span>
+
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.75rem 0 .5rem;">
+          <input type="checkbox" name="monthly_cap_enabled" id="monthly_cap_enabled" {% if p.monthly_enabled %}checked{% endif %}>
+          Also cap total time per month
+        </label>
+        <span class="hm" id="monthly-hm" style="{% if not p.monthly_enabled %}opacity:.4;{% endif %}">
+          <input type="number" name="monthly_h" min="0" max="744" value="{{ p.monthly.h }}"> <span class="unit">h</span>
+          <input type="number" name="monthly_m" min="0" max="59" value="{{ p.monthly.m }}"> <span class="unit">m</span>
+        </span>
+      </div>
+
+      <div class="card">
+        <p class="card-title">Days allowed to log in</p>
+        <p class="hint">Unchecking a day blocks login entirely that day, regardless of the hours above.</p>
+        <div class="checkbox-row">
+          {% for day in weekday_tokens %}
+            <label>
+              <input type="checkbox" name="allowed_weekday_{{ day }}" {% if day in p.allowed_weekdays %}checked{% endif %}>
+              {{ weekday_names[loop.index0] }}
+            </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="card">
+        <p class="card-title">At the limit</p>
+        <div class="option-list">
+          {% for value, label, desc in lockout_options %}
+            <label>
+              <input type="radio" name="lockout_type" value="{{ value }}" {% if value == p.lockout_type %}checked{% endif %}>
+              <span class="option-text">
+                <span>{{ label }}</span>
+                <span class="option-desc">{{ desc }}</span>
+              </span>
+            </label>
+          {% endfor %}
+        </div>
+        <div id="wake-window" style="{% if p.lockout_type != 'suspendwake' %}display:none;{% endif %}">
+          <label for="wake_from">Wake window: from (hour, 0-23)</label>
+          <input type="number" id="wake_from" name="wake_from" min="0" max="23" value="{{ p.wake_from }}">
+          <label for="wake_to">to (hour, 0-23)</label>
+          <input type="number" id="wake_to" name="wake_to" min="0" max="23" value="{{ p.wake_to }}">
+        </div>
+      </div>
+
+      <div class="card">
+        <p class="card-title">Counting</p>
+        <div class="checkbox-row">
+          <label><input type="checkbox" name="track_inactive" {% if p.track_inactive %}checked{% endif %}> Count time while the screen is locked/idle</label>
+          <label><input type="checkbox" name="hide_tray_icon" {% if p.hide_tray_icon %}checked{% endif %}> Hide the tray icon and non-critical notifications</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <p class="card-title">PlayTime (process-specific sub-budget)</p>
+        <p class="hint">A separate budget for specific games/programs, nested inside the daily limit above.</p>
+        <div class="checkbox-row">
+          <label><input type="checkbox" name="pt_enabled" {% if p.playtime.enabled %}checked{% endif %}> Enable PlayTime</label>
+          <label><input type="checkbox" id="pt_override" name="pt_override" {% if p.playtime.override_enabled %}checked{% endif %}> Override mode</label>
+          <label><input type="checkbox" name="pt_unaccounted" {% if p.playtime.unaccounted_intervals_enabled %}checked{% endif %}> Allow during unrestricted hours</label>
+        </div>
+        <p class="hint">
+          <strong>Override mode</strong> inverts normal accounting: daily time only ticks while a
+          matched activity is actually running, and the per-day PlayTime limits below are ignored.
+        </p>
+        <label>Days PlayTime is allowed</label>
+        <div class="checkbox-row">
+          {% for day in weekday_tokens %}
+            <label>
+              <input type="checkbox" name="pt_allowed_weekday_{{ day }}" {% if day in p.pt_allowed_weekdays %}checked{% endif %}>
+              {{ weekday_names[loop.index0] }}
+            </label>
+          {% endfor %}
+        </div>
+        <div id="pt-limits" style="{% if p.playtime.override_enabled %}opacity:.4;{% endif %}">
+          {% for name in weekday_names %}
+            <span class="day-row compact">
+              <label class="day-name" for="pt_daily_h_{{ loop.index0 }}">{{ name }}</label>
+              <span class="hm">
+                <input type="number" id="pt_daily_h_{{ loop.index0 }}" name="pt_daily_h_{{ loop.index0 }}" min="0" max="24" value="{{ p.pt_daily[loop.index0].h }}">
+                <span class="unit">h</span>
+                <input type="number" name="pt_daily_m_{{ loop.index0 }}" min="0" max="59" value="{{ p.pt_daily[loop.index0].m }}">
+                <span class="unit">m</span>
+              </span>
+            </span>
+          {% endfor %}
+        </div>
+        <label for="pt_activities">Activities -- one per line, "process mask|description"</label>
+        <textarea id="pt_activities" name="pt_activities" rows="4" style="width:100%;"
+                  placeholder="steam|Steam games&#10;.*minecraft.*|Minecraft">{{ p.pt_activities_text }}</textarea>
+        <p class="hint">A mask is a regular expression matched against the process's executable path; it may not contain "[" or "]".</p>
+      </div>
+
+      <div class="card">
+        <p class="card-title">Note</p>
+        <textarea name="note" rows="2" style="width:100%;" placeholder="Optional note to self">{{ p.note }}</textarea>
+      </div>
+    </details>
+
+    <div class="save-bar" id="save-bar">
+      <button type="submit">Save policy</button>
+      <span class="unsaved-flag">Unsaved changes</span>
+    </div>
+  </form>
+{% endblock %}
+{% block extra_style %}
+  .visually-hidden { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+{% endblock %}
+{% block scripts %}
+  <script>
+    (function () {
+      var form = document.getElementById('policy-form');
+
+      // -- daily-limit mode: same-every-day vs. different-each-day --
+      var dailyMasterBlock = document.getElementById('daily-master');
+      var dailyPerDayBlock = document.getElementById('daily-per-day');
+      document.querySelectorAll('input[name="daily_mode"]').forEach(function (r) {
+        r.addEventListener('change', function () {
+          var same = document.getElementById('daily_mode_same').checked;
+          dailyMasterBlock.style.display = same ? '' : 'none';
+          dailyPerDayBlock.style.display = same ? 'none' : '';
+        });
+      });
+
+      // -- preset chips: fill an hour/minute pair from a total-minutes value --
+      document.querySelectorAll('[data-hm-preset]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var sel = btn.getAttribute('data-hm-preset').split(',');
+          var total = parseInt(btn.getAttribute('data-preset-min'), 10);
+          document.querySelector(sel[0]).value = Math.floor(total / 60);
+          document.querySelector(sel[1]).value = total % 60;
+        });
+      });
+
+      // -- weekly/monthly cap enable checkboxes: just a visual dim, value still submits --
+      ['weekly', 'monthly'].forEach(function (prefix) {
+        var cb = document.getElementById(prefix + '_cap_enabled');
+        var hm = document.getElementById(prefix + '-hm');
+        cb.addEventListener('change', function () { hm.style.opacity = cb.checked ? '1' : '.4'; });
+      });
+
+      // -- PlayTime override dims the (now-inert) per-day limits table --
+      var ptOverride = document.getElementById('pt_override');
+      var ptLimits = document.getElementById('pt-limits');
+      ptOverride.addEventListener('change', function () {
+        ptLimits.style.opacity = ptOverride.checked ? '.4' : '1';
+      });
+
+      // -- lockout type: reveal the wake window only for suspendwake --
+      var wakeWindow = document.getElementById('wake-window');
+      document.querySelectorAll('input[name="lockout_type"]').forEach(function (r) {
+        r.addEventListener('change', function () {
+          wakeWindow.style.display = (r.value === 'suspendwake' && r.checked) ? '' : wakeWindow.style.display;
+          if (r.checked && r.value !== 'suspendwake') wakeWindow.style.display = 'none';
+        });
+      });
+
+      // -- custom hours track: click or drag to paint/clear a run of hours --
+      function summarize(day) {
+        var track = document.querySelector('.track[data-track="' + day + '"]');
+        var boxes = track.querySelectorAll('input[type=checkbox]');
+        var runs = [];
+        var runStart = null;
+        boxes.forEach(function (box, h) {
+          if (box.checked && runStart === null) runStart = h;
+          if (!box.checked && runStart !== null) { runs.push([runStart, h]); runStart = null; }
+        });
+        if (runStart !== null) runs.push([runStart, 24]);
+        var out = document.querySelector('[data-track-summary="' + day + '"]');
+        out.textContent = runs.length
+          ? runs.map(function (r) { return pad(r[0]) + ':00-' + pad(r[1]) + ':00'; }).join(', ')
+          : 'No hours selected';
+      }
+      function pad(n) { return String(n).padStart(2, '0'); }
+
+      document.querySelectorAll('.track').forEach(function (track) {
+        var day = track.getAttribute('data-track');
+        summarize(day);
+        var painting = null; // true = painting on, false = painting off; scoped to THIS track
+        function setSeg(seg, on) {
+          var box = seg.querySelector('input');
+          box.checked = on;
+          seg.classList.toggle('on', on);
+        }
+        track.querySelectorAll('.track-seg').forEach(function (seg) {
+          seg.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            painting = !seg.querySelector('input').checked;
+            setSeg(seg, painting);
+            summarize(day);
+          });
+          seg.addEventListener('mouseenter', function () {
+            if (painting !== null) { setSeg(seg, painting); summarize(day); }
+          });
+          seg.addEventListener('click', function (e) { e.preventDefault(); });
+        });
+        // Scoped per track (not a single document-level listener sharing one
+        // outer variable) so each day's drag state resets independently --
+        // a shared `var painting` here would let `var` hoisting silently
+        // point every track's mousedown/mouseenter handlers at the SAME
+        // variable, breaking drag on every track after the first.
+        document.addEventListener('mouseup', function () { painting = null; });
+      });
+
+      // -- unsaved-changes flag --
+      var saveBar = document.getElementById('save-bar');
+      form.addEventListener('input', function () { saveBar.classList.add('dirty'); });
+      form.addEventListener('change', function () { saveBar.classList.add('dirty'); });
+      form.addEventListener('submit', function () { saveBar.classList.remove('dirty'); });
+    })();
+  </script>
+{% endblock %}

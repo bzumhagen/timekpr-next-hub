@@ -1,40 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>timekpr-next-hub</title>
-  <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>
-  <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.4rem; }
-    .user-card { border: 1px solid #8884; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
-    .bar-track { background: #8882; border-radius: 6px; height: 14px; overflow: hidden; margin: .5rem 0; }
-    .bar-fill { background: #4a9; height: 100%; }
-    .bar-fill.over { background: #d55; }
-    .row { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
-    button { padding: .4rem .8rem; border-radius: 6px; border: 1px solid #8886; background: #8881; cursor: pointer; }
-    .devices { font-size: .85rem; opacity: .75; margin-top: .5rem; }
-    .device-pill { display: inline-block; border: 1px solid #8886; border-radius: 999px; padding: .1rem .6rem; margin-right: .3rem; }
-    .device-pill.pending { border-color: #d90; color: #d90; }
-    .device-pill.stale { border-color: #d55; color: #d55; }
-    .topbar { display: flex; justify-content: space-between; align-items: baseline; }
-    .topbar form { margin: 0; }
-    .topbar button { font-size: .8rem; padding: .2rem .6rem; }
-    .badge { font-size: .8rem; border-radius: 999px; padding: .1rem .6rem; white-space: nowrap; }
-    .badge.draining { color: #2a8; }
-    .badge.idle { color: #d90; }
-    .badge.logged_out { color: #888; }
-    .actions { display: flex; gap: .5rem; margin-top: .5rem; }
-    .actions form { margin: 0; }
-    details { margin-top: .5rem; font-size: .9rem; }
-    details summary { cursor: pointer; opacity: .75; }
-    .policy-form { display: flex; align-items: center; gap: .5rem; margin-top: .5rem; }
-    .policy-form input { width: 5rem; }
-  </style>
-</head>
-<body>
+{% extends "_base.html" %}
+{% block head_extra %}<script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>{% endblock %}
+{% block content %}
   <div class="topbar">
     <h1>timekpr-next-hub</h1>
     <form method="post" action="/logout"><button type="submit">Log out</button></form>
@@ -54,7 +20,8 @@
     <button type="submit">Generate enrollment code</button>
   </form>
   <div id="enroll-result"></div>
-
+{% endblock %}
+{% block scripts %}
   <script>
     // Ticks the displayed elapsed time for any user currently "draining"
     // once a second, extrapolating forward from the last sync
@@ -87,5 +54,4 @@
     }
     setInterval(tickUsers, 1000);
   </script>
-</body>
-</html>
+{% endblock %}

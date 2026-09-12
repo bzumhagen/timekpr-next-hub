@@ -99,6 +99,15 @@ class User(Base):
         Boolean, nullable=False, default=True, server_default="true"
     )
 
+    # The recurring half of the chore gate: which weekdays ("1".."7") withhold
+    # all time until a parent releases that specific date. Hub-only, like the
+    # other knobs on this table -- never reaches `PolicyPayload` or the agent,
+    # so toggling it involves no policy version bump and no device push. The
+    # per-date exception lives in `gate_releases`; absence of a release row
+    # *is* the gate, which is what lets it re-arm every week on its own. See
+    # services/limits.py::combine_limit.
+    gated_weekdays_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
@@ -197,9 +206,38 @@ class Policy(Base):
     track_inactive: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    hide_tray_icon: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    # PlayTime -- see core/timekpr_hub_core/models.py's PlayTimePayload for
+    # what each of these means; stored flat (prefixed) rather than as a
+    # separate table since a policy version is already the unit of
+    # append-only history and PlayTime has no independent lifecycle.
+    playtime_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    playtime_override_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    playtime_unaccounted_intervals_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    playtime_allowed_weekdays_json: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=lambda: ["1", "2", "3", "4", "5", "6", "7"]
+    )
+    playtime_daily_limits_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=lambda: [0] * 7)
+    playtime_activities_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
     note: Mapped[str | None] = mapped_column(String(500))
 
-    __table_args__ = (UniqueConstraint("user_id", "version", name="uq_policies_user_version"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "version", name="uq_policies_user_version"),
+        CheckConstraint(
+            "lockout_type IN ('lock', 'suspend', 'suspendwake', 'terminate', 'kill', 'shutdown')",
+            name="ck_policies_lockout_type",
+        ),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -271,6 +309,71 @@ class Grant(Base):
     __table_args__ = (
         CheckConstraint("source IN ('parent', 'local_timekpra', 'auto_carryover')", name="ck_grants_source"),
         Index("ix_grants_user_day", "user_id", "day"),
+    )
+
+
+# --------------------------------------------------------------------------
+# Per-date adjustments that deliberately do NOT touch `policies`: no version
+# bump, no push to any device. Both feed services/limits.py's single
+# effective-limit combiner, which is the only thing the agent ever sees.
+# --------------------------------------------------------------------------
+
+
+class DayOverride(Base):
+    """An absolute per-date replacement for the policy's daily limit --
+    "Tuesday is 30 minutes instead of the usual two hours", or 0 for a full
+    moratorium.
+
+    Deliberately not a negative `Grant`. A grant is additive and stores a
+    fixed second-count, so a moratorium written as -7200 silently stops
+    cancelling the day the moment that weekday's standing limit changes; an
+    override replaces the base outright and cannot drift. The two compose
+    cleanly -- override is "instead of", grant is "in addition to" -- so a
+    parent can zero a day and still hand back 15 minutes afterwards.
+
+    One row per (user, day): setting a new override for an already-overridden
+    date replaces it (see services/limits.py::set_day_override)."""
+
+    __tablename__ = "day_overrides"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    limit_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(255))
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "day", name="uq_day_overrides_user_day"),
+        CheckConstraint(
+            "limit_seconds >= 0 AND limit_seconds <= 86400", name="ck_day_overrides_limit_seconds"
+        ),
+        Index("ix_day_overrides_user_day", "user_id", "day"),
+    )
+
+
+class GateRelease(Base):
+    """Records that a gated day's precondition (chores, homework, ...) was
+    satisfied for one specific date.
+
+    The recurring rule lives in `users.gated_weekdays_json`; only the
+    exception is stored here. Absence of a row *is* the gate -- which is
+    precisely what makes the gate re-arm on its own each week with nothing to
+    schedule and nothing to clean up. Deleting a row re-gates that day."""
+
+    __tablename__ = "gate_releases"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    released_by: Mapped[str | None] = mapped_column(String(64))
+    released_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    note: Mapped[str | None] = mapped_column(String(255))
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "day", name="uq_gate_releases_user_day"),
+        Index("ix_gate_releases_user_day", "user_id", "day"),
     )
 
 

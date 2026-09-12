@@ -11,7 +11,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from timekpr_hub_core.models import PolicyPayload, PolicyUpdate
+from timekpr_hub_core.models import PlayTimeActivity, PlayTimePayload, PolicyPayload, PolicyUpdate
 
 from timekpr_hub.db.models import Policy, User
 
@@ -37,6 +37,15 @@ def policy_to_payload(policy: Policy) -> PolicyPayload:
         wake_from=policy.wake_from,
         wake_to=policy.wake_to,
         track_inactive=policy.track_inactive,
+        hide_tray_icon=policy.hide_tray_icon,
+        playtime=PlayTimePayload(
+            enabled=policy.playtime_enabled,
+            override_enabled=policy.playtime_override_enabled,
+            unaccounted_intervals_enabled=policy.playtime_unaccounted_intervals_enabled,
+            allowed_weekdays=policy.playtime_allowed_weekdays_json or [],
+            daily_limits_s=policy.playtime_daily_limits_json or [0] * 7,
+            activities=[PlayTimeActivity(**a) for a in (policy.playtime_activities_json or [])],
+        ),
         note=policy.note or "",
     )
 
@@ -118,18 +127,20 @@ async def update_policy(
     session: AsyncSession, *, user: User, update: PolicyUpdate, created_by: str
 ) -> Policy:
     """A parent-initiated change: PUT /users/{u}/policy (api/parent.py) and
-    the UI's per-day-minutes form both funnel through here. Policies are
-    append-only (PLAN "Policy push, and the 'a parent edited it locally'
+    the UI's basic/advanced policy forms both funnel through here. Policies
+    are append-only (PLAN "Policy push, and the 'a parent edited it locally'
     problem") -- this always inserts version + 1 and repoints
     `current_policy_id` rather than mutating a row in place, so `sync.py`'s
     `policy_version_applied != policy.version` check picks it up and pushes
     it to every device on their very next tick.
 
-    Only the fields `PolicyUpdate` exposes (daily/weekly/monthly limits,
-    allowed weekdays) are settable through this Phase 1 editor;
-    allowed_hours/lockout_type/wake window/track_inactive/note carry forward
-    from the current policy unchanged, since there's no UI for them yet
-    (docs/best-practices-review.md).
+    Every field `PolicyUpdate` exposes is written here -- no field is
+    carried forward from the current policy unedited, since the advanced
+    editor now covers all of them (allowed_hours/lockout_type/wake
+    window/track_inactive/hide_tray_icon/PlayTime/note included). A caller
+    that wants to change only one field must still submit the whole
+    `PolicyUpdate`, seeded from the current policy's payload -- the same
+    "full form, one save" shape the UI presents.
 
     `SELECT ... FOR UPDATE` on the user row for the duration guards against
     two concurrent edits both reading the same current version and racing on
@@ -146,22 +157,31 @@ async def update_policy(
     locked_user = locked.scalar_one()
     current = await get_current_policy(session, locked_user)
     next_version = (current.version + 1) if current else 1
+    pt = update.playtime
 
     policy = Policy(
         user_id=locked_user.id,
         version=next_version,
         created_by=created_by,
         daily_limits_json=update.daily_limits_s,
-        allowed_hours_json=current.allowed_hours_json if current else {},
-        allowed_weekdays_json=update.allowed_weekdays
-        or (current.allowed_weekdays_json if current else ["1", "2", "3", "4", "5", "6", "7"]),
+        allowed_hours_json={
+            day: [h.model_dump() for h in hours] for day, hours in update.allowed_hours.items()
+        },
+        allowed_weekdays_json=update.allowed_weekdays,
         weekly_limit_s=update.weekly_limit_s,
         monthly_limit_s=update.monthly_limit_s,
-        lockout_type=current.lockout_type if current else "lock",
-        wake_from=current.wake_from if current else None,
-        wake_to=current.wake_to if current else None,
-        track_inactive=current.track_inactive if current else False,
-        note=current.note if current else None,
+        lockout_type=update.lockout_type.value,
+        wake_from=update.wake_from,
+        wake_to=update.wake_to,
+        track_inactive=update.track_inactive,
+        hide_tray_icon=update.hide_tray_icon,
+        playtime_enabled=pt.enabled,
+        playtime_override_enabled=pt.override_enabled,
+        playtime_unaccounted_intervals_enabled=pt.unaccounted_intervals_enabled,
+        playtime_allowed_weekdays_json=pt.allowed_weekdays,
+        playtime_daily_limits_json=pt.daily_limits_s,
+        playtime_activities_json=[a.model_dump() for a in pt.activities],
+        note=update.note or None,
     )
     session.add(policy)
     await session.flush()

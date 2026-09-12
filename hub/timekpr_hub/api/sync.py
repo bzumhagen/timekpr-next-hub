@@ -140,7 +140,7 @@ async def sync(
         remote_spent = max(global_spent - this_device_spent, 0)
 
         # 3. effective limits
-        limit_today = await effective_daily_limit(session, policy=policy, user_id=user.id, day=stamp.day)
+        limit_today = await effective_daily_limit(session, policy=policy, user=user, day=stamp.day)
         # Week/month pooling is Phase 3 (PLAN milestone breakdown) -- for now
         # the agent gets the raw policy ceilings, which is a strict superset
         # (never MORE restrictive than intended) of the eventual behavior.

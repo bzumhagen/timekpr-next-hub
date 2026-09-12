@@ -247,6 +247,60 @@ async def global_spent_parallel(session: AsyncSession, *, user_id: uuid.UUID, da
     return int(result.scalar_one())
 
 
+async def global_spent_wallclock_history(
+    session: AsyncSession, *, user_id: uuid.UUID, start_day: date, end_day: date
+) -> dict[date, int]:
+    """`global_spent_wallclock` for every day in `[start_day, end_day]` in one
+    round-trip -- the usage-statistics view's day-by-day totals. Same
+    GREATEST(wall-clock union, MAX-merged counter) formula as the single-day
+    version, just grouped by day as well as unioning within each day. A day
+    with no data at all is simply absent; callers should default to 0."""
+    stmt = text(
+        """
+        WITH per_day_ranges AS (
+            SELECT day, range_agg(span) AS merged
+            FROM activity_intervals
+            WHERE user_id = :user_id AND day BETWEEN :start_day AND :end_day
+            GROUP BY day
+        ),
+        unioned AS (
+            SELECT day, SUM(EXTRACT(EPOCH FROM (upper(r) - lower(r))))::bigint AS union_s
+            FROM per_day_ranges, unnest(merged) AS r
+            GROUP BY day
+        ),
+        counters AS (
+            SELECT day, MAX(spent_seconds) AS max_s
+            FROM usage_counters
+            WHERE user_id = :user_id AND day BETWEEN :start_day AND :end_day
+            GROUP BY day
+        )
+        SELECT COALESCE(u.day, c.day) AS day,
+               GREATEST(COALESCE(u.union_s, 0), COALESCE(c.max_s, 0)) AS global_spent_s
+        FROM unioned u
+        FULL OUTER JOIN counters c ON c.day = u.day
+        """
+    )
+    result = await session.execute(stmt, {"user_id": user_id, "start_day": start_day, "end_day": end_day})
+    return {row.day: int(row.global_spent_s) for row in result}
+
+
+async def device_spent_for_day_by_device(
+    session: AsyncSession, *, user_id: uuid.UUID, day: date
+) -> dict[uuid.UUID, int]:
+    """Each device's own MAX-merged counter for one day -- the stats view's
+    per-device split for a selected day."""
+    result = await session.execute(
+        text(
+            """
+            SELECT device_id, spent_seconds FROM usage_counters
+            WHERE user_id = :user_id AND day = :day
+            """
+        ),
+        {"user_id": user_id, "day": day},
+    )
+    return {row.device_id: int(row.spent_seconds) for row in result}
+
+
 async def device_spent_today(
     session: AsyncSession, *, user_id: uuid.UUID, device_id: uuid.UUID, day: date
 ) -> int:

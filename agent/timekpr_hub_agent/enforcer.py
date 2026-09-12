@@ -173,6 +173,84 @@ class TimekprEnforcer:
         result, _message = self._admin.setAllowedDays(username, weekdays)
         return result == 0
 
+    def set_allowed_hours(
+        self, username: str, day_number: str, hours: dict[int, dict[str, int | bool]]
+    ) -> bool:
+        """`day_number` is '1'..'7' (matching setAllowedDays); `hours` is
+        already in `setAllowedHours`'s own per-hour dict shape
+        (`{hour: {"STARTMIN": ..., "ENDMIN": ..., "UACC": ...}}` --
+        see `core/timekpr_hub_core/allowed_hours.py::hours_to_dbus_payload`).
+        Caller MUST never pass an empty `hours` dict: an absent hour means
+        "forbidden" to timekpr, so an empty dict would lock the user out of
+        every hour of `day_number`, not leave it unrestricted."""
+        if not hours:
+            log.error("%s: refusing to push an empty allowed_hours for day %s", username, day_number)
+            return False
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setAllowedHours(username, day_number, hours)
+        return result == 0
+
+    def set_track_inactive(self, username: str, track_inactive: bool) -> bool:
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setTrackInactive(username, track_inactive)
+        return result == 0
+
+    def set_hide_tray_icon(self, username: str, hide: bool) -> bool:
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setHideTrayIcon(username, hide)
+        return result == 0
+
+    def set_lockout_type(self, username: str, lockout_type: str, wake_from: str, wake_to: str) -> bool:
+        """`lockout_type` is one of timekpr's TK_CTRL_RES_* string values
+        (see `core.models.LockoutType`); `wake_from`/`wake_to` are only
+        meaningful for 'suspendwake' but are always passed through -- timekpr
+        itself just stores them regardless."""
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setLockoutType(username, lockout_type, wake_from or "", wake_to or "")
+        return result == 0
+
+    def set_playtime_enabled(self, username: str, enabled: bool) -> bool:
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setPlayTimeEnabled(username, enabled)
+        return result == 0
+
+    def set_playtime_limit_override(self, username: str, override: bool) -> bool:
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setPlayTimeLimitOverride(username, override)
+        return result == 0
+
+    def set_playtime_unaccounted_intervals_enabled(self, username: str, enabled: bool) -> bool:
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setPlayTimeUnaccountedIntervalsEnabled(username, enabled)
+        return result == 0
+
+    def set_playtime_allowed_days(self, username: str, weekdays: list[str]) -> bool:
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setPlayTimeAllowedDays(username, weekdays)
+        return result == 0
+
+    def set_playtime_limits_for_days(self, username: str, daily_limits_s: list[int]) -> bool:
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setPlayTimeLimitsForDays(username, daily_limits_s)
+        return result == 0
+
+    def set_playtime_activities(self, username: str, activities: list[tuple[str, str]]) -> bool:
+        """`activities` is a list of (mask, description) pairs -- matches
+        `setPlayTimeActivities`'s `saas` signature."""
+        if not self._connected and not self.connect():
+            return False
+        result, _message = self._admin.setPlayTimeActivities(username, [list(a) for a in activities])
+        return result == 0
+
     def get_user_policy_snapshot(self, username: str) -> dict | None:
         """This device's own currently-configured limits for `username`, in
         the shape `EnrollRequest`'s per-user policy snapshot expects

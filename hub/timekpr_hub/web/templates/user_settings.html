@@ -1,0 +1,50 @@
+{% extends "_base.html" %}
+{% block title %}{{ display_name }} -- settings -- timekpr-next-hub{% endblock %}
+{% block content %}
+  <div class="topbar">
+    <h1>{{ display_name }}'s settings</h1>
+    <a class="button-link" href="/">&larr; Back</a>
+  </div>
+  <p class="lede">
+    Hub-only settings -- unlike the <a href="/users/{{ username }}/policy">policy editor</a>,
+    nothing here is pushed to a device or creates a new policy version.
+  </p>
+
+  <form method="post" action="/users/{{ username }}/settings">
+    <div class="card">
+      <p class="card-title">Chores-first days</p>
+      <p class="hint">
+        On a checked day, time is withheld until you click "Release today" on the dashboard --
+        the day's normal limit still applies once released. Use this for a recurring rule like
+        "weekend time only after chores"; for a one-off exception on a single date, use
+        "Adjust a day" on the dashboard instead.
+      </p>
+      <div class="checkbox-row">
+        {% for day in weekday_tokens %}
+          <label>
+            <input type="checkbox" name="gated_weekday_{{ day }}" {% if day in gated_weekdays %}checked{% endif %}>
+            {{ weekday_names[loop.index0] }}
+          </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="card-title">Accounting mode</p>
+      <p class="hint">
+        "Wall-clock" pools simultaneous activity across devices (30 minutes on two devices at once
+        counts as 30 minutes). "Parallel" counts each device's time independently.
+      </p>
+      <span class="seg">
+        <input type="radio" name="accounting_mode" id="am-wallclock" value="wallclock" {% if accounting_mode == 'wallclock' %}checked{% endif %}>
+        <label for="am-wallclock">Wall-clock</label>
+        <input type="radio" name="accounting_mode" id="am-parallel" value="parallel" {% if accounting_mode == 'parallel' %}checked{% endif %}>
+        <label for="am-parallel">Parallel</label>
+      </span>
+    </div>
+
+    <div class="save-bar">
+      <button type="submit">Save settings</button>
+    </div>
+  </form>
+{% endblock %}

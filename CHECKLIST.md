@@ -381,13 +381,80 @@ editor beyond additive grants, no parent auth at all) were closed together.
       resort" handler); `logging_config.py`'s `configure_logging()`, called
       once from `app.py`, adds a formatted stream handler at a level
       controlled by `TIMEKPR_HUB_LOG_LEVEL` (default `INFO`).
-- [ ] Full policy push w/ per-field change detection
+- [x] **Full policy editor (basic + advanced) and usage statistics** —
+      closes the "hub-side policy editor UI/endpoint" and "pushing
+      allowed_hours/lockout type/PlayTime" gaps noted above. `PolicyUpdate`/
+      `PolicyPayload` (`core/timekpr_hub_core/models.py`) now carry every
+      field timekpr exposes per user (time-of-day windows, lockout type +
+      wake window, `track_inactive`, `hide_tray_icon`, full PlayTime), and
+      `update_policy` (`services/policy.py`) sets all of them instead of
+      carrying six forward unedited. New `core/timekpr_hub_core/
+      allowed_hours.py` models the interval <-> per-hour `ALLOWED_HOURS`
+      conversion as a pure, Hypothesis-property-tested module, so the editor
+      lets a parent draw plain time windows instead of thinking in
+      timekpr's own per-hour records (and rejects a same-clock-hour
+      conflict with a specific message, rather than `timekpra`'s six silent
+      error classes and manual "verify" button). New hub UI:
+      `GET/POST /users/{username}` (basic per-day limits + an hours grid,
+      an "Advanced" disclosure for caps/weekdays/lockout/PlayTime) and
+      `GET /users/{username}/stats` (daily spend-vs-limit history +
+      per-device split for a selected day, `services/summaries.py::
+      compute_usage_history`). The agent (`enforcer.py`/`main.py`) gained
+      wrappers for every remaining admin DBUS method (`setAllowedHours`,
+      `setTrackInactive`, `setHideTrayIcon`, `setLockoutType`, the six
+      `setPlayTime*` calls) and now pushes them all-or-nothing, same as
+      before. Two correctness bugs found and fixed along the way: (1)
+      timekpr indexes `LIMITS_PER_WEEKDAYS` *positionally within*
+      `ALLOWED_WEEKDAYS`, not by weekday number
+      (`server/user/userdata.py:265-270` in the timekpr-next tree) — pushing
+      the hub's day-keyed array verbatim alongside a non-full allowed-days
+      list would silently hand each allowed day a neighboring day's limit;
+      `_project_daily_limits_to_allowed_days` (`main.py`) now projects
+      before every push (property-tested); (2) an empty `allowed_hours` list
+      means "forbidden" to timekpr, not "unrestricted" — `set_allowed_hours`
+      refuses to push one. UI routes now write to `audit_log` (previously
+      only the JSON API did). PlayTime pooling / drift detection / per-field
+      change *detection* (vs. full replacement) remain open, see below.
+- [x] **Chore gates and per-date limit overrides** — closes "weekend time only
+      after chores" and "you lose your time tomorrow" without a policy edit
+      (no version bump, no device push, no agent change at all). Three new
+      pieces, each doing one job: `users.gated_weekdays_json` is the
+      recurring rule (hub-only, alongside `accounting_mode`/`offline_*`);
+      `gate_releases(user, day)` is the per-date exception -- absence of a
+      row *is* the gate, so it re-arms every week with nothing to schedule
+      or clean up; `day_overrides(user, day, limit_seconds)` is an absolute
+      per-date replacement for the policy's standing limit (0 = full
+      moratorium), deliberately not a negative `Grant` -- a grant's stored
+      second-count would silently stop cancelling the day the moment that
+      weekday's standing limit changed, an override can't drift. `Grant`
+      itself gained an optional `day` (`GrantCreate.day`), so "you lose 30
+      minutes tomorrow" no longer requires waiting until tomorrow to grant it.
+      **Prerequisite refactor**: the effective-limit formula was duplicated
+      three times (`services/limits.py::effective_daily_limit` for `/sync`,
+      and two copies in `services/summaries.py` for the dashboard and usage
+      stats) agreeing only by coincidence; collapsed into one
+      `combine_limit()` all three now call, so a gated/overridden day reads
+      the same everywhere. New hub UI: a dashboard badge + one-click
+      "Release today", an "Adjust a day" disclosure (date + no-time-at-all /
+      limit-to-N, with a heads-up when tomorrow already carries an
+      override), and a separate `/users/{username}/settings` page for the
+      two hub-only knobs -- deliberately its own page with its own single
+      save button rather than a second card on the policy editor, which
+      would reintroduce the tab-scoped-Apply confusion the `timekpra`
+      prior-art review above called out. JSON API twins:
+      `PUT/DELETE .../day-override[/{day}]`, `POST/DELETE
+      .../gate-release[/{day}]`, `PUT .../settings`. Deliberately did NOT
+      wire `offline_policy`/`offline_grace_s`/`offline_cap_s`/
+      `auto_adopt_local_grants` into a settings UI even though they're on
+      the same table -- verified by grep that the first three are still
+      hardcoded agent-side (`main.py`'s `offline_policy="capped"` comment:
+      "per-user override is hub-side (Phase 2 wiring)") and the fourth is
+      read nowhere at all; exposing them would have been editable-but-inert.
 - [ ] Drift detection + adopt/ignore workflow (local `timekpra` edits)
 - [ ] Local-grant capture & auto-promotion (`unexplained` offset detection)
 - [ ] Clock-skew + NTP detection (`org.freedesktop.timedate1`)
 - [ ] Silent-device alerting + ntfy push
 - [ ] `alerts` table wired (audit_log now is, see above)
-- [ ] History charts (Chart.js)
 - [ ] Overshoot carryover to next day
 
 ## Phase 3 — Pooled week/month (PLAN: "Phase 3")

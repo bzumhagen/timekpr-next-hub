@@ -10,18 +10,27 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.calendar import canonical_stamp
-from timekpr_hub_core.models import GrantCreate, PolicyPayload, PolicyUpdate, UserSummary
+from timekpr_hub_core.models import (
+    DayOverrideCreate,
+    GateReleaseCreate,
+    GrantCreate,
+    PolicyPayload,
+    PolicyUpdate,
+    UserSettingsUpdate,
+    UserSummary,
+)
 
 from timekpr_hub.api.parent_auth import get_current_parent_api
 from timekpr_hub.db.models import Device, EnrollmentCode, Parent, User
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.audit import record_audit_event
+from timekpr_hub.services.limits import clear_day_override, release_gate, set_day_override, unrelease_gate
 from timekpr_hub.services.policy import get_current_policy, policy_to_payload, update_policy
 from timekpr_hub.services.summaries import compute_user_summaries
 from timekpr_hub.settings import settings
@@ -55,13 +64,19 @@ async def create_grant(
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
 
-    now = datetime.now(UTC)
-    stamp = canonical_stamp(now, settings.tz)
+    # `body.day` lets a grant target a future date ("you lose 30 minutes
+    # tomorrow") without touching the standing policy -- None (the default,
+    # and every caller before dated grants existed) means today in the
+    # hub's own timezone, exactly the prior behavior.
+    grant_day = (
+        date.fromisoformat(body.day) if body.day else canonical_stamp(datetime.now(UTC), settings.tz).day
+    )
+    grant_day_str = grant_day.isoformat()
 
     grant = Grant(
         id=uuid.uuid4(),
         user_id=user.id,
-        day=stamp.day,
+        day=grant_day,
         seconds=body.seconds,
         reason=body.reason,
         source="parent",
@@ -75,11 +90,11 @@ async def create_grant(
         action="grant.create",
         target_type="user",
         target_id=username,
-        after={"seconds": grant.seconds, "day": stamp.day_str, "reason": grant.reason},
+        after={"seconds": grant.seconds, "day": grant_day_str, "reason": grant.reason},
         ip=_client_ip(request),
     )
     await session.commit()
-    return {"id": str(grant.id), "seconds": grant.seconds, "day": stamp.day_str}
+    return {"id": str(grant.id), "seconds": grant.seconds, "day": grant_day_str}
 
 
 @router.put("/users/{username}/policy", response_model=PolicyPayload)
@@ -118,6 +133,178 @@ async def update_user_policy(
     )
     await session.commit()
     return policy_to_payload(policy)
+
+
+@router.put("/users/{username}/day-override")
+async def set_user_day_override(
+    username: str,
+    body: DayOverrideCreate,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    """Sets (or replaces) an absolute per-date limit -- "instead of" the
+    standing policy, not "in addition to" like a grant. See
+    services/limits.py::set_day_override for why this exists as its own
+    concept rather than a large negative grant."""
+    result = await session.execute(select(User).where(User.canonical_username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+
+    day = date.fromisoformat(body.day)
+    override = await set_day_override(
+        session,
+        user_id=user.id,
+        day=day,
+        limit_seconds=body.limit_seconds,
+        reason=body.reason,
+        created_by="parent-api",
+    )
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="override.set",
+        target_type="user",
+        target_id=username,
+        after={"day": body.day, "limit_seconds": body.limit_seconds, "reason": body.reason},
+        ip=_client_ip(request),
+    )
+    await session.commit()
+    return {"id": str(override.id), "day": body.day, "limit_seconds": override.limit_seconds}
+
+
+@router.delete("/users/{username}/day-override/{day}")
+async def clear_user_day_override(
+    username: str,
+    day: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    result = await session.execute(select(User).where(User.canonical_username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+
+    cleared = await clear_day_override(session, user_id=user.id, day=date.fromisoformat(day))
+    if cleared:
+        await record_audit_event(
+            session,
+            actor_type="parent",
+            actor_id=str(parent.id),
+            action="override.clear",
+            target_type="user",
+            target_id=username,
+            before={"day": day},
+            ip=_client_ip(request),
+        )
+    await session.commit()
+    return {"day": day, "cleared": cleared}
+
+
+@router.post("/users/{username}/gate-release", status_code=status.HTTP_201_CREATED)
+async def release_user_gate(
+    username: str,
+    body: GateReleaseCreate,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    """Records that a gated day's precondition was met for one date --
+    the exception to `users.gated_weekdays_json`'s recurring rule. Releasing
+    an already-released day just refreshes who/why (see
+    services/limits.py::release_gate)."""
+    result = await session.execute(select(User).where(User.canonical_username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+
+    release = await release_gate(
+        session, user_id=user.id, day=date.fromisoformat(body.day), released_by="parent-api", note=body.note
+    )
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="gate.release",
+        target_type="user",
+        target_id=username,
+        after={"day": body.day, "note": body.note},
+        ip=_client_ip(request),
+    )
+    await session.commit()
+    return {"id": str(release.id), "day": body.day}
+
+
+@router.delete("/users/{username}/gate-release/{day}")
+async def unrelease_user_gate(
+    username: str,
+    day: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    """Reverses `release_user_gate` -- deletes the release row, re-gating
+    that date (absence of a row IS the gate)."""
+    result = await session.execute(select(User).where(User.canonical_username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+
+    unreleased = await unrelease_gate(session, user_id=user.id, day=date.fromisoformat(day))
+    if unreleased:
+        await record_audit_event(
+            session,
+            actor_type="parent",
+            actor_id=str(parent.id),
+            action="gate.unrelease",
+            target_type="user",
+            target_id=username,
+            before={"day": day},
+            ip=_client_ip(request),
+        )
+    await session.commit()
+    return {"day": day, "unreleased": unreleased}
+
+
+@router.put("/users/{username}/settings")
+async def update_user_settings(
+    username: str,
+    body: UserSettingsUpdate,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    """The hub-only per-user knobs (which weekdays are chore-gated, the
+    accounting mode) -- deliberately NOT part of PolicyUpdate/update_policy:
+    no policy version bump, no device push, its own save action. See
+    core/timekpr_hub_core/models.py::UserSettingsUpdate."""
+    result = await session.execute(select(User).where(User.canonical_username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+
+    before = {
+        "gated_weekdays": user.gated_weekdays_json,
+        "accounting_mode": user.accounting_mode,
+    }
+    user.gated_weekdays_json = body.gated_weekdays
+    user.accounting_mode = body.accounting_mode.value
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="user_settings.update",
+        target_type="user",
+        target_id=username,
+        before=before,
+        after={"gated_weekdays": body.gated_weekdays, "accounting_mode": body.accounting_mode.value},
+        ip=_client_ip(request),
+    )
+    await session.commit()
+    return {"gated_weekdays": user.gated_weekdays_json, "accounting_mode": user.accounting_mode}
 
 
 @router.post("/enrollment-codes", status_code=status.HTTP_201_CREATED)

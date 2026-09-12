@@ -97,9 +97,26 @@ the same hub user, no extra step needed.
 The hub's home page shows, per kid: today's usage bar, an activity badge
 (draining / idle / offline), and their device list.
 
-- **Change today's or every day's limit**: use the per-user limit editor.
-- **Give extra time today**: use the **+30 min** button (or type a custom
-  amount).
+- **Give extra time today**: use the **+30 min** / **-30 min** buttons on
+  the dashboard.
+- **Manage the full policy**: click **Edit policy** on a kid's card for the
+  basic editor -- per-day limits and an hours grid for time-of-day windows.
+  Everything else timekpr can do (weekly/monthly caps, which days login is
+  allowed at all, lockout behavior, PlayTime) is one click away behind
+  **Advanced policy settings** on the same page.
+- **See where the time went**: click **Usage stats** for a day-by-day
+  spend-vs-limit history and a per-device breakdown.
+- **"No time until chores are done"**: on the kid's **Settings** page, check
+  which days are chore-gated (e.g. weekends). On a gated day the dashboard
+  shows a **⏸ Chores not done** badge; click **Release today** once they're
+  done and the day's normal limit applies immediately — no policy edit, no
+  device restart. The gate re-arms on its own the next time that weekday
+  comes around.
+- **"You lose your time tomorrow"** (or any other date): use **Adjust a
+  day** on the dashboard — pick a date and either "no time at all" or a
+  specific limit. This replaces that day's limit outright rather than
+  editing the standing policy, so it can't be undone by accident when you
+  later change the regular schedule.
 - **Manage a device**: revoke it (stops hub management, reversible) or
   delete it (erases its history) from the device list. Revoking does
   **not** lock the child out — it hands the machine back to local

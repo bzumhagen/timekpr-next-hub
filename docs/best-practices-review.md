@@ -140,6 +140,21 @@ picking any of these up, and update this file's status when you do.
   concurrent first-policy creation, concurrent policy updates) are in
   `tests/integration/test_hub_api.py`; the last two failed against the
   code before `populate_existing` was added, confirming the bug was real.
+  **A third bug, caught later by the same regression test under a
+  different container/DB restart**: `api/enroll.py` inserted the
+  FK'd-to-`user_id` `user_aliases` row *before* calling
+  `get_or_create_policy`, not after. Each transaction's alias INSERT takes
+  a shared (FOR KEY SHARE) lock on the referenced `users` row to validate
+  the FK; `get_or_create_policy`'s `SELECT ... FOR UPDATE` then tries to
+  upgrade that same row to an exclusive lock. Two concurrent enrolls of the
+  same existing user both holding the shared lock and both waiting on the
+  other's to release before their own upgrade could proceed is a textbook
+  Postgres deadlock (`DeadlockDetectedError`, one transaction killed) — not
+  a flaky test, a real latent bug in the original fix, reproducible on
+  demand. Moving the alias insert to after the FOR UPDATE lock (so only one
+  transaction ever holds any lock on the row at a time) fixed it; confirmed
+  with 15 repeated runs of the deadlocking test plus 10 repeated runs of
+  the full concurrent-test group, all clean.
 - **The engine, session factory, and settings are all built at import
   time.** `hub/timekpr_hub/db/session.py:15-22` and
   `hub/timekpr_hub/settings.py:23` — this is why `pyproject.toml` has to

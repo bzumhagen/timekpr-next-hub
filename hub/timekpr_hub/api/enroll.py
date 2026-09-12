@@ -147,18 +147,6 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
             existing = await session.execute(select(User).where(User.canonical_username == local_username))
             user = existing.scalar_one()
 
-        # on_conflict_do_nothing rather than a plain insert: a rebind
-        # reuses `device.id`, so re-enrolling with the same local_users (the
-        # common case) would otherwise violate
-        # uq_user_aliases_device_local on a row that's already correct.
-        alias_stmt = pg_insert(UserAlias).values(
-            id=uuid.uuid4(), user_id=user.id, device_id=device.id, local_username=local_username
-        )
-        alias_stmt = alias_stmt.on_conflict_do_nothing(
-            index_elements=[UserAlias.device_id, UserAlias.local_username]
-        )
-        await session.execute(alias_stmt)
-
         if is_new:
             new_users.append(local_username)
             # Seed the initial policy from this device's own configured
@@ -183,6 +171,29 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
             # create commits (services/policy.py's get_or_create_policy
             # docstring).
             policy = await get_or_create_policy(session, user)
+
+        # The alias insert (FK'd to user_id) must come AFTER the FOR UPDATE
+        # lock above, not before it -- this order was originally reversed
+        # and produced a genuine Postgres deadlock under exactly this
+        # concurrent-enroll scenario, caught by
+        # tests/integration/test_hub_api.py's
+        # test_concurrent_first_policy_creation_for_a_shared_user_does_not_race:
+        # each transaction's INSERT INTO user_aliases first takes a shared
+        # (FOR KEY SHARE) lock on the referenced `users` row to validate the
+        # FK, then get_or_create_policy's SELECT ... FOR UPDATE tries to
+        # upgrade that SAME row to an exclusive lock -- two transactions
+        # both holding the shared lock and both waiting on each other's to
+        # release before their own upgrade can proceed is a textbook
+        # deadlock. Acquiring the exclusive FOR UPDATE lock first means only
+        # one transaction ever holds any lock on the row at a time; the
+        # other blocks cleanly instead of deadlocking.
+        alias_stmt = pg_insert(UserAlias).values(
+            id=uuid.uuid4(), user_id=user.id, device_id=device.id, local_username=local_username
+        )
+        alias_stmt = alias_stmt.on_conflict_do_nothing(
+            index_elements=[UserAlias.device_id, UserAlias.local_username]
+        )
+        await session.execute(alias_stmt)
 
         policies[local_username] = policy_to_payload(policy)
 

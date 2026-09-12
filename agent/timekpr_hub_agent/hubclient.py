@@ -170,6 +170,34 @@ class HubClient:
             raise HubUnreachableError(str(exc)) from exc
 
         if status in (401, 403):
+            # Before concluding the device is genuinely revoked: `self._token`
+            # was loaded once, at __init__, and this HubClient can live for
+            # the lifetime of a long-running systemd service (days/weeks). A
+            # re-enroll on this same machine rewrites the token file on disk
+            # (hubclient.py's enroll()/_save_token) and rotates it hub-side,
+            # but an *already-running* `run` process has no way to notice --
+            # `enroll`'s own `systemctl restart` is supposed to replace it
+            # with a fresh process, but if that restart didn't happen (a
+            # `--no-start` enroll, a failed/skipped systemctl call, or any
+            # other gap), the running process is left permanently sending a
+            # now-stale token that no longer matches any device row, which
+            # looks identical to an actual revoke (both are 401/403) and
+            # locks the child out until someone thinks to restart the
+            # service by hand. Seen live: `status` (a fresh process,
+            # freshly re-reading the token file) succeeded while the
+            # long-running `run` service kept 403ing on the same tick.
+            # Reload from disk and retry ONCE; a genuine revoke leaves the
+            # file untouched, so `fresh_token == self._token` and this is a
+            # no-op -- the fail-closed behavior below still applies.
+            fresh_token = self._load_token()
+            if fresh_token and fresh_token != self._token:
+                self._token = fresh_token
+                try:
+                    status, data = self._post("/api/v1/sync", payload, headers=self._headers())
+                except (urllib.error.URLError, OSError) as exc:
+                    raise HubUnreachableError(str(exc)) from exc
+
+        if status in (401, 403):
             raise DeviceRevokedError(f"device token rejected: {status}")
         if status >= 500:
             raise HubUnreachableError(f"hub returned {status}")

@@ -13,6 +13,34 @@ picking any of these up, and update this file's status when you do.
 
 ## High — all fixed or moot
 
+- ~~**A rotated device token stays live-locked-out until something restarts
+  the agent process.**~~ — **fixed**: diagnosed from a real report (a child
+  logged into a freshly-enrolled, correctly-policied account and was
+  immediately locked out) via a live diagnostic bundle (journal + `state.json`
+  + timekpr's own control file). Root cause: `HubClient._token`
+  (`agent/timekpr_hub_agent/hubclient.py`) is loaded once, at `__init__`, and
+  a `run` process can live for the lifetime of a systemd service (in the
+  reported case, 12+ hours). A re-enroll on the same machine rewrites the
+  token file on disk and rotates it hub-side, and `enroll`'s own
+  `systemctl restart` is supposed to replace the running process with a
+  fresh one holding the new token — but if that restart didn't happen for
+  any reason (`--no-start`, a failed/skipped systemctl call, or any other
+  gap), the already-running process is left sending a now-stale token
+  forever. Every `/sync` then 401s, which `hubclient.py` already correctly
+  treats as `DeviceRevokedError` (fail-closed, "never fail open") — so the
+  child is locked to zero time, indistinguishable from a genuine revoke,
+  until someone happens to restart the service by hand. Confirmed live: at
+  the moment of the report, `timekpr-hub-agent status` (a fresh process,
+  freshly re-reading the token file) reported "✓ hub reachable" while the
+  long-running `run` service kept 403ing on the very same tick. `sync` now
+  detects the on-disk token has changed and retries once with the fresh one
+  before concluding the device is actually revoked — self-healing within
+  one tick (~20s) instead of requiring a manual restart, with no change in
+  behavior for a genuine revoke (the file is untouched, so the retry is a
+  no-op and it still fails closed). Regression tests in
+  `tests/unit/test_hubclient.py` cover both the rotated-token self-heal and
+  the genuine-revoke case (confirms no wasted retry).
+
 - ~~**No parent authentication, and the Caddyfile is set up for a public
   TLS domain.**~~ — **fixed**: every route in `api/parent.py` and
   `api/ui.py` now requires a logged-in parent (`get_current_parent_api` /

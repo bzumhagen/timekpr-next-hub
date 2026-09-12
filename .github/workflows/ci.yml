@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  TEST_DATABASE_URL: postgresql+asyncpg://timekpr_hub:timekpr_hub@localhost:5432/timekpr_hub_test
+  TIMEKPR_HUB_REQUIRE_DB: "1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: timekpr_hub
+          POSTGRES_PASSWORD: timekpr_hub
+          POSTGRES_DB: timekpr_hub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U timekpr_hub"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync workspace
+        run: uv sync --all-packages
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Typecheck
+        run: uv run mypy core hub agent
+
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: uv run alembic -c hub/alembic.ini upgrade head
+
+      - name: Test
+        run: uv run pytest

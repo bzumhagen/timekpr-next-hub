@@ -59,8 +59,11 @@ Proceeding to Phase 1.
 - [x] `hub/timekpr_hub/` package + Alembic migrations set up, `.venv` dev environment
       (`requirements-dev.txt` frozen)
 - [x] `agent/timekpr_hub_agent/` package skeleton (fake_timekpr.py written so far)
-- [ ] `hub/timekpr_hub/` FastAPI app itself (routers, app.py) — in progress
-- [ ] `agent/timekpr_hub_agent/timekpr_paths.py` — probe distro package locations
+- [x] `hub/timekpr_hub/` FastAPI app itself (routers, app.py) — `app.py` +
+      6 routers under `hub/timekpr_hub/api/` (enroll, sync, parent,
+      parent_auth, ui, auth)
+- [x] `agent/timekpr_hub_agent/timekpr_paths.py` — probes distro package
+      locations, validated against the real install (see Phase 0 §4 above)
 - [x] `deploy/docker-compose.yml` + `Dockerfile` + `Caddyfile` + `.env.example` — **built and
       ran the actual stack** (postgres + hub containers) via `docker compose` (podman backend):
       image builds cleanly, migrations auto-apply on container start, `/healthz` responds `ok`
@@ -169,9 +172,10 @@ Proceeding to Phase 1.
       `After=multi-user.target` unit). `makepkg -f` run and verified in this session: produced a
       correctly-laid-out `.pkg.tar.zst` (`usr/bin/timekpr-hub-agent` present,
       `tar -tf … | grep python3\.` empty, systemd unit +
-      sysusers.d/tmpfiles.d/agent.env at their expected paths). **Not yet installed** via
-      `pacman -U` + a real enrollment on this machine — deliberately left for the user (it
-      creates a system user and a running service) rather than done unattended here.
+      sysusers.d/tmpfiles.d/agent.env at their expected paths). **`pacman -U` + a real
+      enrollment has since been run and verified on a separate machine** (deliberately
+      left for the user rather than done unattended here, since it creates a system user
+      and a running service).
 - [x] `enroll`/`run`/`status` CLI subcommands, single-command enrollment (`main.py`,
       `config.py`). `enroll` now: preflights the local timekpr install and DBUS connectivity;
       prompts for which local users to manage (from timekpr's own `getUserList()`) when
@@ -349,14 +353,41 @@ editor beyond additive grants, no parent auth at all) were closed together.
       open — this closes the *simulated-daemon* end-to-end gap, not that one.
 
 ## Phase 2 — Robustness & centralized policy (PLAN: "Phase 2")
+- [x] **Observe/dry-run enforcement mode** — the agent already skipped
+      convergence and only logged intent when `/sync` reported
+      `EnforcementMode.OBSERVE` (`main.py`'s `resp_user.get("enforcement")
+      == "observe"` branch, originally built for the unmapped-user case);
+      what was missing was any way for a parent to actually *set* it. Added
+      `POST /api/v1/devices/{id}/observe` / `.../enforce` (`api/parent.py`)
+      and matching hub-UI buttons + an "(observe-only)" badge
+      (`api/ui.py`, `_devices_fragment.html`), toggling the existing
+      `devices.enforcement` column `/sync` already reads. Verified end to
+      end: `tests/integration/test_hub_api.py::
+      test_device_observe_toggle_flips_enforcement_reported_by_sync`
+      enrolls a device, flips it to observe, and confirms the next `/sync`
+      reports `enforcement: "observe"`.
+- [x] **`audit_log` wired** for the security/change-relevant actions named
+      in the PLAN's "alerts, audit_log tables fully wired" item: grant
+      creation, policy edits, device revoke/delete, and parent login
+      (`services/audit.py`'s `record_audit_event`, called from
+      `api/parent.py` and `api/parent_auth.py`). Approve/observe/enforce
+      toggles and `alerts` itself are not wired yet — left for a future
+      pass rather than expanding this one further. Verified against real
+      Postgres: `test_grant_policy_update_and_device_revoke_are_all_audit_logged`
+      and `test_login_is_audit_logged`.
+- [x] **Hub logging configured** — nothing configured the `timekpr_hub`
+      logger before this (`log.debug` calls were silently dropped,
+      `log.warning` only reached stderr via Python's unformatted "last
+      resort" handler); `logging_config.py`'s `configure_logging()`, called
+      once from `app.py`, adds a formatted stream handler at a level
+      controlled by `TIMEKPR_HUB_LOG_LEVEL` (default `INFO`).
 - [ ] Full policy push w/ per-field change detection
 - [ ] Drift detection + adopt/ignore workflow (local `timekpra` edits)
 - [ ] Local-grant capture & auto-promotion (`unexplained` offset detection)
 - [ ] Clock-skew + NTP detection (`org.freedesktop.timedate1`)
 - [ ] Silent-device alerting + ntfy push
-- [ ] `alerts`, `audit_log` tables fully wired
+- [ ] `alerts` table wired (audit_log now is, see above)
 - [ ] History charts (Chart.js)
-- [ ] Observe/dry-run enforcement mode
 - [ ] Overshoot carryover to next day
 
 ## Phase 3 — Pooled week/month (PLAN: "Phase 3")

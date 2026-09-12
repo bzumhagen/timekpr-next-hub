@@ -2,6 +2,7 @@
 name = "timekpr-hub"
 version = "0.1.0"
 description = "FastAPI hub: centralized, pooled screen-time management for timekpr-next"
+license = "GPL-3.0-only"
 requires-python = ">=3.11"
 dependencies = [
     "timekpr-hub-core",

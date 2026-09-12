@@ -11,7 +11,7 @@ picking any of these up, and update this file's status when you do.
 
 ---
 
-## High — open
+## High — all fixed or moot
 
 - ~~**No parent authentication, and the Caddyfile is set up for a public
   TLS domain.**~~ — **fixed**: every route in `api/parent.py` and
@@ -75,17 +75,27 @@ picking any of these up, and update this file's status when you do.
   `PolicyUpdate` (new) validates each daily limit is `0..86400`; and
   `api/sync.py` now skips any `active_span`/`active_spans` entry where
   `end <= start` instead of letting a malformed one reach `tstzrange`.
-- **Enrollment-code and first-policy races.** `api/enroll.py:39-46` reads
-  the code row with a plain `SELECT`, not `SELECT ... FOR UPDATE` or a
-  conditional `UPDATE ... WHERE used_at IS NULL`; two concurrent enrolls
-  with the same code can both pass the check. Similarly,
-  `hub/timekpr_hub/services/policy.py`'s `create_initial_policy` can
-  be raced by two devices syncing a brand-new user for the first time,
-  raising on `uq_policies_user_version`. Neither path has rate limiting.
-  ~~`update_policy`'s own version of this race~~ — **fixed**: it now takes
-  `SELECT ... FOR UPDATE` on the user row for the duration
-  (`services/policy.py`'s `update_policy`, doc'd there) — only
-  `create_initial_policy` (the enroll-time / first-sync path) is still open.
+- ~~**Enrollment-code and first-policy races.**~~ — **fixed**: `api/enroll.py`
+  now claims a code with one atomic `UPDATE ... WHERE used_at IS NULL AND
+  expires_at >= now RETURNING code`, not a plain `SELECT` followed by a
+  later `UPDATE` — two concurrent enrolls with the same code now
+  serialize on that row, and the loser's re-checked `WHERE` correctly sees
+  it as already used. The first-policy race (two devices reaching a
+  shared-but-policy-less user's first sync or enroll concurrently) is
+  closed by a new `services/policy.py::get_or_create_policy`, used by both
+  `/enroll` and `/sync`. Neither path has rate limiting, which is unrelated
+  and still open.
+  **A second, subtler bug was found and fixed alongside this**:
+  `update_policy`'s existing `SELECT ... FOR UPDATE` (and the new
+  `get_or_create_policy`'s) re-selects `user`, which every caller had
+  already loaded once earlier in the same session — SQLAlchemy's identity
+  map was handing back that same stale Python object once the lock was
+  granted, rather than the just-committed row, silently defeating the lock
+  entirely. Both now pass `execution_options(populate_existing=True)`.
+  Regression tests for all three races (concurrent code redemption,
+  concurrent first-policy creation, concurrent policy updates) are in
+  `tests/integration/test_hub_api.py`; the last two failed against the
+  code before `populate_existing` was added, confirming the bug was real.
 - **The engine, session factory, and settings are all built at import
   time.** `hub/timekpr_hub/db/session.py:15-22` and
   `hub/timekpr_hub/settings.py:23` — this is why `pyproject.toml` has to
@@ -95,19 +105,34 @@ picking any of these up, and update this file's status when you do.
   `DATABASE_URL` bypasses pydantic-settings entirely
   (`os.environ.get` with a hardcoded default that embeds credentials),
   rather than being a field on `Settings`.
-- **N+1 query patterns.** `api/parent.py`'s `list_users` and
-  `api/ui.py`'s `_user_summaries` (an almost-exact duplicate of the same
-  logic) each run ~3 queries per user; `/sync`
-  (`hub/timekpr_hub/api/sync.py`) runs roughly 8 queries per reported
-  user. A join or `IN`-batch would collapse most of these.
+- ~~**N+1 query patterns.**~~ — **fixed, for the unbounded-fanout half**:
+  `api/parent.py`'s `list_users` and `api/ui.py`'s `_user_summaries` (an
+  almost-exact duplicate of the same logic, each running ~3-4 queries per
+  user) are both now a single call into `services/summaries.py`'s new
+  `compute_user_summaries`, which batches every user shown into a handful
+  of queries total via new `*_batch` helpers in `services/aggregate.py`
+  and `services/limits.py` (`global_spent_wallclock_batch`,
+  `global_spent_parallel_batch`, `latest_activity_states_batch`,
+  `grants_totals_batch`) — regardless of household size, and this is the
+  path polled by every open hub UI tab every `default_next_poll_ms`.
+  Cross-checked against the already-verified single-user functions for
+  equivalence in `tests/integration/test_aggregate_postgres.py`.
+  **Still open**: `/sync` (`hub/timekpr_hub/api/sync.py`) still runs
+  roughly 8 queries per reported user, left alone deliberately -- its
+  fan-out is bounded by how many local users one agent manages (normally
+  1-2), not by household size, and half its per-user work is writes
+  (upserts/interval inserts) that don't batch the same way reads do, so
+  the ROI here is much lower than the summaries path was.
 - ~~**No indexes for the hot `(user_id, day)` lookups**~~ — **fixed** for
   `activity_intervals` and `grants` (migration `8f3c2a1e9b04`); also added
   the same for `usage_counters`, which had the same gap. `Base` still has
   no `MetaData(naming_convention=...)` (`hub/timekpr_hub/db/models.py:35`),
   so unrelated constraints remain unnamed — untouched here.
-- **Agent gaps:** `post_events` (`hubclient.py:99`) posts to
-  `/api/v1/events`, which the hub does not implement, and `enforcer.py`
-  still reaches into `timekprAdminConnector`'s private
+- **Agent gaps:** ~~`post_events` (`hubclient.py`) posts to `/api/v1/events`,
+  which the hub does not implement~~ — **fixed**: it was dead code (never
+  called from `main.py`), removed rather than given a hub endpoint to call,
+  since nothing in this codebase generates the events it would have sent.
+  `enforcer.py` still reaches into `timekprAdminConnector`'s private
   `_timekprUserAdminDbusInterface` attribute (`connect()`) — no public
   alternative exists in timekpr-next's client library, so this is a
   standing risk rather than an oversight; it's exercised by
@@ -139,12 +164,33 @@ picking any of these up, and update this file's status when you do.
   live-enrollment cycle on a real system was intentionally left for the
   user to run rather than done unattended (it creates a system user and a
   running service).
-- **`deploy/docker-compose.yml` issues:** Caddy gets
-  `env_file: .env`, which leaks `POSTGRES_PASSWORD` into a container that
-  doesn't need it; the nightly `backup` service sleeps 24h before its
-  *first* dump, so a fresh deployment has zero backups for a full day;
-  neither `hub` nor `caddy` has a healthcheck or a `depends_on: condition:`
-  on the hub.
+- ~~**`deploy/docker-compose.yml` issues.**~~ — **fixed**: Caddy no longer
+  gets `env_file: .env` (which leaked `POSTGRES_PASSWORD` into a container
+  that doesn't need it) -- it now gets only `HUB_DOMAIN` via `environment:`.
+  `hub` and `caddy` both have healthchecks now, with `depends_on:
+  condition: service_healthy` wired hub→postgres and caddy→hub. The nightly
+  `backup` service dumps immediately then sleeps 24h, instead of the
+  reverse (a fresh deployment used to have zero backups for a full day).
+  **Reordering that surfaced three more, previously invisible, real bugs**
+  in the same entrypoint (none of this had ever actually run within 24h of
+  a fresh `deploy-up` before, per `README.md`'s own "not yet exercised"
+  note) -- all fixed and verified against a live stack (see below):
+  `pg_dump` had no `PGPASSWORD` (prompted interactively, dump silently
+  never happened), no `PGUSER` (would have connected as the container's own
+  OS user, `root`, once given a password), and no `PGDATABASE` (would then
+  have looked for a database also named `root`); separately, the date
+  suffix was `date +%%Y%%m%%d` -- correct for escaping `$$(...)` from
+  compose's own interpolation, but `%` needs no such escaping, so `date`
+  received a literal `%%` and emitted `%Y%m%d` as the filename instead of
+  a real date, on every single dump. **Verified live**: brought up the full
+  stack (`docker compose -f deploy/docker-compose.yml up -d`, rootful
+  podman this time, LAN ports remapped to 3001/3002 so an unprivileged
+  container can still bind them) -- all four containers reach `healthy`,
+  `curl http://localhost:3001/healthz` round-trips through Caddy to the hub
+  for `{"status":"ok"}` (the Caddy-fronted reverse-proxy path this repo's
+  own notes had marked unverified, since rootless Podman can't bind 80/443
+  directly), and the backup container produces a real, correctly-named,
+  `pg_restore --list`-readable dump within seconds of starting.
 - **Dependency hygiene (partially addressed by the uv migration):**
   `passlib` (unmaintained upstream) and `python-jose` (unmaintained, with
   known CVEs) were pinned in the old `requirements-dev.txt` but never
@@ -167,17 +213,20 @@ picking any of these up, and update this file's status when you do.
   columns are bare `Mapped[list]`/`Mapped[dict]`. The ORM represents
   enum-like columns as `String` + `CHECK` rather than using the enums
   `core/timekpr_hub_core/models.py` already defines.
-- `AuditLog` and `Alert` tables are defined but never written to; there is
-  no `logging` configuration anywhere under `hub/`.
+- ~~`AuditLog` ... table [is] defined but never written to; there is no
+  `logging` configuration anywhere under `hub/`.~~ — **fixed, for
+  `AuditLog`**: grant creation, policy edits, device revoke/delete, and
+  parent login now write to it (`services/audit.py`, CHECKLIST.md Phase 2).
+  `hub/timekpr_hub/logging_config.py`'s `configure_logging()` (called once
+  from `app.py`) gives the `timekpr_hub` logger a real formatted handler
+  and a level controlled by `TIMEKPR_HUB_LOG_LEVEL`. **`Alert` is still
+  unwired** — nothing generates alerts yet (silent-device detection,
+  drift, clock-skew are all still-open Phase 2 items each of which would
+  feed it).
 - `hub/timekpr_hub/web/templates/index.html` loads htmx from a CDN with no
   Subresource Integrity hash.
 - The version string `0.1.0` is duplicated across every package's
   `pyproject.toml`, `app.py:47`, `agent/timekpr_hub_agent/main.py:52`, and
   the PKGBUILD — nothing keeps them in sync.
-- **No LICENSE file exists.** `agent/packaging/PKGBUILD` declares
-  `license=('GPL3')`, and the agent imports timekpr-next's own (GPL-3)
-  Python package at runtime — pick and add an actual `LICENSE` before
-  distributing this anywhere.
-- `scratchpad/phase0_spike.py` is untracked (no entry in `git ls-files`)
-  despite `docs/phase0-findings.md` and `CHECKLIST.md` both referencing it
-  as the artifact that produced their findings.
+- ~~**No LICENSE file exists.**~~ — **fixed**: `LICENSE` (GPL-3.0) added at
+  the repo root, and `license` set in every package's `pyproject.toml`.

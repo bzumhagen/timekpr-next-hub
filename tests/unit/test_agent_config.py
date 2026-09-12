@@ -111,3 +111,19 @@ def test_normalize_hub_url_rejects_empty_input():
 def test_normalize_hub_url_rejects_a_non_http_scheme():
     with pytest.raises(config_mod.InvalidHubUrlError):
         config_mod.normalize_hub_url("ftp://hub.local")
+
+
+def test_agent_version_matches_pyproject():
+    # main.AGENT_VERSION is a literal, not read via importlib.metadata --
+    # the PKGBUILD copies raw .py files with no dist-info, so that lookup
+    # would raise PackageNotFoundError on a real packaged install (see the
+    # comment above the constant). This test is what keeps the literal
+    # from drifting out of sync with the package's own version instead.
+    import tomllib
+    from pathlib import Path
+
+    from timekpr_hub_agent.main import AGENT_VERSION
+
+    pyproject = Path(__file__).resolve().parents[2] / "agent" / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text())
+    assert AGENT_VERSION == data["project"]["version"]

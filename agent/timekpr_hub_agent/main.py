@@ -49,6 +49,11 @@ from timekpr_hub_agent.timekpr_paths import TimekprNotFoundError
 log = logging.getLogger("timekpr_hub_agent")
 
 CFG = ConvergenceConfig()
+# Not read via importlib.metadata: the PKGBUILD copies raw .py files into
+# system site-packages with no dist-info (see agent/packaging/PKGBUILD's
+# header comment), so that lookup would raise PackageNotFoundError on every
+# real packaged install. Kept a literal, pinned to agent/pyproject.toml's
+# `version` by tests/unit/test_agent_config.py.
 AGENT_VERSION = "0.1.0"
 MACHINE_ID_PATHS = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
 SERVICE_UNIT = "timekpr-hub-agent.service"

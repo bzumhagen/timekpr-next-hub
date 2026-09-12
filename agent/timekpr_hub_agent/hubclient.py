@@ -1,20 +1,26 @@
 """HTTP client for talking to the hub.
 
-PLAN reference: "API" and "Auth and threat model". Uses httpx (sync client,
-explicit timeouts) per PLAN's tech-stack recommendation -- no async needed
-here since the agent has no GLib/asyncio loop to share time with.
+PLAN reference: "API" and "Auth and threat model". Built on `urllib.request`
+rather than a third-party HTTP library: the agent only ever makes simple
+JSON POSTs (no streaming, no connection pooling, no async), and stdlib-only
+means the agent has zero non-stdlib dependencies of its own beyond
+timekpr-next itself (CHECKLIST.md "Multi-distro support") -- one less thing
+every future distro's packaging has to provide. No async needed either way,
+since the agent has no GLib/asyncio loop to share time with.
 """
 
 from __future__ import annotations
 
+import json
+import ssl
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
-
 DEFAULT_TOKEN_PATH = Path("/var/lib/timekpr-hub-agent/device_token")
-CONNECT_TIMEOUT_S = 5.0
-READ_TIMEOUT_S = 10.0
+TIMEOUT_S = 10.0
+"""A single timeout covering the whole request (connect + read)"""
 
 
 class HubUnreachableError(RuntimeError):
@@ -42,13 +48,11 @@ class HubClient:
     def __init__(self, config: HubClientConfig) -> None:
         self._config = config
         self._token = self._load_token()
-        self._client = httpx.Client(
-            base_url=config.base_url,
-            timeout=httpx.Timeout(
-                connect=CONNECT_TIMEOUT_S, read=READ_TIMEOUT_S, write=READ_TIMEOUT_S, pool=READ_TIMEOUT_S
-            ),
-            verify=config.ca_cert if config.ca_cert else True,
-        )
+        # None means "use urllib's own default HTTPS verification" (the
+        # system trust store) -- only built explicitly when a custom CA is
+        # given. Passing a context at all is harmless for a plain `http://`
+        # base_url; urllib only consults it for `https://` requests.
+        self._ssl_context = ssl.create_default_context(cafile=config.ca_cert) if config.ca_cert else None
 
     def _load_token(self) -> str | None:
         if self._config.token_path.exists():
@@ -65,6 +69,37 @@ class HubClient:
             raise RuntimeError("device not enrolled -- no token on disk")
         return {"Authorization": f"Bearer {self._token}"}
 
+    def _post(self, path: str, payload: dict, headers: dict | None = None) -> tuple[int, dict]:
+        """POST JSON, returning `(status_code, parsed_json_body)` for *any*
+        HTTP response, 4xx/5xx included -- callers inspect the status the
+        same way they would a normal httpx response, rather than one
+        exception type per status code. Only a genuine network-level
+        failure (DNS, connection refused, timeout, TLS handshake) raises,
+        as `urllib.error.URLError` (`ConnectionError`/`socket.timeout` are
+        both `OSError` subtypes it can wrap, but are caught the same way by
+        callers below either way)."""
+        url = self._config.base_url.rstrip("/") + path
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json", **(headers or {})},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_S, context=self._ssl_context) as resp:
+                body = resp.read()
+                return resp.status, (json.loads(body) if body else {})
+        except urllib.error.HTTPError as exc:
+            # Still a completed HTTP exchange (the hub responded, just with
+            # an error status) -- urllib raises this instead of returning it
+            # as a normal response, but it carries the same information.
+            body = exc.read()
+            try:
+                parsed = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                parsed = {}
+            return exc.code, parsed
+
     def enroll(
         self,
         *,
@@ -78,9 +113,9 @@ class HubClient:
         local_policies: dict[str, dict] | None = None,
     ) -> dict:
         try:
-            resp = self._client.post(
+            status, data = self._post(
                 "/api/v1/enroll",
-                json={
+                {
                     "enrollment_code": enrollment_code,
                     "hostname": hostname,
                     "machine_id": machine_id,
@@ -91,26 +126,24 @@ class HubClient:
                     "local_policies": local_policies or {},
                 },
             )
-        except httpx.ConnectError as exc:
+        except (urllib.error.URLError, OSError) as exc:
             raise EnrollError(
                 f"can't reach the hub at {self._config.base_url} "
                 "(check --hub-url, and --ca-cert if it uses a self-signed certificate)"
             ) from exc
-        except httpx.HTTPError as exc:
-            raise EnrollError(f"error talking to the hub: {exc}") from exc
 
         # Friendly messages for the enrollment-code failure modes a parent
         # will actually hit -- a bare traceback for "code expired" is not
         # something to hand a parent at a terminal.
-        if resp.status_code == 404:
+        if status == 404:
             raise EnrollError("unknown enrollment code -- generate a new one in the hub UI")
-        if resp.status_code == 409:
+        if status == 409:
             raise EnrollError("enrollment code already used -- generate a new one in the hub UI")
-        if resp.status_code == 410:
+        if status == 410:
             raise EnrollError("enrollment code expired -- generate a new one in the hub UI")
-        resp.raise_for_status()
+        if status >= 400:
+            raise EnrollError(f"hub returned {status}: {data}")
 
-        data = resp.json()
         self._token = data["device_token"]
         self._save_token(self._token)
         return data
@@ -121,17 +154,18 @@ class HubClient:
         HubUnreachableError on any network-level failure or 5xx (agent's
         offline-grace/cap/closed logic takes over)."""
         try:
-            resp = self._client.post("/api/v1/sync", json=payload, headers=self._headers())
-        except httpx.HTTPError as exc:
+            status, data = self._post("/api/v1/sync", payload, headers=self._headers())
+        except (urllib.error.URLError, OSError) as exc:
             raise HubUnreachableError(str(exc)) from exc
 
-        if resp.status_code in (401, 403):
-            raise DeviceRevokedError(f"device token rejected: {resp.status_code}")
-        if resp.status_code >= 500:
-            raise HubUnreachableError(f"hub returned {resp.status_code}")
+        if status in (401, 403):
+            raise DeviceRevokedError(f"device token rejected: {status}")
+        if status >= 500:
+            raise HubUnreachableError(f"hub returned {status}")
+        if status >= 400:
+            raise HubUnreachableError(f"hub returned {status}: {data}")
 
-        resp.raise_for_status()
-        return resp.json()
+        return data
 
     def post_events(self, events: list[dict]) -> None:
         """Fire-and-forget (PLAN: "batched, fire-and-forget"). Swallows
@@ -140,6 +174,6 @@ class HubClient:
         if not events:
             return
         try:
-            self._client.post("/api/v1/events", json={"events": events}, headers=self._headers())
-        except httpx.HTTPError:
+            self._post("/api/v1/events", {"events": events}, headers=self._headers())
+        except (urllib.error.URLError, OSError):
             pass

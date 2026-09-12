@@ -82,3 +82,9 @@ plugins = ["pydantic.mypy"]
 # no stubs anywhere) and the workspace packages under their own dirs.
 ignore_missing_imports = true
 mypy_path = ["core", "hub", "agent"]
+# `mypy agent` walks the whole tree, including makepkg's own build staging
+# directories (agent/packaging/pkg/, src/) if one happens to be left on
+# disk from a manual `makepkg -f` run -- those contain a second copy of
+# timekpr_hub_core, which mypy then reports as a duplicate module. Both are
+# gitignored but not mypy-ignored by default.
+exclude = ["^agent/packaging/(pkg|src)/"]

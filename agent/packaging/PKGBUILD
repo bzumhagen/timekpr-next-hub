@@ -3,17 +3,18 @@
 # actual platform).
 #
 # No venv (Phase 4 "Multi-distro support" prep, docs/best-practices-review.md):
-# the agent's own code has exactly one third-party dependency (httpx) and
-# never imports pydantic itself (only timekpr_hub_core.models does, which
-# the agent doesn't use) -- both httpx and dbus-python/PyGObject are
-# available as ordinary Arch packages at the versions this repo is tested
-# against, so `depends=` on them directly and install straight into system
-# site-packages under a fixed, Python-version-independent path
-# (/usr/lib/timekpr-hub-agent/). This means an Arch Python minor upgrade
-# (3.14 -> 3.15, say) needs no rebuild of this package at all -- the
-# previous --system-site-packages venv under /opt was pinned to whatever
-# `python3 -m venv` picked at build time, and a version mismatch after a
-# system upgrade would silently break `import httpx` until rebuilt.
+# the agent's code has ZERO third-party dependencies -- hubclient.py is
+# built on stdlib `urllib.request`, and the agent never imports pydantic
+# (only timekpr_hub_core.models does, for the hub's wire types, which the
+# agent doesn't use; confirmed by actually blocking that import at runtime
+# and observing the agent still loads cleanly). So `depends=` needs nothing
+# beyond dbus-python/PyGObject (for DBUS) and timekpr-next itself, and
+# install straight into system site-packages under a fixed,
+# Python-version-independent path (/usr/lib/timekpr-hub-agent/). This means
+# an Arch Python minor upgrade (3.14 -> 3.15, say) needs no rebuild of this
+# package at all -- the original --system-site-packages venv under /opt was
+# pinned to whatever `python3 -m venv` picked at build time, and a version
+# mismatch after a system upgrade would silently break it until rebuilt.
 pkgname=timekpr-hub-agent
 pkgver=0.1.0
 pkgrel=1
@@ -21,7 +22,7 @@ pkgdesc="Sidecar agent that pools timekpr-next screen-time budgets across multip
 arch=('any')
 url="https://github.com/YOUR_ORG/timekpr-next-hub"
 license=('GPL3')
-depends=('python' 'python-dbus' 'python-gobject' 'python-httpx' 'python-pydantic' 'timekpr-next' 'systemd')
+depends=('python' 'python-dbus' 'python-gobject' 'timekpr-next' 'systemd')
 install=timekpr-hub-agent.install
 backup=('etc/timekpr-hub-agent/agent.env')
 # No release tarball/packaging pipeline yet (see docs/best-practices-review.md

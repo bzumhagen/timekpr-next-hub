@@ -5,16 +5,24 @@ description = "Sidecar agent that syncs a machine's local timekpr-next daemon wi
 requires-python = ">=3.11"
 dependencies = [
     "timekpr-hub-core",
-    "httpx>=0.28",
 ]
+# The agent itself has zero non-stdlib runtime dependencies (hubclient.py
+# is built on urllib.request -- see its module docstring; the agent never
+# imports pydantic, only timekpr_hub_core.models does, which the agent
+# doesn't use). `timekpr-hub-core` is still declared for its pure
+# convergence/calendar logic, but pulls in `pydantic` transitively purely
+# for its own wire-type models, not because the agent needs it.
+#
 # Deliberately NOT declared here: `dbus` (dbus-python) and the `timekpr`
 # package itself. Both are system-provided (python-dbus/python-gobject from
-# the distro, timekpr-next's own install) and are why the real deployment
-# uses `python -m venv --system-site-packages` (see agent/packaging/PKGBUILD)
-# rather than a plain uv-managed venv -- a uv sync of this package alone
-# gives you timekpr_hub_agent + httpx + pydantic importable, but NOT `dbus`
-# or `timekpr`, so `python -m timekpr_hub_agent.main` only actually runs
-# against a real daemon from the PKGBUILD-built venv, not `make install`'s.
+# the distro, timekpr-next's own install), which is why
+# `agent/packaging/PKGBUILD` installs straight into system site-packages
+# (depending on the distro's own packages) rather than a uv-managed venv --
+# a uv sync of this package alone gives you timekpr_hub_agent importable,
+# but NOT `dbus` or `timekpr`, so `python -m timekpr_hub_agent.main` only
+# actually runs against a real daemon when run with system site-packages on
+# `sys.path` (the PKGBUILD-installed layout), not plain `make install`'s
+# `.venv`.
 
 [project.scripts]
 timekpr-hub-agent = "timekpr_hub_agent.main:main"

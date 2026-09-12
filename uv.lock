@@ -1176,15 +1176,11 @@ name = "timekpr-hub-agent"
 version = "0.1.0"
 source = { editable = "agent" }
 dependencies = [
-    { name = "httpx" },
     { name = "timekpr-hub-core" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.28" },
-    { name = "timekpr-hub-core", editable = "core" },
-]
+requires-dist = [{ name = "timekpr-hub-core", editable = "core" }]
 
 [[package]]
 name = "timekpr-hub-core"

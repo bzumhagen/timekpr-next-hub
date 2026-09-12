@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 from timekpr_hub_agent import state as state_mod
 from timekpr_hub_agent.fake_timekpr import FakeTimekprDaemon
-from timekpr_hub_agent.hubclient import HubUnreachableError
+from timekpr_hub_agent.hubclient import DeviceRevokedError, HubUnreachableError
 from timekpr_hub_agent.main import DEFAULT_OFFLINE_CAP_S, DEFAULT_OFFLINE_GRACE_S, run_tick
 
 from tests.e2e.harness import FakeEnforcer
@@ -175,6 +175,45 @@ def test_offline_capped_policy_still_enforces_the_cap():
 
     time_left = daemon.limit_today_s - daemon.balance_s
     assert time_left == 0  # locked out at the cap, not left running on the 86400s device limit
+
+
+def test_revoked_device_relinquishes_control_instead_of_locking_out():
+    """An admin removing a device (revoke or delete -- either 403s or 401s
+    /sync, both raised as DeviceRevokedError) is a deliberate, authoritative
+    "stop managing this machine" action, not an error condition like the
+    hub being unreachable. It must not lock the child to zero time (the
+    previous behavior, reusing the offline "closed" policy) -- it must
+    touch nothing at all, so the machine reverts to local self-management
+    at exactly whatever limit/balance it already had."""
+    daemon = FakeTimekprDaemon(limit_today_s=7200)
+    enforcer = FakeEnforcer({"alice": daemon})
+    state = state_mod.AgentState()
+
+    # Tick 1: online and enforcing normally.
+    hub = ScriptedHub([_sync_response("alice", effective_limit_today_s=3600, global_spent_s=1000)])
+    run_tick(
+        enforcer=enforcer, hub=hub, state=state, managed_users=["alice"], agent_version="0.1.0", tz_name="UTC"
+    )
+    balance_before_revoke = daemon.balance_s
+    assert state.users["alice"].last_enforcement == "enforce"
+
+    # Tick 2: the device has been revoked. More local activity accrues in
+    # the same tick, exactly as it would under real self-management.
+    daemon.tick(200, active=True)
+    hub2 = ScriptedHub([DeviceRevokedError("device token rejected: 403")])
+    run_tick(
+        enforcer=enforcer,
+        hub=hub2,
+        state=state,
+        managed_users=["alice"],
+        agent_version="0.1.0",
+        tz_name="UTC",
+    )
+
+    # No DBUS write happened: BALANCE only moved by the daemon's own
+    # tick(), never touched by set_time_left.
+    assert daemon.balance_s == balance_before_revoke + 200
+    assert state.users["alice"].last_enforcement == "revoked"
 
 
 def test_offline_within_grace_makes_no_new_write():

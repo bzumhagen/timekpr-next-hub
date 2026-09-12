@@ -24,7 +24,7 @@ class UserState:
     raw_prev_s: int = 0
     applied_offset_s: int = 0
     policy_version_applied: int = 0
-    last_enforcement: str = ""  # "enforce" or "observe" -- only used to log on transition
+    last_enforcement: str = ""  # "enforce", "observe", or "revoked" -- only used to log on transition
 
     # Cached last-known values from the hub, used while offline (PLAN
     # "Offline / hub-unreachable behavior"). Wall-clock (epoch seconds), not

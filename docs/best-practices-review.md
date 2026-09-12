@@ -32,14 +32,30 @@ picking any of these up, and update this file's status when you do.
   until someone happens to restart the service by hand. Confirmed live: at
   the moment of the report, `timekpr-hub-agent status` (a fresh process,
   freshly re-reading the token file) reported "✓ hub reachable" while the
-  long-running `run` service kept 403ing on the very same tick. `sync` now
-  detects the on-disk token has changed and retries once with the fresh one
-  before concluding the device is actually revoked — self-healing within
-  one tick (~20s) instead of requiring a manual restart, with no change in
-  behavior for a genuine revoke (the file is untouched, so the retry is a
-  no-op and it still fails closed). Regression tests in
-  `tests/unit/test_hubclient.py` cover both the rotated-token self-heal and
-  the genuine-revoke case (confirms no wasted retry).
+  long-running `run` service kept 403ing on the very same tick.
+  `HubClient.sync` (`hubclient.py`) now detects the on-disk token has
+  changed and retries once with the fresh one before concluding the device
+  is actually revoked — self-healing within one tick (~20s) instead of
+  requiring a manual restart; a genuine revoke leaves the file untouched,
+  so the retry is a no-op. **Second, design-level fix on the same code
+  path**: even a *confirmed* revoke (the retry above also failed) no
+  longer locks the child to zero time. An admin removing a device is a
+  deliberate, authoritative "stop managing this machine" action, not an
+  error condition like the hub being unreachable — treating it as a
+  maximum-severity offline policy (the original behavior, reusing
+  `_apply_offline_policy("closed", grace=0, cap=0)`) punished that decision
+  as if it were a fault. `run_tick`'s `DeviceRevokedError` handler
+  (`main.py`) now touches nothing at all: whatever limit/balance timekpr
+  already has stays exactly as it is, so the machine reverts to local
+  self-management — a parent can reconfigure it directly via
+  timekpra/the timekpr GUI again, same as before it was ever enrolled.
+  Re-enrolling (picked up by the retry above without even needing a
+  restart) resumes hub management on the very next successful sync.
+  Regression tests: `tests/unit/test_hubclient.py` covers both the
+  rotated-token self-heal and the genuine-revoke case (confirms no wasted
+  retry); `tests/unit/test_agent_run_tick.py`'s
+  `test_revoked_device_relinquishes_control_instead_of_locking_out`
+  confirms no DBUS write happens once revoked.
 
 - ~~**No parent authentication, and the Caddyfile is set up for a public
   TLS domain.**~~ — **fixed**: every route in `api/parent.py` and

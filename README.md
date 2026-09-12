@@ -100,8 +100,13 @@ The hub's home page shows, per kid: today's usage bar, an activity badge
 - **Change today's or every day's limit**: use the per-user limit editor.
 - **Give extra time today**: use the **+30 min** button (or type a custom
   amount).
-- **Manage a device**: revoke it (blocks it immediately, reversible) or
-  delete it (erases its history) from the device list.
+- **Manage a device**: revoke it (stops hub management, reversible) or
+  delete it (erases its history) from the device list. Revoking does
+  **not** lock the child out — it hands the machine back to local
+  self-management at whatever limit it already had, exactly as if it had
+  never been enrolled. If you actually want the machine locked, set its
+  policy to 0 minutes/day (or grant negative time) before revoking, or
+  just don't re-enroll it once you're done.
 
 ## 5. Troubleshooting
 

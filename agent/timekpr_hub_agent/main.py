@@ -298,20 +298,33 @@ def run_tick(
             )
 
     except DeviceRevokedError:
-        log.error("device token revoked -- entering closed enforcement immediately")
-        for username, (obs, _force) in observations.items():
+        # Deliberately different from HubUnreachableError below: a 401/403
+        # (after hubclient.py's own reload-and-retry has already ruled out
+        # "just a stale token from an unfinished re-enroll") means an admin
+        # actually removed this device from the hub -- not "can't currently
+        # verify usage against the pool", which is what the offline
+        # open/capped/closed policies exist for. Forcing a lockout here
+        # (the previous behavior: an offline "closed" policy with zero
+        # grace) punished a deliberate, authoritative "stop managing this
+        # machine" action as if it were an error condition. Instead: touch
+        # nothing. Whatever limit/balance timekpr already has stays exactly
+        # as it is, so the machine reverts to local self-management -- a
+        # parent can reconfigure it directly via timekpra/the timekpr GUI
+        # again, same as before this device was ever enrolled. Re-enrolling
+        # (which hubclient.py's own retry picks up without even needing a
+        # restart) resumes hub management on the very next successful sync.
+        for username, (_obs, _force) in observations.items():
             user_state = state.user(username)
             _buffer_unsent_span(user_state, this_tick_spans.get(username))
-            _apply_offline_policy(
-                enforcer=enforcer,
-                username=username,
-                obs=obs,
-                user_state=user_state,
-                offline_policy="closed",
-                offline_grace_s=0,
-                offline_cap_s=0,
-                now=now,
-            )
+            if user_state.last_enforcement != "revoked":
+                log.error(
+                    "%s: device token revoked or removed -- this machine is no longer managed "
+                    "by the hub; leaving its local timekpr configuration as-is (self-management "
+                    "resumes) until it's re-enrolled",
+                    username,
+                )
+            user_state.last_enforcement = "revoked"
+        next_poll_ms = min(next_poll_ms * 2, 300_000)
     except HubUnreachableError as exc:
         log.warning("hub unreachable: %s -- applying offline policy", exc)
         for username, (obs, _force) in observations.items():
@@ -387,7 +400,14 @@ def _apply_policy_push(enforcer: TimekprEnforcer, username: str, policy: dict) -
 def _apply_offline_policy(
     *, enforcer, username, obs, user_state, offline_policy, offline_grace_s, offline_cap_s, now
 ) -> None:
-    """PLAN "Offline / hub-unreachable behavior" table.
+    """PLAN "Offline / hub-unreachable behavior" table -- for a device that
+    can't currently be *verified* against the pool, not one an admin has
+    actually removed (DeviceRevokedError above no longer routes here at
+    all -- a revoked/deleted device relinquishes control instead). Only
+    `capped` has a caller today (HubUnreachableError, `run_tick`); `closed`
+    has none yet -- kept for the "per-user override is hub-side" offline
+    policy this PLAN table describes as Phase 2 work, not dead code left
+    over by accident.
 
     Uses wall-clock time (epoch seconds), never time.monotonic(): monotonic's
     epoch is arbitrary and resets on reboot, which used to make

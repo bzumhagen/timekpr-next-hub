@@ -177,14 +177,3 @@ class HubClient:
             raise HubUnreachableError(f"hub returned {status}: {data}")
 
         return data
-
-    def post_events(self, events: list[dict]) -> None:
-        """Fire-and-forget (PLAN: "batched, fire-and-forget"). Swallows
-        failures -- events are diagnostic, never load-bearing for
-        enforcement."""
-        if not events:
-            return
-        try:
-            self._post("/api/v1/events", {"events": events}, headers=self._headers())
-        except (urllib.error.URLError, OSError):
-            pass

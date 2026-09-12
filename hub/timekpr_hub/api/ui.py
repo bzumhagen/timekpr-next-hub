@@ -28,13 +28,8 @@ from timekpr_hub_core.models import PolicyUpdate
 
 from timekpr_hub.db.models import Device, Grant, User
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.aggregate import (
-    global_spent_parallel,
-    global_spent_wallclock,
-    latest_activity_state,
-)
-from timekpr_hub.services.limits import effective_daily_limit
-from timekpr_hub.services.policy import get_current_policy, update_policy
+from timekpr_hub.services.policy import update_policy
+from timekpr_hub.services.summaries import compute_user_summaries
 from timekpr_hub.settings import settings
 
 router = APIRouter()
@@ -47,61 +42,24 @@ async def index(request: Request) -> HTMLResponse:
 
 
 async def _user_summaries(session: AsyncSession, *, usernames: list[str] | None = None) -> list[dict]:
-    now = datetime.now(UTC)
-    stamp = canonical_stamp(now, settings.tz)
-
-    query = select(User)
-    if usernames is not None:
-        query = query.where(User.canonical_username.in_(usernames))
-    result = await session.execute(query)
-
-    summaries = []
-    for user in result.scalars().all():
-        policy = await get_current_policy(session, user)
-        activity_state, activity_as_of = await latest_activity_state(session, user_id=user.id, day=stamp.day)
-        # Degrade a stale device's last-reported state to "logged_out" using
-        # the same 3x-poll-interval rule as the devices fragment below --
-        # otherwise a device that stopped syncing hours ago would leave the
-        # badge stuck on whatever it last reported (often "draining").
-        if activity_as_of is None or (now - activity_as_of).total_seconds() > 3 * (
-            settings.default_next_poll_ms / 1000
-        ):
-            activity_state = "logged_out"
-
-        if policy is None:
-            summaries.append(
-                {
-                    "username": user.canonical_username,
-                    "display_name": user.display_name,
-                    "today_global_spent_s": 0,
-                    "today_effective_limit_s": 0,
-                    "activity_state": activity_state,
-                    "as_of": activity_as_of.isoformat() if activity_as_of else None,
-                    "daily_limit_minutes": 0,
-                }
-            )
-            continue
-        if user.accounting_mode == "wallclock":
-            spent = await global_spent_wallclock(session, user_id=user.id, day=stamp.day)
-        else:
-            spent = await global_spent_parallel(session, user_id=user.id, day=stamp.day)
-        limit_today = await effective_daily_limit(session, policy=policy, user_id=user.id, day=stamp.day)
-        summaries.append(
-            {
-                "username": user.canonical_username,
-                "display_name": user.display_name,
-                "today_global_spent_s": spent,
-                "today_effective_limit_s": limit_today,
-                "activity_state": activity_state,
-                "as_of": activity_as_of.isoformat() if activity_as_of else None,
-                # Seed value for the editor's "minutes/day" field -- the
-                # policy's Monday entry, converted for display only; the
-                # editor always writes all seven days at once (Phase 1
-                # scope, see services/policy.py::update_policy).
-                "daily_limit_minutes": policy.daily_limits_json[0] // 60,
-            }
-        )
-    return summaries
+    """Template-shaped view of `compute_user_summaries` (services/
+    summaries.py, shared with the JSON parent API) plus one UI-only field:
+    `daily_limit_minutes`, the editor's seed value -- the policy's Monday
+    entry, converted for display only; the editor always writes all seven
+    days at once (Phase 1 scope, see services/policy.py::update_policy)."""
+    rows = await compute_user_summaries(session, usernames=usernames)
+    return [
+        {
+            "username": row.user.canonical_username,
+            "display_name": row.user.display_name,
+            "today_global_spent_s": row.today_global_spent_s,
+            "today_effective_limit_s": row.today_effective_limit_s,
+            "activity_state": row.activity_state,
+            "as_of": row.as_of,
+            "daily_limit_minutes": (row.policy.daily_limits_json[0] // 60) if row.policy else 0,
+        }
+        for row in rows
+    ]
 
 
 @router.get("/ui/users-fragment", response_class=HTMLResponse)
@@ -189,6 +147,7 @@ async def devices_fragment(request: Request, session: AsyncSession = Depends(get
                 "id": str(d.id),
                 "name": d.name,
                 "status": d.status,
+                "enforcement": d.enforcement,
                 "agent_version": d.agent_version or "?",
                 "last_seen": seen_label,
                 "stale": stale,
@@ -231,6 +190,34 @@ async def revoke_device_ui(
     device = result.scalar_one_or_none()
     if device is not None:
         device.status = "revoked"
+        await session.commit()
+    return await devices_fragment(request, session)
+
+
+@router.post("/ui/devices/{device_id}/observe", response_class=HTMLResponse)
+async def set_device_observe_mode_ui(
+    request: Request, device_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """Dry-run mode (PLAN "Layer 7 -- household safety net"): the agent
+    keeps syncing but never writes to DBUS -- see api/parent.py's
+    `set_device_observe_mode` for the JSON-API twin this wraps."""
+    result = await session.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is not None:
+        device.enforcement = "observe"
+        await session.commit()
+    return await devices_fragment(request, session)
+
+
+@router.post("/ui/devices/{device_id}/enforce", response_class=HTMLResponse)
+async def set_device_enforce_mode_ui(
+    request: Request, device_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """Reverses set_device_observe_mode_ui -- back to normal enforcement."""
+    result = await session.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is not None:
+        device.enforcement = "enforce"
         await session.commit()
     return await devices_fragment(request, session)
 

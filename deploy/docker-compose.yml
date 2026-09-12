@@ -34,12 +34,18 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-timekpr_hub}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-timekpr_hub}
       HUB_TZ: ${HUB_TZ:-UTC}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   caddy:
     image: docker.io/library/caddy:2-alpine
     restart: unless-stopped
     depends_on:
-      - hub
+      hub:
+        condition: service_healthy
     ports:
       - "3001:80"
       - "3002:443"
@@ -47,8 +53,16 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    env_file:
-      - .env
+    environment:
+      # Only what the Caddyfile actually reads -- `env_file: .env` used to
+      # hand the whole file (including POSTGRES_PASSWORD) to a container
+      # that has no use for it (docs/best-practices-review.md).
+      HUB_DOMAIN: ${HUB_DOMAIN:-localhost}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:80"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   # Nightly logical backup -- a single file, easy to copy offsite. Litestream
   # or WAL-archiving is a reasonable Phase 5 upgrade (PLAN "Hardening") if
@@ -63,15 +77,24 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-timekpr_hub}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a real password in deploy/.env}
       POSTGRES_DB: ${POSTGRES_DB:-timekpr_hub}
+      # pg_dump reads PG*, not POSTGRES_* -- without these it prompted for a
+      # password interactively, then (once given one) tried to connect as
+      # the container's own OS user ("root") to a database also named
+      # "root", and every dump silently failed
+      # (docs/best-practices-review.md; caught only once the entrypoint
+      # below was fixed to dump immediately instead of after 24h idle).
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set a real password in deploy/.env}
+      PGUSER: ${POSTGRES_USER:-timekpr_hub}
+      PGDATABASE: ${POSTGRES_DB:-timekpr_hub}
       PGHOST: postgres
     volumes:
       - ./backups:/backups
     entrypoint: >
       sh -c '
         while true; do
-          sleep 86400;
-          pg_dump -Fc -f /backups/timekpr_hub_$$(date +%%Y%%m%%d).dump;
+          pg_dump -Fc -f /backups/timekpr_hub_$$(date +%Y%m%d).dump;
           find /backups -name "*.dump" -mtime +14 -delete;
+          sleep 86400;
         done
       '
 

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from timekpr_hub.db.models import Parent
 from timekpr_hub.db.session import get_session
+from timekpr_hub.services.audit import record_audit_event
 from timekpr_hub.services.parent_auth import (
     SESSION_COOKIE_NAME,
     any_parent_exists,
@@ -131,11 +132,18 @@ async def login_submit(
     if parent is None or not verify_password(password, parent.password_hash):
         return RedirectResponse("/login?error=1", status_code=status.HTTP_303_SEE_OTHER)
 
+    ip = request.client.host if request.client else None
     token = await create_session(
+        session, parent_id=parent.id, ip=ip, user_agent=request.headers.get("user-agent")
+    )
+    await record_audit_event(
         session,
-        parent_id=parent.id,
-        ip=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="parent.login",
+        target_type="parent",
+        target_id=str(parent.id),
+        ip=ip,
     )
     await session.commit()
 

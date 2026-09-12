@@ -77,6 +77,43 @@ async def create_initial_policy(
     return policy
 
 
+async def get_or_create_policy(
+    session: AsyncSession,
+    user: User,
+    *,
+    daily_limits_s: list[int] | None = None,
+    weekly_limit_s: int | None = None,
+    monthly_limit_s: int | None = None,
+    allowed_weekdays: list[str] | None = None,
+) -> Policy:
+    """Returns `user`'s current policy, creating the default (or a
+    device-seeded, via the `daily_limits_s`/etc. kwargs) one first if none
+    exists yet. Callers: `/sync`'s first-tick-for-a-user path and `/enroll`'s
+    "existing user, no policy yet" path -- both can be raced by two devices
+    reaching the same brand-new-to-the-hub user concurrently, each reading
+    `current_policy_id is None` before the other's insert commits, and both
+    then racing to insert version 1 (`uq_policies_user_version`).
+    `SELECT ... FOR UPDATE` on the user row serializes the read-then-create
+    the same way `update_policy` below already does for policy edits."""
+    locked = await session.execute(
+        select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True)
+    )
+    locked_user = locked.scalar_one()
+    current = await get_current_policy(session, locked_user)
+    if current is not None:
+        return current
+    policy = await create_initial_policy(
+        session,
+        locked_user.id,
+        daily_limits_s=daily_limits_s,
+        weekly_limit_s=weekly_limit_s,
+        monthly_limit_s=monthly_limit_s,
+        allowed_weekdays=allowed_weekdays,
+    )
+    locked_user.current_policy_id = policy.id
+    return policy
+
+
 async def update_policy(
     session: AsyncSession, *, user: User, update: PolicyUpdate, created_by: str
 ) -> Policy:
@@ -97,8 +134,15 @@ async def update_policy(
     `SELECT ... FOR UPDATE` on the user row for the duration guards against
     two concurrent edits both reading the same current version and racing on
     `uq_policies_user_version` (the same race flagged for enrollment in
-    docs/best-practices-review.md, now closed here too)."""
-    locked = await session.execute(select(User).where(User.id == user.id).with_for_update())
+    docs/best-practices-review.md, now closed here too). `populate_existing`
+    is required, not cosmetic: every caller here already loaded `user` once
+    earlier in this same session (to resolve the username), so without it
+    SQLAlchemy's identity map would hand back that same Python object,
+    stale `current_policy_id` and all, once the lock is granted --
+    defeating the whole point of re-reading under the lock."""
+    locked = await session.execute(
+        select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True)
+    )
     locked_user = locked.scalar_one()
     current = await get_current_policy(session, locked_user)
     next_version = (current.version + 1) if current else 1

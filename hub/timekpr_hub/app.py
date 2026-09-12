@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib.metadata import version
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
@@ -18,8 +19,10 @@ from sqlalchemy import select
 from timekpr_hub.api import enroll, parent, parent_auth, sync, ui
 from timekpr_hub.api.parent_auth import RequireLoginRedirect, get_current_parent_api, get_current_parent_ui
 from timekpr_hub.db.models import Parent
-from timekpr_hub.db.session import SessionLocal
+from timekpr_hub.db.session import SessionLocal, engine
+from timekpr_hub.logging_config import configure_logging
 
+configure_logging()
 log = logging.getLogger("timekpr_hub")
 
 
@@ -42,9 +45,17 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         log.debug("skipped the unclaimed-hub startup check (database not reachable yet)", exc_info=True)
     yield
+    # Best-effort here too: tests/e2e/harness.py disposes this same
+    # module-level engine itself around each run, so a second dispose() on
+    # an already-disposed engine (or one bound to a loop that's already
+    # closing) must never raise and take the process down with it.
+    try:
+        await engine.dispose()
+    except Exception:
+        log.debug("engine.dispose() raised during shutdown", exc_info=True)
 
 
-app = FastAPI(title="timekpr-next-hub", version="0.1.0", lifespan=_lifespan)
+app = FastAPI(title="timekpr-next-hub", version=version("timekpr-hub"), lifespan=_lifespan)
 
 # Device- and code-authenticated endpoints: no parent session involved.
 app.include_router(enroll.router, prefix="/api/v1", tags=["enrollment"])

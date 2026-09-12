@@ -8,6 +8,7 @@ migrations applied (same as test_aggregate_postgres.py) -- see README.md
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import httpx
@@ -75,7 +76,7 @@ async def client():
         await session.execute(
             text(
                 "TRUNCATE users, devices, activity_intervals, usage_counters, "
-                "policies, enrollment_codes, grants, parents, parent_sessions CASCADE"
+                "policies, enrollment_codes, grants, parents, parent_sessions, audit_log CASCADE"
             )
         )
         await session.commit()
@@ -105,7 +106,7 @@ async def unauthenticated_client():
         await session.execute(
             text(
                 "TRUNCATE users, devices, activity_intervals, usage_counters, "
-                "policies, enrollment_codes, grants, parents, parent_sessions CASCADE"
+                "policies, enrollment_codes, grants, parents, parent_sessions, audit_log CASCADE"
             )
         )
         await session.commit()
@@ -173,6 +174,71 @@ async def test_enrollment_code_is_single_use(client):
 
     second = await client.post("/api/v1/enroll", json=body)
     assert second.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_concurrent_enrollment_redemption_of_the_same_code_only_succeeds_once(client):
+    """Two concurrent /enroll calls racing to redeem the same code used to
+    both pass the `used_at is None` check before either committed
+    (docs/best-practices-review.md) -- the atomic
+    `UPDATE ... WHERE used_at IS NULL` in api/enroll.py now serializes
+    them: the loser's WHERE clause re-checks the just-committed row and
+    correctly sees it as already used."""
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    body = {
+        "enrollment_code": code,
+        "hostname": "h",
+        "machine_id": "m-race",
+        "os": "linux",
+        "tz": "UTC",
+        "agent_version": "0.1.0",
+        "local_users": [],
+    }
+    results = await asyncio.gather(
+        client.post("/api/v1/enroll", json=body),
+        client.post("/api/v1/enroll", json=body),
+    )
+    assert sorted(r.status_code for r in results) == [201, 409]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_policy_creation_for_a_shared_user_does_not_race(client):
+    """Two devices enrolling with `local_users` naming the same
+    already-existing-but-policy-less user concurrently used to both read
+    `current_policy_id is None` and race on `uq_policies_user_version`
+    (docs/best-practices-review.md) --
+    `services/policy.py::get_or_create_policy`'s `SELECT ... FOR UPDATE`
+    now serializes them into exactly one policy row."""
+    await _seed_user("raced")
+    code_a = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    code_b = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+
+    def _body(code: str, machine_id: str) -> dict:
+        return {
+            "enrollment_code": code,
+            "hostname": machine_id,
+            "machine_id": machine_id,
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["raced"],
+        }
+
+    results = await asyncio.gather(
+        client.post("/api/v1/enroll", json=_body(code_a, "device-a")),
+        client.post("/api/v1/enroll", json=_body(code_b, "device-b")),
+    )
+    assert [r.status_code for r in results] == [201, 201]
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        user_id = (
+            await session.execute(text("SELECT id FROM users WHERE canonical_username = 'raced'"))
+        ).scalar_one()
+        policy_count = (
+            await session.execute(text("SELECT count(*) FROM policies WHERE user_id = :u"), {"u": user_id})
+        ).scalar_one()
+    assert policy_count == 1
 
 
 @pytest.mark.asyncio
@@ -625,6 +691,162 @@ async def test_revoked_device_can_be_reenrolled_as_a_genuinely_new_row(client):
 
 
 @pytest.mark.asyncio
+async def test_grant_policy_update_and_device_revoke_are_all_audit_logged(client):
+    """Track 3b (CHECKLIST.md Phase 2 "alerts, audit_log tables fully
+    wired"): grants, policy edits, and device revoke/delete previously
+    wrote nothing to `audit_log` at all (docs/best-practices-review.md) --
+    confirm each now does, with a plausible before/after."""
+    await _seed_user("audited")
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    enroll_resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h",
+            "machine_id": "m-audit",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["audited"],
+        },
+    )
+    device_id = enroll_resp.json()["device_id"]
+
+    grant_resp = await client.post("/api/v1/users/audited/grants", json={"seconds": 600, "reason": "test"})
+    assert grant_resp.status_code == 201
+
+    policy_resp = await client.put(
+        "/api/v1/users/audited/policy",
+        json={
+            "daily_limits_s": [1800] * 7,
+            "weekly_limit_s": 12600,
+            "monthly_limit_s": 54000,
+            "allowed_weekdays": ["1", "2", "3", "4", "5", "6", "7"],
+        },
+    )
+    assert policy_resp.status_code == 200
+
+    revoke_resp = await client.post(f"/api/v1/devices/{device_id}/revoke")
+    assert revoke_resp.status_code == 200
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT action, target_type, target_id, before_json, after_json "
+                    "FROM audit_log ORDER BY ts"
+                )
+            )
+        ).all()
+    actions = [r.action for r in rows]
+    assert "grant.create" in actions
+    assert "policy.update" in actions
+    assert "device.revoke" in actions
+
+    grant_row = next(r for r in rows if r.action == "grant.create")
+    assert grant_row.target_type == "user"
+    assert grant_row.target_id == "audited"
+    assert grant_row.after_json["seconds"] == 600
+
+    policy_row = next(r for r in rows if r.action == "policy.update")
+    assert policy_row.after_json["daily_limits_s"] == [1800] * 7
+
+    revoke_row = next(r for r in rows if r.action == "device.revoke")
+    assert revoke_row.target_id == device_id
+    assert revoke_row.before_json["status"] == "active"
+    assert revoke_row.after_json["status"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_login_is_audit_logged(unauthenticated_client):
+    setup_resp = await unauthenticated_client.post(
+        "/setup", data={"email": "parent@example.com", "password": "hunter2hunter"}, follow_redirects=False
+    )
+    assert setup_resp.status_code == 303
+
+    logout_resp = await unauthenticated_client.post("/logout", follow_redirects=False)
+    assert logout_resp.status_code == 303
+
+    login_resp = await unauthenticated_client.post(
+        "/login", data={"email": "parent@example.com", "password": "hunter2hunter"}, follow_redirects=False
+    )
+    assert login_resp.status_code == 303
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        count = (
+            await session.execute(text("SELECT count(*) FROM audit_log WHERE action = 'parent.login'"))
+        ).scalar_one()
+    assert count == 1  # only login_submit records this -- setup_submit does not
+
+
+@pytest.mark.asyncio
+async def test_device_observe_toggle_flips_enforcement_reported_by_sync(client):
+    """A parent switching a device to observe-only (Track 3a, PLAN "Layer 7
+    -- household safety net") should be reflected both in `GET /devices`
+    and in the very next `/sync`'s `enforcement` field -- the agent reads
+    that to decide whether to actually write to DBUS."""
+    await _seed_user("dry-run-kid")
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    enroll_resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h",
+            "machine_id": "m-observe",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["dry-run-kid"],
+        },
+    )
+    device_id, token = enroll_resp.json()["device_id"], enroll_resp.json()["device_token"]
+
+    devices_before = (await client.get("/api/v1/devices")).json()
+    assert next(d for d in devices_before if d["id"] == device_id)["enforcement"] == "enforce"
+
+    observe_resp = await client.post(f"/api/v1/devices/{device_id}/observe")
+    assert observe_resp.status_code == 200
+    assert observe_resp.json()["enforcement"] == "observe"
+
+    devices_after = (await client.get("/api/v1/devices")).json()
+    assert next(d for d in devices_after if d["id"] == device_id)["enforcement"] == "observe"
+
+    sync_resp = await client.post(
+        "/api/v1/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "agent_time": "2026-09-09T00:00:00+00:00",
+            "tz": "UTC",
+            "ntp_synced": True,
+            "agent_version": "0.1.0",
+            "users": [
+                {
+                    "username": "dry-run-kid",
+                    "day": "2026-09-09",
+                    "cumulative_spent_s": 0,
+                    "observed": {
+                        "balance_s": 0,
+                        "spent_day_s": 0,
+                        "limit_today_s": 3600,
+                        "logged_in": False,
+                        "active": False,
+                    },
+                    "local_grant_s": 0,
+                    "policy_version_applied": 0,
+                }
+            ],
+        },
+    )
+    assert sync_resp.json()["users"][0]["enforcement"] == "observe"
+
+    enforce_resp = await client.post(f"/api/v1/devices/{device_id}/enforce")
+    assert enforce_resp.status_code == 200
+    assert enforce_resp.json()["enforcement"] == "enforce"
+
+
+@pytest.mark.asyncio
 async def test_policy_update_bumps_version_and_agent_receives_it_on_next_sync(client):
     """PUT /users/{u}/policy is the only way to change a limit through the
     hub (as opposed to an additive grant) -- confirm it creates a new policy
@@ -691,6 +913,58 @@ async def test_policy_update_bumps_version_and_agent_receives_it_on_next_sync(cl
     assert resp_user["policy"] is not None
     assert resp_user["policy"]["daily_limits_s"] == [5400] * 7
     assert resp_user["effective_limit_today_s"] == 5400
+
+
+@pytest.mark.asyncio
+async def test_concurrent_policy_updates_for_the_same_user_do_not_race(client):
+    """Two concurrent PUT .../policy requests used to both read the same
+    current version and race on `uq_policies_user_version`
+    (docs/best-practices-review.md) -- and, more subtly, `update_policy`'s
+    own `SELECT ... FOR UPDATE` re-select of `user` (already loaded once by
+    this endpoint to resolve the username) used to hand back the same
+    stale cached object once the lock was granted instead of the
+    just-committed one, defeating the lock entirely
+    (services/policy.py::update_policy's `populate_existing` note)."""
+    await _seed_user("raced-policy")
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h",
+            "machine_id": "m-policy-race",
+            "os": "linux",
+            "tz": "UTC",
+            "agent_version": "0.1.0",
+            "local_users": ["raced-policy"],
+        },
+    )
+
+    def _update(minutes: int) -> object:
+        return client.put(
+            "/api/v1/users/raced-policy/policy",
+            json={
+                "daily_limits_s": [minutes * 60] * 7,
+                "weekly_limit_s": minutes * 60 * 7,
+                "monthly_limit_s": minutes * 60 * 30,
+                "allowed_weekdays": ["1", "2", "3", "4", "5", "6", "7"],
+            },
+        )
+
+    results = await asyncio.gather(_update(30), _update(45))
+    assert [r.status_code for r in results] == [200, 200]
+    versions = sorted(r.json()["version"] for r in results)
+    assert versions == [2, 3]  # one after another, never both landing on 2
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        user_id = (
+            await session.execute(text("SELECT id FROM users WHERE canonical_username = 'raced-policy'"))
+        ).scalar_one()
+        policy_count = (
+            await session.execute(text("SELECT count(*) FROM policies WHERE user_id = :u"), {"u": user_id})
+        ).scalar_one()
+    assert policy_count == 3  # initial (enroll-seeded) + the two updates
 
 
 @pytest.mark.asyncio

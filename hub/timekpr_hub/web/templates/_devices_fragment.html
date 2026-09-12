@@ -3,6 +3,7 @@
     {{ d.name }} &middot; {{ d.status }} &middot; v{{ d.agent_version }}
     &middot; <span title="last successful contact from this device's agent">{{ d.last_seen }}</span>
     {% if d.stale %}<strong> (not checking in)</strong>{% endif %}
+    {% if d.enforcement == 'observe' %}<strong title="agent computes what it would write, but never writes it"> (observe-only)</strong>{% endif %}
     {% if d.status == 'pending' %}
       <form style="display:inline" hx-post="/ui/devices/{{ d.id }}/approve" hx-target="#devices" hx-swap="innerHTML">
         <button type="submit" style="padding:0 .3rem;">approve</button>
@@ -12,6 +13,16 @@
       <form style="display:inline" hx-post="/ui/devices/{{ d.id }}/revoke" hx-target="#devices" hx-swap="innerHTML"
             hx-confirm="Revoke {{ d.name }}? Its token stops working immediately; history is kept.">
         <button type="submit" style="padding:0 .3rem;">revoke</button>
+      </form>
+    {% endif %}
+    {% if d.enforcement == 'observe' %}
+      <form style="display:inline" hx-post="/ui/devices/{{ d.id }}/enforce" hx-target="#devices" hx-swap="innerHTML">
+        <button type="submit" style="padding:0 .3rem;">enforce</button>
+      </form>
+    {% else %}
+      <form style="display:inline" hx-post="/ui/devices/{{ d.id }}/observe" hx-target="#devices" hx-swap="innerHTML"
+            hx-confirm="Switch {{ d.name }} to observe-only? It will stop applying any local limit and only log what it would have done.">
+        <button type="submit" style="padding:0 .3rem;">observe-only</button>
       </form>
     {% endif %}
     <form style="display:inline" hx-post="/ui/devices/{{ d.id }}/delete" hx-target="#devices" hx-swap="innerHTML"

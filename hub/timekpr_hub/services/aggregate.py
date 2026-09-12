@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -121,6 +121,91 @@ async def global_spent_wallclock(session: AsyncSession, *, user_id: uuid.UUID, d
         {"user_id": user_id, "day": day},
     )
     return int(result.scalar_one())
+
+
+async def global_spent_wallclock_batch(
+    session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
+) -> dict[uuid.UUID, int]:
+    """`global_spent_wallclock` for every user in `user_ids` in one
+    round-trip instead of one query per user (docs/best-practices-review.md's
+    N+1 finding, used by services/summaries.py) -- same GREATEST(wall-clock
+    union, MAX-merged counter) formula as the single-user version above,
+    grouped by user_id. A user with neither an activity_intervals row nor a
+    usage_counters row today is simply absent from the result; callers
+    should default to 0. `range_agg(span)` returning a per-user multirange
+    that's then unnested for its own SUM is exactly the single-user query's
+    approach, just computed once per user instead of once per call; the two
+    are cross-checked for equivalence in
+    tests/integration/test_aggregate_postgres.py."""
+    if not user_ids:
+        return {}
+    stmt = text(
+        """
+        WITH per_user_ranges AS (
+            SELECT user_id, range_agg(span) AS merged
+            FROM activity_intervals
+            WHERE user_id IN :user_ids AND day = :day
+            GROUP BY user_id
+        ),
+        unioned AS (
+            SELECT user_id, SUM(EXTRACT(EPOCH FROM (upper(r) - lower(r))))::bigint AS union_s
+            FROM per_user_ranges, unnest(merged) AS r
+            GROUP BY user_id
+        ),
+        counters AS (
+            SELECT user_id, MAX(spent_seconds) AS max_s
+            FROM usage_counters
+            WHERE user_id IN :user_ids AND day = :day
+            GROUP BY user_id
+        )
+        SELECT COALESCE(u.user_id, c.user_id) AS user_id,
+               GREATEST(COALESCE(u.union_s, 0), COALESCE(c.max_s, 0)) AS global_spent_s
+        FROM unioned u
+        FULL OUTER JOIN counters c ON c.user_id = u.user_id
+        """
+    ).bindparams(bindparam("user_ids", expanding=True))
+    result = await session.execute(stmt, {"user_ids": user_ids, "day": day})
+    return {row.user_id: int(row.global_spent_s) for row in result}
+
+
+async def global_spent_parallel_batch(
+    session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
+) -> dict[uuid.UUID, int]:
+    """`global_spent_parallel` for every user in `user_ids` in one
+    round-trip (docs/best-practices-review.md's N+1 finding). A user with no
+    usage_counters row today is simply absent; callers should default to 0."""
+    if not user_ids:
+        return {}
+    stmt = text(
+        """
+        SELECT user_id, SUM(spent_seconds) AS global_spent_s
+        FROM usage_counters WHERE user_id IN :user_ids AND day = :day
+        GROUP BY user_id
+        """
+    ).bindparams(bindparam("user_ids", expanding=True))
+    result = await session.execute(stmt, {"user_ids": user_ids, "day": day})
+    return {row.user_id: int(row.global_spent_s) for row in result}
+
+
+async def latest_activity_states_batch(
+    session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
+) -> dict[uuid.UUID, tuple[str, datetime]]:
+    """`latest_activity_state` for every user in `user_ids` in one
+    round-trip (docs/best-practices-review.md's N+1 finding). A user with no
+    reported activity_state today is simply absent; callers should default
+    to `("logged_out", None)`, same as the single-user version."""
+    if not user_ids:
+        return {}
+    stmt = text(
+        """
+        SELECT DISTINCT ON (user_id) user_id, activity_state, updated_at
+        FROM usage_counters
+        WHERE user_id IN :user_ids AND day = :day AND activity_state IS NOT NULL
+        ORDER BY user_id, updated_at DESC
+        """
+    ).bindparams(bindparam("user_ids", expanding=True))
+    result = await session.execute(stmt, {"user_ids": user_ids, "day": day})
+    return {row.user_id: (str(row.activity_state), row.updated_at) for row in result}
 
 
 async def latest_activity_state(

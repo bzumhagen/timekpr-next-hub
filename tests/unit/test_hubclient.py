@@ -190,15 +190,3 @@ def test_sync_unreachable_hub_raises_hub_unreachable(tmp_path):
     client = HubClient(HubClientConfig(base_url="http://127.0.0.1:1", token_path=tmp_path / "token"))
     with pytest.raises(HubUnreachableError):
         client.sync({"agent_time": "x", "users": []})
-
-
-def test_post_events_swallows_network_failure(tmp_path):
-    (tmp_path / "token").write_text("tkh_existing")
-    client = HubClient(HubClientConfig(base_url="http://127.0.0.1:1", token_path=tmp_path / "token"))
-    client.post_events([{"kind": "agent_started"}])  # must not raise
-
-
-def test_post_events_noop_on_empty_list(tmp_path):
-    (tmp_path / "token").write_text("tkh_existing")
-    client = HubClient(HubClientConfig(base_url="http://127.0.0.1:1", token_path=tmp_path / "token"))
-    client.post_events([])  # must not even attempt a request

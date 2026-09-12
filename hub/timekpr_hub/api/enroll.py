@@ -12,7 +12,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,7 @@ from timekpr_hub_core.models import EnrollRequest, EnrollResponse
 
 from timekpr_hub.db.models import Device, EnrollmentCode, User, UserAlias
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.policy import create_initial_policy, get_current_policy, policy_to_payload
+from timekpr_hub.services.policy import create_initial_policy, get_or_create_policy, policy_to_payload
 from timekpr_hub.settings import settings
 
 router = APIRouter()
@@ -36,13 +36,33 @@ def _hash_token(token: str) -> str:
 async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session)) -> EnrollResponse:
     now = datetime.now(UTC)
 
-    result = await session.execute(select(EnrollmentCode).where(EnrollmentCode.code == req.enrollment_code))
-    code_row = result.scalar_one_or_none()
-    if code_row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown enrollment code")
-    if code_row.used_at is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "enrollment code already used")
-    if code_row.expires_at < now:
+    # Atomically claim the code (used_at IS NULL AND not expired, in the
+    # same UPDATE) rather than a plain SELECT followed by a later UPDATE --
+    # two concurrent enrolls with the same code could otherwise both pass
+    # the used_at is None check before either commits
+    # (docs/best-practices-review.md). Zero rows back means unknown/used/
+    # expired; a follow-up SELECT (safe now -- nothing left to race) picks
+    # which for the error.
+    claim = await session.execute(
+        update(EnrollmentCode)
+        .where(
+            EnrollmentCode.code == req.enrollment_code,
+            EnrollmentCode.used_at.is_(None),
+            EnrollmentCode.expires_at >= now,
+        )
+        .values(used_at=now)
+        .returning(EnrollmentCode.code)
+    )
+    claimed_code = claim.scalar_one_or_none()
+    if claimed_code is None:
+        existing_code = await session.execute(
+            select(EnrollmentCode).where(EnrollmentCode.code == req.enrollment_code)
+        )
+        existing_row = existing_code.scalar_one_or_none()
+        if existing_row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown enrollment code")
+        if existing_row.used_at is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "enrollment code already used")
         raise HTTPException(status.HTTP_410_GONE, "enrollment code expired")
 
     raw_token = TOKEN_PREFIX + secrets.token_urlsafe(32)
@@ -157,16 +177,18 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
             )
             user.current_policy_id = policy.id
         else:
-            existing_policy = await get_current_policy(session, user)
-            if existing_policy is None:
-                existing_policy = await create_initial_policy(session, user.id)
-                user.current_policy_id = existing_policy.id
-            policy = existing_policy
+            # SELECT ... FOR UPDATE-guarded against two devices enrolling
+            # the same brand-new (to the hub) existing user concurrently,
+            # each seeing current_policy_id is None before the other's
+            # create commits (services/policy.py's get_or_create_policy
+            # docstring).
+            policy = await get_or_create_policy(session, user)
 
         policies[local_username] = policy_to_payload(policy)
 
-    code_row.used_at = now
-    code_row.used_by_device_id = device.id
+    await session.execute(
+        update(EnrollmentCode).where(EnrollmentCode.code == claimed_code).values(used_by_device_id=device.id)
+    )
 
     await session.commit()
 

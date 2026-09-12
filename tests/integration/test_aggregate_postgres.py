@@ -21,10 +21,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from timekpr_hub.services.aggregate import (
     device_spent_today,
+    global_spent_parallel,
+    global_spent_parallel_batch,
     global_spent_wallclock,
+    global_spent_wallclock_batch,
     insert_activity_interval,
+    latest_activity_state,
+    latest_activity_states_batch,
     upsert_usage_counter,
 )
+from timekpr_hub.services.limits import grants_total, grants_totals_batch
 
 from tests.dbutil import TEST_DATABASE_URL, require_db
 
@@ -39,10 +45,14 @@ async def db_session():
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with session_factory() as session:
         # isolate each test: truncate the tables we touch
-        await session.execute(text("TRUNCATE usage_counters, activity_intervals, users, devices CASCADE"))
+        await session.execute(
+            text("TRUNCATE usage_counters, activity_intervals, grants, users, devices CASCADE")
+        )
         await session.commit()
         yield session
-        await session.execute(text("TRUNCATE usage_counters, activity_intervals, users, devices CASCADE"))
+        await session.execute(
+            text("TRUNCATE usage_counters, activity_intervals, grants, users, devices CASCADE")
+        )
         await session.commit()
     await engine.dispose()
 
@@ -66,9 +76,13 @@ async def _make_user_and_devices(session: AsyncSession, n_devices: int = 2):
                 "id": device_id,
                 "name": f"dev{i}",
                 "host": f"host{i}",
-                "mid": f"m{i}",
+                # machine_id/token_prefix are unique-constrained across the
+                # whole devices table, and several tests now call this
+                # helper more than once -- keyed off device_id, not the
+                # loop index, so they stay unique across calls too.
+                "mid": f"m-{device_id.hex}",
                 "th": f"hash{device_id.hex}",
-                "tp": f"tkh_{i:04d}",
+                "tp": f"tkh_{device_id.hex[:8]}",
             },
         )
     await session.commit()
@@ -219,3 +233,134 @@ async def test_wallclock_floor_does_not_override_a_larger_simultaneous_union(db_
     # Union: 30min + 30min, non-overlapping -> 3600. Each device's own
     # counter is only 1800 -- the floor must not clamp the total down to that.
     assert await global_spent_wallclock(db_session, user_id=user_id, day=today) == 3600
+
+
+@pytest.mark.asyncio
+async def test_global_spent_wallclock_batch_matches_single_user_calls(db_session):
+    """`global_spent_wallclock_batch` (services/summaries.py's N+1 fix,
+    docs/best-practices-review.md) must return exactly what calling the
+    already-verified single-user `global_spent_wallclock` once per user
+    would -- including for a third user with no data at all, who must
+    simply be absent rather than reported as 0 or raising."""
+    user_a, (dev_a1, dev_a2) = await _make_user_and_devices(db_session, n_devices=2)
+    user_b, (dev_b1,) = await _make_user_and_devices(db_session, n_devices=1)
+    user_c, _ = await _make_user_and_devices(db_session, n_devices=1)  # no activity at all
+    today = date(2026, 9, 9)
+
+    # user_a: two overlapping devices, 30min + 30min overlapping 15min -> 45min
+    await insert_activity_interval(
+        db_session,
+        user_id=user_a,
+        device_id=dev_a1,
+        day=today,
+        start=datetime(2026, 9, 9, 0, 0, 0, tzinfo=UTC),
+        end=datetime(2026, 9, 9, 0, 30, 0, tzinfo=UTC),
+        window_end_ts=datetime(2026, 9, 9, 0, 30, 0, tzinfo=UTC),
+    )
+    await insert_activity_interval(
+        db_session,
+        user_id=user_a,
+        device_id=dev_a2,
+        day=today,
+        start=datetime(2026, 9, 9, 0, 15, 0, tzinfo=UTC),
+        end=datetime(2026, 9, 9, 0, 45, 0, tzinfo=UTC),
+        window_end_ts=datetime(2026, 9, 9, 0, 45, 0, tzinfo=UTC),
+    )
+    # user_b: one device, floor case -- a short span but a larger counter
+    await insert_activity_interval(
+        db_session,
+        user_id=user_b,
+        device_id=dev_b1,
+        day=today,
+        start=datetime(2026, 9, 9, 0, 0, 0, tzinfo=UTC),
+        end=datetime(2026, 9, 9, 0, 5, 0, tzinfo=UTC),
+        window_end_ts=datetime(2026, 9, 9, 0, 5, 0, tzinfo=UTC),
+    )
+    await upsert_usage_counter(db_session, user_id=user_b, device_id=dev_b1, day=today, spent_seconds=2400)
+    await db_session.commit()
+
+    expected = {
+        user_a: await global_spent_wallclock(db_session, user_id=user_a, day=today),
+        user_b: await global_spent_wallclock(db_session, user_id=user_b, day=today),
+    }
+    assert expected == {user_a: 2700, user_b: 2400}
+
+    batched = await global_spent_wallclock_batch(db_session, user_ids=[user_a, user_b, user_c], day=today)
+    assert batched == expected  # user_c absent, not 0
+
+
+@pytest.mark.asyncio
+async def test_global_spent_parallel_batch_matches_single_user_calls(db_session):
+    user_a, (dev_a1, dev_a2) = await _make_user_and_devices(db_session, n_devices=2)
+    user_b, (dev_b1,) = await _make_user_and_devices(db_session, n_devices=1)
+    user_c, _ = await _make_user_and_devices(db_session, n_devices=1)
+    today = date(2026, 9, 9)
+
+    await upsert_usage_counter(db_session, user_id=user_a, device_id=dev_a1, day=today, spent_seconds=600)
+    await upsert_usage_counter(db_session, user_id=user_a, device_id=dev_a2, day=today, spent_seconds=900)
+    await upsert_usage_counter(db_session, user_id=user_b, device_id=dev_b1, day=today, spent_seconds=1200)
+    await db_session.commit()
+
+    expected = {
+        user_a: await global_spent_parallel(db_session, user_id=user_a, day=today),
+        user_b: await global_spent_parallel(db_session, user_id=user_b, day=today),
+    }
+    assert expected == {user_a: 1500, user_b: 1200}
+
+    batched = await global_spent_parallel_batch(db_session, user_ids=[user_a, user_b, user_c], day=today)
+    assert batched == expected
+
+
+@pytest.mark.asyncio
+async def test_latest_activity_states_batch_matches_single_user_calls(db_session):
+    user_a, (dev_a,) = await _make_user_and_devices(db_session, n_devices=1)
+    user_b, (dev_b,) = await _make_user_and_devices(db_session, n_devices=1)
+    user_c, _ = await _make_user_and_devices(db_session, n_devices=1)  # never reported
+    today = date(2026, 9, 9)
+
+    await upsert_usage_counter(
+        db_session, user_id=user_a, device_id=dev_a, day=today, spent_seconds=100, activity_state="draining"
+    )
+    await upsert_usage_counter(
+        db_session, user_id=user_b, device_id=dev_b, day=today, spent_seconds=50, activity_state="idle"
+    )
+    await db_session.commit()
+
+    single_a = await latest_activity_state(db_session, user_id=user_a, day=today)
+    single_b = await latest_activity_state(db_session, user_id=user_b, day=today)
+    assert single_a[0] == "draining"
+    assert single_b[0] == "idle"
+
+    batched = await latest_activity_states_batch(db_session, user_ids=[user_a, user_b, user_c], day=today)
+    assert batched[user_a][0] == single_a[0]
+    assert batched[user_a][1] == single_a[1]
+    assert batched[user_b][0] == single_b[0]
+    assert user_c not in batched  # never reported -- absent, not ("logged_out", None)
+
+
+@pytest.mark.asyncio
+async def test_grants_totals_batch_matches_single_user_calls(db_session):
+    from timekpr_hub.db.models import Grant
+
+    user_a, _ = await _make_user_and_devices(db_session, n_devices=1)
+    user_b, _ = await _make_user_and_devices(db_session, n_devices=1)
+    user_c, _ = await _make_user_and_devices(db_session, n_devices=1)  # no grants today
+    today = date(2026, 9, 9)
+
+    db_session.add_all(
+        [
+            Grant(id=uuid.uuid4(), user_id=user_a, day=today, seconds=600, reason="a1", source="parent"),
+            Grant(id=uuid.uuid4(), user_id=user_a, day=today, seconds=300, reason="a2", source="parent"),
+            Grant(id=uuid.uuid4(), user_id=user_b, day=today, seconds=-120, reason="b1", source="parent"),
+        ]
+    )
+    await db_session.commit()
+
+    expected = {
+        user_a: await grants_total(db_session, user_id=user_a, day=today),
+        user_b: await grants_total(db_session, user_id=user_b, day=today),
+    }
+    assert expected == {user_a: 900, user_b: -120}
+
+    batched = await grants_totals_batch(db_session, user_ids=[user_a, user_b, user_c], day=today)
+    assert batched == expected  # user_c absent, not 0

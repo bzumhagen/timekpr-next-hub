@@ -36,7 +36,7 @@ from timekpr_hub.services.aggregate import (
     upsert_usage_counter,
 )
 from timekpr_hub.services.limits import effective_daily_limit
-from timekpr_hub.services.policy import create_initial_policy, get_current_policy, policy_to_payload
+from timekpr_hub.services.policy import get_or_create_policy, policy_to_payload
 from timekpr_hub.settings import settings
 
 router = APIRouter()
@@ -88,10 +88,10 @@ async def sync(
         user_result = await session.execute(select(User).where(User.id == alias.user_id))
         user = user_result.scalar_one()
 
-        policy = await get_current_policy(session, user)
-        if policy is None:
-            policy = await create_initial_policy(session, user.id)
-            user.current_policy_id = policy.id
+        # SELECT ... FOR UPDATE-guarded against two devices reaching this
+        # user's first sync concurrently (services/policy.py's
+        # get_or_create_policy docstring).
+        policy = await get_or_create_policy(session, user)
 
         # 1. record this tick's contribution (idempotent on both writes)
         await upsert_usage_counter(

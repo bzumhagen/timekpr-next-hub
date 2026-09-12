@@ -28,6 +28,25 @@ async def grants_total(session: AsyncSession, *, user_id: uuid.UUID, day: date) 
     return int(result.scalar_one())
 
 
+async def grants_totals_batch(
+    session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
+) -> dict[uuid.UUID, int]:
+    """`grants_total` for every user in `user_ids` in one query (`GROUP BY
+    user_id`) instead of one query per user -- used by
+    services/summaries.py, which previously ran this once per user shown on
+    the hub UI (docs/best-practices-review.md's N+1 finding). A user with
+    no grants today is simply absent from the result; callers should
+    default to 0."""
+    if not user_ids:
+        return {}
+    result = await session.execute(
+        select(Grant.user_id, func.sum(Grant.seconds))
+        .where(Grant.user_id.in_(user_ids), Grant.day == day)
+        .group_by(Grant.user_id)
+    )
+    return {user_id: int(total) for user_id, total in result.all()}
+
+
 async def effective_daily_limit(
     session: AsyncSession, *, policy: Policy, user_id: uuid.UUID, day: date
 ) -> int:

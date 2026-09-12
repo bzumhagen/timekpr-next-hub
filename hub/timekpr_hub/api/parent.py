@@ -12,81 +12,41 @@ import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.calendar import canonical_stamp
 from timekpr_hub_core.models import GrantCreate, PolicyPayload, PolicyUpdate, UserSummary
 
-from timekpr_hub.db.models import Device, EnrollmentCode, User
+from timekpr_hub.api.parent_auth import get_current_parent_api
+from timekpr_hub.db.models import Device, EnrollmentCode, Parent, User
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.aggregate import (
-    global_spent_parallel,
-    global_spent_wallclock,
-    latest_activity_state,
-)
-from timekpr_hub.services.limits import effective_daily_limit
+from timekpr_hub.services.audit import record_audit_event
 from timekpr_hub.services.policy import get_current_policy, policy_to_payload, update_policy
+from timekpr_hub.services.summaries import compute_user_summaries
 from timekpr_hub.settings import settings
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
 
 router = APIRouter()
 
 
 @router.get("/users", response_model=list[UserSummary])
 async def list_users(session: AsyncSession = Depends(get_session)) -> list[UserSummary]:
-    now = datetime.now(UTC)
-    stamp = canonical_stamp(now, settings.tz)
-
-    result = await session.execute(select(User))
-    users = result.scalars().all()
-
-    summaries = []
-    for user in users:
-        policy = await get_current_policy(session, user)
-        activity_state, activity_as_of = await latest_activity_state(session, user_id=user.id, day=stamp.day)
-        if activity_as_of is None or (now - activity_as_of).total_seconds() > 3 * (
-            settings.default_next_poll_ms / 1000
-        ):
-            activity_state = "logged_out"
-        as_of_str = activity_as_of.isoformat() if activity_as_of else None
-
-        if policy is None:
-            summaries.append(
-                UserSummary(
-                    username=user.canonical_username,
-                    display_name=user.display_name,
-                    accounting_mode=user.accounting_mode,
-                    today_global_spent_s=0,
-                    today_effective_limit_s=0,
-                    activity_state=activity_state,
-                    as_of=as_of_str,
-                )
-            )
-            continue
-
-        if user.accounting_mode == "wallclock":
-            spent = await global_spent_wallclock(session, user_id=user.id, day=stamp.day)
-        else:
-            spent = await global_spent_parallel(session, user_id=user.id, day=stamp.day)
-        limit_today = await effective_daily_limit(session, policy=policy, user_id=user.id, day=stamp.day)
-
-        summaries.append(
-            UserSummary(
-                username=user.canonical_username,
-                display_name=user.display_name,
-                accounting_mode=user.accounting_mode,
-                today_global_spent_s=spent,
-                today_effective_limit_s=limit_today,
-                activity_state=activity_state,
-                as_of=as_of_str,
-            )
-        )
-    return summaries
+    rows = await compute_user_summaries(session)
+    return [row.to_user_summary() for row in rows]
 
 
 @router.post("/users/{username}/grants", status_code=status.HTTP_201_CREATED)
 async def create_grant(
-    username: str, body: GrantCreate, session: AsyncSession = Depends(get_session)
+    username: str,
+    body: GrantCreate,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
 ) -> dict:
     from timekpr_hub.db.models import Grant
 
@@ -108,13 +68,27 @@ async def create_grant(
         granted_by="parent-api",
     )
     session.add(grant)
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="grant.create",
+        target_type="user",
+        target_id=username,
+        after={"seconds": grant.seconds, "day": stamp.day_str, "reason": grant.reason},
+        ip=_client_ip(request),
+    )
     await session.commit()
     return {"id": str(grant.id), "seconds": grant.seconds, "day": stamp.day_str}
 
 
 @router.put("/users/{username}/policy", response_model=PolicyPayload)
 async def update_user_policy(
-    username: str, body: PolicyUpdate, session: AsyncSession = Depends(get_session)
+    username: str,
+    body: PolicyUpdate,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
 ) -> PolicyPayload:
     """The only way to change a child's *limit* (as opposed to grant
     additive bonus time) through the hub -- see services/policy.py::
@@ -127,7 +101,21 @@ async def update_user_policy(
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
 
+    before_policy = await get_current_policy(session, user)
+    before = policy_to_payload(before_policy).model_dump() if before_policy else None
+
     policy = await update_policy(session, user=user, update=body, created_by="parent-api")
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="policy.update",
+        target_type="user",
+        target_id=username,
+        before=before,
+        after=policy_to_payload(policy).model_dump(),
+        ip=_client_ip(request),
+    )
     await session.commit()
     return policy_to_payload(policy)
 
@@ -150,6 +138,7 @@ async def list_devices(session: AsyncSession = Depends(get_session)) -> list[dic
             "id": str(d.id),
             "name": d.name,
             "status": d.status,
+            "enforcement": d.enforcement,
             "last_sync_at": d.last_sync_at.isoformat() if d.last_sync_at else None,
         }
         for d in result.scalars().all()
@@ -168,7 +157,12 @@ async def approve_device(device_id: uuid.UUID, session: AsyncSession = Depends(g
 
 
 @router.post("/devices/{device_id}/revoke")
-async def revoke_device(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
+async def revoke_device(
+    device_id: uuid.UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
     """Kills the device's token immediately -- get_current_device 403s a
     revoked device on its very next sync (auth.py's "never fail open").
     History (usage_counters/activity_intervals/user_aliases) is untouched,
@@ -180,13 +174,61 @@ async def revoke_device(device_id: uuid.UUID, session: AsyncSession = Depends(ge
     device = result.scalar_one_or_none()
     if device is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
+    before_status = device.status
     device.status = "revoked"
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="device.revoke",
+        target_type="device",
+        target_id=str(device.id),
+        before={"status": before_status},
+        after={"status": device.status},
+        ip=_client_ip(request),
+    )
     await session.commit()
     return {"id": str(device.id), "status": device.status}
 
 
+@router.post("/devices/{device_id}/observe")
+async def set_device_observe_mode(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
+    """Dry-run mode (PLAN "Layer 7 -- household safety net"): the agent
+    keeps syncing and computing what it *would* write, logging it, but
+    never actually calls into DBUS -- see `main.py`'s
+    `resp_user.get("enforcement") == "observe"` branch, which already
+    existed for the unmapped-user case and now also serves this per-device
+    toggle. `/sync` (api/sync.py) reads this column and reports
+    `EnforcementMode.OBSERVE` for every user on this device until
+    `set_device_enforce_mode` flips it back."""
+    result = await session.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
+    device.enforcement = "observe"
+    await session.commit()
+    return {"id": str(device.id), "enforcement": device.enforcement}
+
+
+@router.post("/devices/{device_id}/enforce")
+async def set_device_enforce_mode(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
+    """Reverses `set_device_observe_mode` -- back to normal enforcement."""
+    result = await session.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
+    device.enforcement = "enforce"
+    await session.commit()
+    return {"id": str(device.id), "enforcement": device.enforcement}
+
+
 @router.delete("/devices/{device_id}")
-async def delete_device(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
+async def delete_device(
+    device_id: uuid.UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
     """Hard delete. FK cascades (ondelete='CASCADE' on user_aliases,
     usage_counters, activity_intervals) drop this device's contribution
     entirely, which *rewrites* any day it reported usage for -- unlike
@@ -196,6 +238,17 @@ async def delete_device(device_id: uuid.UUID, session: AsyncSession = Depends(ge
     device = result.scalar_one_or_none()
     if device is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
+    before = {"name": device.name, "status": device.status}
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="device.delete",
+        target_type="device",
+        target_id=str(device_id),
+        before=before,
+        ip=_client_ip(request),
+    )
     await session.delete(device)
     await session.commit()
     return {"id": str(device_id), "status": "deleted"}

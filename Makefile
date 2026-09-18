@@ -16,6 +16,7 @@ UV ?= uv
 COMPOSE ?= docker compose
 IMAGE ?= timekpr-hub:dev
 PYTEST_ARGS ?=
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 DEV_COMPOSE := $(COMPOSE) -f deploy/compose.dev.yml
 PROD_COMPOSE := $(COMPOSE) -f deploy/docker-compose.yml --env-file deploy/.env
@@ -23,9 +24,9 @@ PROD_COMPOSE := $(COMPOSE) -f deploy/docker-compose.yml --env-file deploy/.env
 DEV_DATABASE_URL ?= postgresql+asyncpg://timekpr_hub:timekpr_hub@127.0.0.1:55432/timekpr_hub_dev
 TEST_DATABASE_URL ?= postgresql+asyncpg://timekpr_hub:timekpr_hub@127.0.0.1:55432/timekpr_hub_test
 
-.PHONY: help install lock upgrade fmt lint typecheck test test-db test-e2e test-all check \
+.PHONY: help install lock upgrade fmt lint lint-sh typecheck test test-db test-e2e test-all check \
         db-up db-down db-shell migrate migrate-test revision dev \
-        build build-wheels image deploy-up deploy-down deploy-logs clean distclean
+        build build-wheels image deploy-tarball deploy-up deploy-down deploy-logs clean distclean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | sort | \
@@ -60,6 +61,9 @@ lint: .venv/.synced ## Check formatting and lint rules (no changes made)
 
 typecheck: .venv/.synced ## Run mypy across core/hub/agent
 	$(UV) run mypy core hub agent
+
+lint-sh: ## Shellcheck the Proxmox packaging scripts
+	shellcheck deploy/proxmox/*.sh
 
 # ------------------------------------------------------------------ tests --
 
@@ -117,9 +121,13 @@ image: ## Build the hub's production container image
 
 build: build-wheels image ## Build wheels and the hub container image
 
+deploy-tarball: ## Build a source tarball for a Proxmox install with no git checkout (lands in dist/)
+	mkdir -p dist
+	git archive --format=tar.gz --prefix=timekpr-next-hub/ -o dist/timekpr-next-hub-$(VERSION).tar.gz HEAD
+
 # ------------------------------------------------------------------ deploy --
 
-deploy-up: ## Start the production stack (hub + postgres + caddy + backups)
+deploy-up: ## Start the production stack (hub + postgres)
 	@test -f deploy/.env || { echo "deploy/.env missing -- copy deploy/.env.example and fill it in" >&2; exit 1; }
 	$(PROD_COMPOSE) up -d --build
 

@@ -1,5 +1,4 @@
 {% extends "_base.html" %}
-{% block head_extra %}<script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>{% endblock %}
 {% block content %}
   <div class="topbar">
     <h1>timekpr-next-hub</h1>
@@ -9,7 +8,7 @@
     </span>
   </div>
 
-  <div id="users" hx-get="/ui/users-fragment" hx-trigger="load, every 20s" hx-swap="innerHTML">
+  <div id="users" data-poll="/ui/users-fragment" data-poll-ms="{{ poll_ms }}">
     Loading&hellip;
   </div>
 {% endblock %}
@@ -20,8 +19,8 @@
     // (data-as-of/data-spent-s, set by _users_fragment.html) rather than
     // only ever showing a value up to one 20s poll old. Re-reads the DOM's
     // data attributes on every tick rather than caching them, so it stays
-    // correct across htmx's periodic re-fetch of #users without needing to
-    // hook htmx's own swap events.
+    // correct across the periodic re-fetch of #users (see _base.html)
+    // without needing to hook into that poll's own refresh.
     function tickUsers() {
       document.querySelectorAll('.user-card[data-activity="draining"][data-as-of]').forEach(function (el) {
         var asOf = Date.parse(el.dataset.asOf);

@@ -136,6 +136,45 @@
   <div class="page {% block page_class %}{% endblock %}">
     {% block content %}{% endblock %}
   </div>
+  <script>
+    // Replaces htmx (dropped so the hub makes zero outbound requests at
+    // runtime -- it previously pulled htmx.org from a CDN on every page
+    // load, which broke the dashboard whenever the hub's WAN was down).
+    // Covers the only two things the templates use: a form whose response
+    // replaces part of the page, and an element that polls a fragment on
+    // an interval.
+    (() => {
+      const swap = (el, html, mode) =>
+        mode === 'outerHTML' ? (el.outerHTML = html) : (el.innerHTML = html);
+      const targetOf = (f) => {
+        const sel = f.dataset.target;
+        return sel.startsWith('closest ') ? f.closest(sel.slice(8)) : document.querySelector(sel);
+      };
+      document.addEventListener('submit', async (e) => {
+        const f = e.target.closest('form[data-post]');
+        if (!f) return;
+        e.preventDefault();
+        if (f.dataset.confirm && !window.confirm(f.dataset.confirm)) return;
+        const res = await fetch(f.dataset.post, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams(new FormData(f)),
+        });
+        if (!res.ok) return; // htmx also declines to swap on a non-2xx response
+        swap(targetOf(f), await res.text(), f.dataset.swap);
+      });
+      for (const el of document.querySelectorAll('[data-poll]')) {
+        const load = async () => {
+          if (document.hidden) return; // don't poll a tab nobody is looking at
+          const res = await fetch(el.dataset.poll);
+          if (res.ok) el.innerHTML = await res.text();
+        };
+        load();
+        setInterval(load, Number(el.dataset.pollMs));
+        document.addEventListener('visibilitychange', () => document.hidden || load());
+      }
+    })();
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

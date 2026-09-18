@@ -6,7 +6,6 @@ agent/.venv/
 .hypothesis/
 *.egg-info/
 deploy/.env
-deploy/backups/
 .ruff_cache/
 .mypy_cache/
 dist/

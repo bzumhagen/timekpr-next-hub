@@ -1,12 +1,14 @@
-# PLAN reference: "Deploy: docker-compose with caddy + hub + postgres, with
-# nightly pg_dump." Run from the repo root:
+# PLAN reference: "Deploy: docker-compose with hub + postgres." Run from the
+# repo root:
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
 #
 # Postgres is bound only to the docker network (no host port published) --
-# the hub is the only thing that needs to reach it. Caddy is the only
-# container exposed to the LAN/internet, terminating TLS via Let's Encrypt
-# DNS-01 (see Caddyfile) or serving plain HTTP on the LAN if HUB_DOMAIN is a
-# bare IP/hostname without a real cert.
+# the hub is the only thing that needs to reach it. The hub itself publishes
+# :8000 directly -- this stack is meant for a LAN or a Tailscale/WireGuard
+# tunnel; put your own reverse proxy in front of it if you want TLS.
+#
+# Backups are yours to arrange (see README.md) -- there's no backup service
+# here.
 services:
   postgres:
     image: docker.io/library/postgres:16-alpine
@@ -34,71 +36,13 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-timekpr_hub}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-timekpr_hub}
       HUB_TZ: ${HUB_TZ:-UTC}
+    ports:
+      - "8000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  caddy:
-    image: docker.io/library/caddy:2-alpine
-    restart: unless-stopped
-    depends_on:
-      hub:
-        condition: service_healthy
-    ports:
-      - "3001:80"
-      - "3002:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    environment:
-      # Only what the Caddyfile actually reads -- `env_file: .env` used to
-      # hand the whole file (including POSTGRES_PASSWORD) to a container
-      # that has no use for it (docs/best-practices-review.md).
-      HUB_DOMAIN: ${HUB_DOMAIN:-localhost}
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:80"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # Nightly logical backup -- a single file, easy to copy offsite. Litestream
-  # or WAL-archiving is a reasonable Phase 5 upgrade (PLAN "Hardening") if
-  # point-in-time recovery matters more than "yesterday's snapshot".
-  backup:
-    image: docker.io/library/postgres:16-alpine
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-timekpr_hub}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a real password in deploy/.env}
-      POSTGRES_DB: ${POSTGRES_DB:-timekpr_hub}
-      # pg_dump reads PG*, not POSTGRES_* -- without these it prompted for a
-      # password interactively, then (once given one) tried to connect as
-      # the container's own OS user ("root") to a database also named
-      # "root", and every dump silently failed
-      # (docs/best-practices-review.md; caught only once the entrypoint
-      # below was fixed to dump immediately instead of after 24h idle).
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set a real password in deploy/.env}
-      PGUSER: ${POSTGRES_USER:-timekpr_hub}
-      PGDATABASE: ${POSTGRES_DB:-timekpr_hub}
-      PGHOST: postgres
-    volumes:
-      - ./backups:/backups
-    entrypoint: >
-      sh -c '
-        while true; do
-          pg_dump -Fc -f /backups/timekpr_hub_$$(date +%Y%m%d).dump;
-          find /backups -name "*.dump" -mtime +14 -delete;
-          sleep 86400;
-        done
-      '
-
 volumes:
   pgdata:
-  caddy_data:
-  caddy_config:

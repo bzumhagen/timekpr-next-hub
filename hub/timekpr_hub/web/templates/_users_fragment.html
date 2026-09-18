@@ -30,7 +30,7 @@
   {% if u.gated_today %}
     <div class="notice" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;">
       <span>&#9208; Chores not done -- today's time is on hold</span>
-      <form hx-post="/ui/users/{{ u.username }}/gate-release" hx-target="closest .user-card" hx-swap="outerHTML">
+      <form data-post="/ui/users/{{ u.username }}/gate-release" data-target="closest .user-card" data-swap="outerHTML">
         <button type="submit">Release today</button>
       </form>
     </div>
@@ -44,7 +44,7 @@
         Tomorrow ({{ u.tomorrow }}) is set to
         {{ "%d:%02d" | format(u.tomorrow_override_s // 3600, (u.tomorrow_override_s % 3600) // 60) }}
       </span>
-      <form hx-post="/ui/users/{{ u.username }}/day-override/clear" hx-target="closest .user-card" hx-swap="outerHTML">
+      <form data-post="/ui/users/{{ u.username }}/day-override/clear" data-target="closest .user-card" data-swap="outerHTML">
         <input type="hidden" name="day" value="{{ u.tomorrow }}">
         <button type="submit">Clear</button>
       </form>
@@ -52,11 +52,11 @@
   {% endif %}
 
   <div class="actions">
-    <form hx-post="/ui/users/{{ u.username }}/grants" hx-target="closest .user-card" hx-swap="outerHTML">
+    <form data-post="/ui/users/{{ u.username }}/grants" data-target="closest .user-card" data-swap="outerHTML">
       <input type="hidden" name="seconds" value="1800">
       <button type="submit">+30 min</button>
     </form>
-    <form hx-post="/ui/users/{{ u.username }}/grants" hx-target="closest .user-card" hx-swap="outerHTML">
+    <form data-post="/ui/users/{{ u.username }}/grants" data-target="closest .user-card" data-swap="outerHTML">
       <input type="hidden" name="seconds" value="-1800">
       <button type="submit">-30 min</button>
     </form>
@@ -69,7 +69,7 @@
 
   <details>
     <summary>Adjust a day</summary>
-    <form hx-post="/ui/users/{{ u.username }}/day-override" hx-target="closest .user-card" hx-swap="outerHTML" class="policy-form" style="flex-wrap:wrap;">
+    <form data-post="/ui/users/{{ u.username }}/day-override" data-target="closest .user-card" data-swap="outerHTML" class="policy-form" style="flex-wrap:wrap;">
       <input type="date" name="day" value="{{ u.tomorrow }}" required>
       <span class="seg small">
         <input type="radio" name="mode" id="mode-none-{{ u.username }}" value="none" checked>

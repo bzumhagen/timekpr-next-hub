@@ -13,6 +13,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 matches .python-version (what `uv run`/`make dev` use
+        # locally); 3.13 is what Debian trixie ships and what the native
+        # Proxmox install (deploy/proxmox/) actually runs against.
+        python-version: ["3.12", "3.13"]
+
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+
     services:
       postgres:
         image: postgres:16-alpine
@@ -35,6 +46,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+
+      - name: Shellcheck the Proxmox packaging scripts
+        run: shellcheck deploy/proxmox/*.sh
 
       - name: Sync workspace
         run: uv sync --all-packages

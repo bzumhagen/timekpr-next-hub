@@ -470,6 +470,47 @@ editor beyond additive grants, no parent auth at all) were closed together.
 - [ ] PlayTime pooling
 - [ ] Per-device weighting
 
+## Deployment — native Proxmox/LXC install (no Docker)
+- [x] Dropped Caddy and the compose `backup` container — the Caddyfile's TLS block was
+      never enabled (LAN-only `:80` passthrough was the only live config) and the backup
+      container was a permanently-resident `sleep 86400` loop; `deploy/docker-compose.yml`
+      is now just `postgres` + `hub`, publishing `:8000` directly. Backups are documented
+      as the operator's call (`README.md`), not a bundled service.
+- [x] Dropped the htmx CDN dependency — `index.html`/`devices.html` pulled
+      `htmx.org` from `cdn.jsdelivr.net` on every page load, breaking the dashboard
+      whenever the hub's own WAN was down. Replaced with ~30 lines of vanilla JS in
+      `_base.html` covering the same two patterns (`hx-post`→`data-post` fetch+swap,
+      `hx-get ... every 20s`→`data-poll`), plus a `document.hidden` check the CDN
+      version didn't have (a backgrounded tab stops polling, refreshes on refocus).
+      The hub now makes zero outbound requests at runtime.
+- [x] `deploy/proxmox/install.sh` — idempotent native install: Postgres from apt (no
+      PGDG), a `uv sync --locked --no-dev --package timekpr-hub --no-editable` venv built
+      from an rsynced source subtree (mirrors `hub/Dockerfile`'s `COPY` set — needed
+      since `hub/alembic.ini`/`hub/migrations/` aren't in the built wheel), a tuned
+      Postgres `conf.d` drop-in sized for the hub's `pool_size=5, max_overflow=5`, and
+      two systemd units (`timekpr-hub-migrate.service` as a separate oneshot ahead of
+      `timekpr-hub.service`, hardened well past the agent's own unit since the hub
+      touches no DBUS and writes nothing to disk). Re-running it upgrades in place:
+      password/role/database are reused, never regenerated, and a one-off safety dump
+      is taken before the venv is touched. No recurring backup timer — see above.
+- [x] `deploy/proxmox/create-lxc.sh` — host-side `pct create` with the recommended
+      geometry (unprivileged, no nesting/keyctl, 1GB ceiling / 2 cores / 8GB disk).
+- [x] `deploy/proxmox/README.md` — bring-up, upgrade, backup/restore, sizing rationale,
+      and the risks worth knowing about (Python 3.13 vs this repo's pinned 3.12, cluster
+      locale/encoding, `/dev/shm` in LXC, no PG major-version auto-upgrade).
+- [x] `make deploy-tarball` — a `git archive` tarball for installing onto a fresh LXC
+      with no git checkout.
+- [x] CI: `shellcheck deploy/proxmox/*.sh`, and a `python-version: ["3.12", "3.13"]`
+      matrix — the LXC runs trixie's 3.13, which CI never exercised before.
+- [ ] Actually provisioned on a real Proxmox host and left running — the install
+      script and units are verified by syntax/dry-run (`bash -n`, `systemd-analyze
+      verify`, a local `uv sync`+`alembic` run against the rsynced subtree) but not yet
+      exercised end-to-end inside a live LXC (`pct create` isn't available outside
+      Proxmox itself).
+- [ ] Submit to `community-scripts/ProxmoxVE` (`ct/timekpr-hub.sh` +
+      `install/timekpr-hub-install.sh`) once there's a tagged release — `install.sh`
+      above is the payload that submission would carry.
+
 ## Multi-distro support (not started — Arch/CachyOS only today)
 
 timekpr-next itself supports Ubuntu & derivatives (PPA), Debian (native),

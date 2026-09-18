@@ -83,7 +83,7 @@ def _client_ip(request: Request) -> str | None:
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "index.html", {})
+    return templates.TemplateResponse(request, "index.html", {"poll_ms": settings.default_next_poll_ms})
 
 
 @router.get("/devices", response_class=HTMLResponse)
@@ -93,7 +93,7 @@ async def devices_page(request: Request) -> HTMLResponse:
     per-kid), so unlike the per-user policy/stats/settings pages it doesn't
     belong nested under a user card; it's just noise on the dashboard most
     of the time and only wanted when actually managing a device."""
-    return templates.TemplateResponse(request, "devices.html", {})
+    return templates.TemplateResponse(request, "devices.html", {"poll_ms": settings.default_next_poll_ms})
 
 
 async def _user_summaries(session: AsyncSession, *, usernames: list[str] | None = None) -> list[dict]:

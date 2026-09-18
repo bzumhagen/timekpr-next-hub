@@ -23,28 +23,54 @@ if you're contributing code.
 
 ## What you need
 
-- A machine that stays on (a home server, a mini PC, a Raspberry Pi) to run
-  the hub itself.
-- Docker or Podman with `compose` support, on that machine.
+- A machine that stays on (a home server, a mini PC, a Raspberry Pi, or a
+  Proxmox LXC — see [Proxmox (smallest footprint)](#proxmox-smallest-footprint))
+  to run the hub itself.
+- Docker or Podman with `compose` support, on that machine -- unless you're
+  using the native Proxmox install, which needs neither.
 - On each of your kid's machines: `timekpr-next` already installed and
   running, and a systemd-based Linux distro (Arch/CachyOS today; see
   [multi-distro support](#multi-distro-support-not-started) for others).
+
+The hub itself serves plain HTTP -- it's meant to live on your LAN or behind
+a Tailscale/WireGuard tunnel, not on the open internet. If you want HTTPS,
+put your own reverse proxy in front of it.
 
 ## 1. Start the hub
 
 On the machine that will run the hub:
 
 ```sh
-cp deploy/.env.example deploy/.env   # fill in a real POSTGRES_PASSWORD, HUB_TZ, HUB_DOMAIN
+cp deploy/.env.example deploy/.env   # fill in a real POSTGRES_PASSWORD, HUB_TZ
 make deploy-up
 ```
 
-`HUB_DOMAIN`: a real subdomain you control gets automatic HTTPS via Caddy +
-Let's Encrypt. Leave it as `localhost`, or use the commented `:80` block in
-`deploy/Caddyfile`, for a LAN-only deployment with no public DNS and no TLS.
 A LAN-only or VPN/Tailscale-gated deployment is recommended — see step 2.
 
 `make deploy-logs` tails everything if you want to watch it come up.
+
+### Proxmox (smallest footprint)
+
+For the smallest possible resource footprint, run the hub natively (no
+Docker, no VM) inside an unprivileged Debian LXC on Proxmox: Postgres from
+apt and the hub as a systemd unit. See
+[`deploy/proxmox/README.md`](deploy/proxmox/README.md) for the install
+script and sizing guidance.
+
+### Backups
+
+There's no backup service bundled with the compose stack or the Proxmox
+install -- back up how you already back up everything else. A logical dump
+is the simplest option:
+
+```sh
+docker compose -f deploy/docker-compose.yml exec postgres \
+  pg_dump -U timekpr_hub -Fc timekpr_hub > timekpr_hub_$(date +%Y%m%d).dump
+```
+
+On Proxmox, `vzdump`/Proxmox Backup Server already snapshots the whole
+container nightly -- a logical dump on top of that is still worth having for
+a version-independent restore (e.g. onto a newer Postgres major version).
 
 ## 2. Claim the hub — do this immediately
 
@@ -154,11 +180,11 @@ until you actually need them.
 core/    timekpr_hub_core  -- pure, IO-free logic shared by hub + agent
                               (convergence math, calendar rules, wire types)
 hub/     timekpr_hub        -- FastAPI app: Postgres-backed API + a small
-                              server-rendered (Jinja2 + htmx) parent UI
+                              server-rendered (Jinja2 + vanilla JS) parent UI
 agent/   timekpr_hub_agent  -- systemd sidecar: talks to the local timekprd
                               over DBUS, syncs with the hub over HTTP
-deploy/                     -- docker-compose (Postgres + hub + Caddy +
-                              nightly backups) for a real deployment, plus
+deploy/                     -- docker-compose (Postgres + hub) for a real
+                              deployment, a native Proxmox LXC install, plus
                               a throwaway dev/test Postgres compose file
 tests/                      -- unit, integration (some DB-backed), e2e
 docs/                       -- phase 0/agent findings, this review
@@ -250,24 +276,20 @@ the two dev-compose databases and run inside the uv-managed venv.
 ## Deploying the hub
 
 The production stack (`deploy/docker-compose.yml`) is Postgres (internal
-only) + the hub + Caddy (the only container exposed to the network) + a
-nightly `pg_dump` backup job.
+only) + the hub, which publishes `:8000` directly.
 
 ```sh
-cp deploy/.env.example deploy/.env   # fill in a real POSTGRES_PASSWORD, HUB_TZ, HUB_DOMAIN
+cp deploy/.env.example deploy/.env   # fill in a real POSTGRES_PASSWORD, HUB_TZ
 make deploy-up
 make deploy-logs                     # tail everything
 ```
 
-`HUB_DOMAIN`: a real subdomain you control gets automatic HTTPS via Caddy +
-Let's Encrypt DNS-01 (see `deploy/Caddyfile` for the DNS provider plugin
-note — Caddy's default build only does HTTP-01/TLS-ALPN, so DNS-01 needs an
-`xcaddy` build or a provider-specific image). Leave it as `localhost`, or
-use the commented `:80` block in the Caddyfile, for a LAN-only deployment
-with no public DNS and no TLS.
+It serves plain HTTP -- meant for a LAN or a Tailscale/WireGuard tunnel, not
+the open internet. Put your own reverse proxy in front of it for TLS.
 
-Backups land in `deploy/backups/` as nightly `pg_dump -Fc` dumps, kept 14
-days.
+There's no bundled backup job; see [Backups](#backups) above for a `pg_dump`
+one-liner. For the smallest footprint, see the native Proxmox install at
+[`deploy/proxmox/`](deploy/proxmox/README.md) instead of the compose stack.
 
 ## Installing the agent
 

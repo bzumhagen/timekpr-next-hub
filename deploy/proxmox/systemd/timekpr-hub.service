@@ -1,0 +1,53 @@
+[Unit]
+Description=timekpr-next-hub (FastAPI)
+Documentation=https://github.com/YOUR_ORG/timekpr-next-hub
+After=network-online.target postgresql.service timekpr-hub-migrate.service
+Wants=network-online.target postgresql.service
+Requires=timekpr-hub-migrate.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=timekpr-hub
+Group=timekpr-hub
+WorkingDirectory=/opt/timekpr-hub/src/hub
+EnvironmentFile=/etc/timekpr-hub/hub.env
+
+# Single uvicorn worker, no --workers -- db/session.py documents
+# single-writer-against-Postgres as the intended deployment; two workers
+# would mean two pool_size=5 connection pools.
+ExecStart=/opt/timekpr-hub/venv/bin/uvicorn timekpr_hub.app:app --host 0.0.0.0 --port 8000
+
+Restart=always
+RestartSec=5
+
+# The hub touches no DBUS and no local devices, and writes nothing to
+# disk (uploaded form parts spool to a PrivateTmp /tmp, logs go to
+# journald) -- so this can lock down further than the agent's own unit.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+# A throttle, not a hard cap -- MemoryMax would OOM-kill the hub under a
+# spike, which is worse than it slowing down.
+MemoryHigh=192M
+
+[Install]
+WantedBy=multi-user.target

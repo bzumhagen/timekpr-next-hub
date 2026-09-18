@@ -346,7 +346,7 @@ class GateReleaseCreate(BaseModel):
 
 class UserSettingsUpdate(BaseModel):
     """PUT /users/{u}/settings -- the hub-only per-user knobs that never
-    reach `PolicyPayload` or a device: which weekdays are chore-gated, and
+    reach `PolicyPayload` or a device: which weekdays are approval-gated, and
     the accounting mode. Deliberately NOT part of PolicyUpdate/update_policy
     -- these have no policy version, no device push, and their own single
     save button in the UI (see docs/best-practices-review.md's "tab-scoped
@@ -384,7 +384,7 @@ class UserSummary(BaseModel):
     been released yet -- the state `today_effective_limit_s` is already 0
     for (see services/limits.py::combine_limit). False both when today isn't
     a gated weekday at all and when it's gated but already released, so a
-    caller wanting "is this a chore day" needs `gate_released_today` too."""
+    caller wanting "is this an approval needed day" needs `gate_released_today` too."""
     gate_released_today: bool = False
     """True when today is a gated weekday AND a GateRelease row exists for
     it. Meaningless (always False) when today isn't gated at all -- check

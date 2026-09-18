@@ -13,6 +13,7 @@ from timekpr_hub_core.allowed_hours import (
     HourRecord,
     IntervalConflictError,
     TimeInterval,
+    hours_to_dbus_payload,
     hours_to_intervals,
     intervals_to_hours,
     unrestricted,
@@ -115,3 +116,23 @@ def test_hours_to_intervals_breaks_on_unaccounted_flag_change():
     assert len(intervals) == 2
     assert intervals[0].unaccounted is False
     assert intervals[1].unaccounted is True
+
+
+def test_hours_to_dbus_payload_keys_the_hour_as_a_string():
+    """Regression test for a real, previously-shipped bug: timekpr's own
+    `setAllowedHours` DBUS method has in_signature "ssa{sa{si}}" -- the
+    outer dict's keys are strings. Its handler
+    (server/config/configprocessor.py::checkAndSetAllowedHours) does
+    `for rHour in list(map(str, pHourList)): ...; pHourList[rHour][...]` --
+    it re-indexes the dict with a *stringified* key it derives by iterating
+    it. An int-keyed dict makes every one of those lookups raise KeyError,
+    which the surrounding `except Exception:` swallows into a bare
+    `result=-1` with no visible exception anywhere in the hub or agent --
+    the push just silently "fails" and retries forever. This asserts the
+    key type directly (`"8"`, not `8`) so a future regression back to int
+    keys is caught here, not live on a real device."""
+    records = [HourRecord(hour=8, start_min=0, end_min=60, unaccounted=False)]
+    payload = hours_to_dbus_payload(records)
+    assert list(payload.keys()) == ["8"]
+    assert all(isinstance(key, str) for key in payload)
+    assert payload["8"] == {"STARTMIN": 0, "ENDMIN": 60, "UACC": False}

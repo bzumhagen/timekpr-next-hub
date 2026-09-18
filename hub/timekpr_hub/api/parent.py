@@ -277,7 +277,7 @@ async def update_user_settings(
     session: AsyncSession = Depends(get_session),
     parent: Parent = Depends(get_current_parent_api),
 ) -> dict:
-    """The hub-only per-user knobs (which weekdays are chore-gated, the
+    """The hub-only per-user knobs (which weekdays are approval-gated, the
     accounting mode) -- deliberately NOT part of PolicyUpdate/update_policy:
     no policy version bump, no device push, its own save action. See
     core/timekpr_hub_core/models.py::UserSettingsUpdate."""

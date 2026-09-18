@@ -1,4 +1,4 @@
-"""chore gate (users.gated_weekdays) + day_overrides + gate_releases
+"""approval gate (users.gated_weekdays) + day_overrides + gate_releases
 
 Revision ID: 7c1b9e0a2d34
 Revises: 5fe40acd11d9
@@ -20,7 +20,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # The recurring half of the chore gate, hub-only like the other knobs on
+    # The recurring half of the approval gate, hub-only like the other knobs on
     # this table (accounting_mode, offline_policy, ...). Default [] means no
     # existing user's behavior changes on upgrade.
     op.add_column(

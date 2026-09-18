@@ -1,0 +1,24 @@
+{% extends "_base.html" %}
+{% block title %}Devices -- timekpr-next-hub{% endblock %}
+{% block head_extra %}<script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js"></script>{% endblock %}
+{% block content %}
+  <div class="topbar">
+    <h1>Devices</h1>
+    <a class="button-link" href="/">&larr; Back</a>
+  </div>
+
+  <div class="card">
+    <p class="card-title">Enrolled devices</p>
+    <div id="devices" hx-get="/ui/devices-fragment" hx-trigger="load, every 20s" hx-swap="innerHTML">
+      Loading&hellip;
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="card-title">Enroll a new device</p>
+    <form hx-post="/ui/enrollment-codes" hx-target="#enroll-result" hx-swap="innerHTML">
+      <button type="submit">Generate enrollment code</button>
+    </form>
+    <div id="enroll-result"></div>
+  </div>
+{% endblock %}

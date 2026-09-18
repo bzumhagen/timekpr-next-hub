@@ -56,7 +56,13 @@ def test_apply_policy_push_pushes_every_field():
     assert enforcer._track_inactive["kiddo"] is True
     assert enforcer._hide_tray_icon["kiddo"] is False
     assert enforcer._lockout["kiddo"] == ("suspendwake", "7", "8")
-    assert enforcer._allowed_hours["kiddo"]["1"] == {8: {"STARTMIN": 0, "ENDMIN": 60, "UACC": False}}
+    # Hour keys MUST be strings ("8", not 8) -- timekpr's own
+    # checkAndSetAllowedHours re-indexes the dict with a stringified key it
+    # derives by iterating it, so an int-keyed dict raises KeyError there
+    # and the push silently "fails" every tick forever with no visible
+    # error (see core/timekpr_hub_core/allowed_hours.py::
+    # hours_to_dbus_payload's docstring -- this shipped as a real bug once).
+    assert enforcer._allowed_hours["kiddo"]["1"] == {"8": {"STARTMIN": 0, "ENDMIN": 60, "UACC": False}}
 
     assert enforcer._playtime_enabled["kiddo"] is True
     assert enforcer._playtime_override["kiddo"] is False

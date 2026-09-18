@@ -383,6 +383,21 @@ class FakeEnforcer:
     def set_allowed_hours(self, username: str, day_number: str, hours: dict) -> bool:
         if not hours:
             return False
+        # Real timekpr's checkAndSetAllowedHours does
+        # `for rHour in list(map(str, pHourList)): ...; pHourList[rHour][...]`
+        # -- it re-indexes the dict with a *stringified* key it derives by
+        # iterating it, so an int-keyed dict raises KeyError there, which
+        # its caller swallows into a bare DBUS failure with no visible
+        # exception (server/config/configprocessor.py::
+        # checkAndSetAllowedHours). Enforcing that same requirement here is
+        # what makes this fake actually catch the "silently never applies"
+        # class of bug instead of accepting whatever shape a caller hands
+        # it -- this exact mismatch shipped once already (an int-keyed
+        # `hours_to_dbus_payload`) and passed every test until it was
+        # caught live on a real device, precisely because this fake didn't
+        # replicate the real validation.
+        if not all(isinstance(hour_key, str) for hour_key in hours):
+            return False
         self._allowed_hours.setdefault(username, {})[day_number] = hours
         return True
 

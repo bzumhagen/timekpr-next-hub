@@ -3,23 +3,15 @@
 {% block content %}
   <div class="topbar">
     <h1>timekpr-next-hub</h1>
-    <form method="post" action="/logout"><button type="submit">Log out</button></form>
+    <span class="actions" style="margin:0;">
+      <a class="button-link" href="/devices">Devices</a>
+      <form method="post" action="/logout"><button type="submit">Log out</button></form>
+    </span>
   </div>
 
   <div id="users" hx-get="/ui/users-fragment" hx-trigger="load, every 20s" hx-swap="innerHTML">
     Loading&hellip;
   </div>
-
-  <h2>Devices</h2>
-  <div id="devices" hx-get="/ui/devices-fragment" hx-trigger="load, every 20s" hx-swap="innerHTML">
-    Loading&hellip;
-  </div>
-
-  <h2>Enroll a new device</h2>
-  <form hx-post="/ui/enrollment-codes" hx-target="#enroll-result" hx-swap="innerHTML">
-    <button type="submit">Generate enrollment code</button>
-  </form>
-  <div id="enroll-result"></div>
 {% endblock %}
 {% block scripts %}
   <script>

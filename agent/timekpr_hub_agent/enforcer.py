@@ -174,15 +174,22 @@ class TimekprEnforcer:
         return result == 0
 
     def set_allowed_hours(
-        self, username: str, day_number: str, hours: dict[int, dict[str, int | bool]]
+        self, username: str, day_number: str, hours: dict[str, dict[str, int | bool]]
     ) -> bool:
         """`day_number` is '1'..'7' (matching setAllowedDays); `hours` is
         already in `setAllowedHours`'s own per-hour dict shape
-        (`{hour: {"STARTMIN": ..., "ENDMIN": ..., "UACC": ...}}` --
+        (`{"<hour>": {"STARTMIN": ..., "ENDMIN": ..., "UACC": ...}}` --
         see `core/timekpr_hub_core/allowed_hours.py::hours_to_dbus_payload`).
-        Caller MUST never pass an empty `hours` dict: an absent hour means
-        "forbidden" to timekpr, so an empty dict would lock the user out of
-        every hour of `day_number`, not leave it unrestricted."""
+        The hour key MUST be a string ("8", not 8): timekpr's own
+        `checkAndSetAllowedHours` re-indexes the dict with a stringified
+        key it derives from iterating it, so an int-keyed dict raises a
+        KeyError there that its caller swallows into a bare `result=-1` --
+        no exception surfaces here, the DBUS call just silently "fails"
+        every single tick forever (see hours_to_dbus_payload's docstring
+        for the full story -- this was a real, previously-shipped bug).
+        Caller MUST also never pass an empty `hours` dict: an absent hour
+        means "forbidden" to timekpr, so an empty dict would lock the user
+        out of every hour of `day_number`, not leave it unrestricted."""
         if not hours:
             log.error("%s: refusing to push an empty allowed_hours for day %s", username, day_number)
             return False

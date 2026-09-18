@@ -65,8 +65,9 @@ cd agent/packaging && makepkg -f
 sudo pacman -U timekpr-hub-agent-*.pkg.tar.zst
 ```
 
-In the hub's web UI, click **Generate enrollment code** — it shows you the
-exact command to run, with the hub's URL and the code already filled in:
+In the hub's web UI, open **Devices** and click **Generate enrollment
+code** — it shows you the exact command to run, with the hub's URL and the
+code already filled in:
 
 ```sh
 sudo timekpr-hub-agent enroll --hub-url http://<hub>:8000 --code K7F29Q
@@ -94,8 +95,10 @@ the same hub user, no extra step needed.
 
 ## 4. Daily use
 
-The hub's home page shows, per kid: today's usage bar, an activity badge
-(draining / idle / offline), and their device list.
+The hub's home page shows, per kid: today's usage bar and an activity badge
+(draining / idle / offline). Device sync status and enrollment live on their
+own **Devices** page (linked from the top of the dashboard), out of the way
+until you actually need them.
 
 - **Give extra time today**: use the **+30 min** / **-30 min** buttons on
   the dashboard.
@@ -106,9 +109,9 @@ The hub's home page shows, per kid: today's usage bar, an activity badge
   **Advanced policy settings** on the same page.
 - **See where the time went**: click **Usage stats** for a day-by-day
   spend-vs-limit history and a per-device breakdown.
-- **"No time until chores are done"**: on the kid's **Settings** page, check
-  which days are chore-gated (e.g. weekends). On a gated day the dashboard
-  shows a **⏸ Chores not done** badge; click **Release today** once they're
+- **"No time until approval is given"**: on the kid's **Settings** page, check
+  which days are approval-gated (e.g. weekends). On a gated day the dashboard
+  shows a **⏸ Time now released** badge; click **Release today** once they're
   done and the day's normal limit applies immediately — no policy edit, no
   device restart. The gate re-arms on its own the next time that weekday
   comes around.
@@ -117,8 +120,8 @@ The hub's home page shows, per kid: today's usage bar, an activity badge
   specific limit. This replaces that day's limit outright rather than
   editing the standing policy, so it can't be undone by accident when you
   later change the regular schedule.
-- **Manage a device**: revoke it (stops hub management, reversible) or
-  delete it (erases its history) from the device list. Revoking does
+- **Manage a device**: on the **Devices** page, revoke it (stops hub
+  management, reversible) or delete it (erases its history). Revoking does
   **not** lock the child out — it hands the machine back to local
   self-management at whatever limit it already had, exactly as if it had
   never been enrolled. If you actually want the machine locked, set its

@@ -86,6 +86,16 @@ async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html", {})
 
 
+@router.get("/devices", response_class=HTMLResponse)
+async def devices_page(request: Request) -> HTMLResponse:
+    """Device sync status and enrollment-code generation, split out from
+    the dashboard onto its own page -- device state is hub-wide (not
+    per-kid), so unlike the per-user policy/stats/settings pages it doesn't
+    belong nested under a user card; it's just noise on the dashboard most
+    of the time and only wanted when actually managing a device."""
+    return templates.TemplateResponse(request, "devices.html", {})
+
+
 async def _user_summaries(session: AsyncSession, *, usernames: list[str] | None = None) -> list[dict]:
     """Template-shaped view of `compute_user_summaries` (services/
     summaries.py, shared with the JSON parent API), plus two UI-only
@@ -167,7 +177,7 @@ async def grant_from_ui(
 
 # --------------------------------------------------------------------------
 # Per-date overrides ("Tuesday is 30 minutes" / "no time tomorrow") and the
-# chore gate's per-date release -- both deliberately separate from the
+# approval gate's per-date release -- both deliberately separate from the
 # policy editor: neither bumps a policy version or pushes anything to a
 # device, see services/limits.py's module docstring.
 # --------------------------------------------------------------------------

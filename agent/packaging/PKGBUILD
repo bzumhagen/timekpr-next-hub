@@ -1,18 +1,34 @@
-# Maintainer: (you)
-# PLAN reference: "Tech stack" -- PKGBUILD for Arch/CachyOS (the user's
-# actual platform).
+# Maintainer: Benjamin Zumhagen <bzumhagen@gmail.com>
 #
-# No venv (Phase 4 "Multi-distro support" prep, docs/best-practices-review.md):
-# the agent's code has ZERO third-party dependencies -- hubclient.py is
-# built on stdlib `urllib.request`, and the agent never imports pydantic
-# (only timekpr_hub_core.models does, for the hub's wire types, which the
-# agent doesn't use; confirmed by actually blocking that import at runtime
-# and observing the agent still loads cleanly). So `depends=` needs nothing
-# beyond dbus-python/PyGObject (for DBUS) and timekpr-next itself, and
-# install straight into system site-packages under a fixed,
+# This is the package published to the AUR as `timekpr-hub-agent`, and the
+# same file .github/workflows/release.yml builds in an archlinux container
+# on every tag. It builds from the release tarball attached to the matching
+# GitHub Release (`make release-tarball` produces that tarball from the tag
+# via `git archive`) rather than from a working checkout -- an AUR package
+# has to be buildable by anyone from the PKGBUILD alone.
+#
+# `sha256sums` is 'SKIP' *in the repo* and nowhere else: the checksum is of
+# a tarball built from the tag, and this file is inside that tarball, so it
+# cannot contain its own digest. The release workflow runs `updpkgsums`
+# against the published tarball and pushes the resulting real-digest
+# PKGBUILD to the AUR, so what AUR users consume is always checksummed.
+# `make pkg` does the same thing locally.
+#
+# To build uncommitted working-tree changes, don't use this file -- use the
+# manual install path in README.md ("Installing the agent"), which is the
+# same copy-into-/usr/lib layout without the packaging round trip.
+#
+# No venv (see docs/best-practices-review.md): the agent's code has ZERO
+# third-party dependencies -- hubclient.py is built on stdlib
+# `urllib.request`, and the agent never imports pydantic (only
+# timekpr_hub_core.models does, for the hub's wire types, which the agent
+# doesn't use; confirmed by blocking that import at runtime and observing
+# the agent still loads cleanly). So `depends=` needs nothing beyond
+# dbus-python/PyGObject (for DBUS) and timekpr-next itself, and the code
+# installs straight into system site-packages under a fixed,
 # Python-version-independent path (/usr/lib/timekpr-hub-agent/). This means
 # an Arch Python minor upgrade (3.14 -> 3.15, say) needs no rebuild of this
-# package at all -- the original --system-site-packages venv under /opt was
+# package at all -- a --system-site-packages venv under /opt would be
 # pinned to whatever `python3 -m venv` picked at build time, and a version
 # mismatch after a system upgrade would silently break it until rebuilt.
 pkgname=timekpr-hub-agent
@@ -20,46 +36,54 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="Sidecar agent that pools timekpr-next screen-time budgets across multiple devices via a self-hosted hub"
 arch=('any')
-url="https://github.com/YOUR_ORG/timekpr-next-hub"
-license=('GPL3')
+url="https://github.com/bzumhagen/timekpr-next-hub"
+license=('GPL-3.0-only')
 depends=('python' 'python-dbus' 'python-gobject' 'timekpr-next' 'systemd')
 install=timekpr-hub-agent.install
 backup=('etc/timekpr-hub-agent/agent.env')
-# No release tarball/packaging pipeline yet (see docs/best-practices-review.md
-# "Dependency hygiene" / PKGBUILD issues) -- builds directly from this
-# checkout via $startdir instead of $srcdir, which only exists when
-# `source=()` actually names something makepkg fetches.
-source=()
-sha256sums=()
-_repo_root="$startdir/../.."
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/timekpr-next-hub-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+_srcroot="timekpr-next-hub-$pkgver"
 _libdir="/usr/lib/timekpr-hub-agent"
 
+check() {
+    # The agent is stdlib-only, so "does every shipped module import
+    # cleanly under this Arch python" is a real check and needs no test
+    # dependencies. `dbus`/`gi` are imported lazily inside enforcer.py, so
+    # this passes in a clean chroot without pulling depends= in.
+    cd "$srcdir/$_srcroot"
+    PYTHONPATH="agent:core" python -c 'import timekpr_hub_agent.main, timekpr_hub_agent.config'
+}
+
 package() {
+    cd "$srcdir/$_srcroot"
+
     # timekpr_hub_agent and timekpr_hub_core straight into system
-    # site-packages, no venv -- see the header comment above. Excludes
-    # __pycache__/packaging so an interactive dev checkout with stale
-    # bytecode doesn't leak into the package.
+    # site-packages, no venv -- see the header comment above.
     install -dm755 "$pkgdir$_libdir/timekpr_hub_agent"
-    cp -r "$_repo_root/agent/timekpr_hub_agent"/*.py "$pkgdir$_libdir/timekpr_hub_agent/"
-    cp -r "$_repo_root/core/timekpr_hub_core" "$pkgdir$_libdir/"
+    install -m644 agent/timekpr_hub_agent/*.py "$pkgdir$_libdir/timekpr_hub_agent/"
+    cp -r core/timekpr_hub_core "$pkgdir$_libdir/"
     find "$pkgdir$_libdir" -name '__pycache__' -exec rm -rf {} +
 
-    install -Dm755 "$_repo_root/agent/packaging/timekpr-hub-agent" \
-        "$pkgdir/usr/bin/timekpr-hub-agent"
+    install -Dm755 agent/packaging/timekpr-hub-agent "$pkgdir/usr/bin/timekpr-hub-agent"
 
-    install -Dm644 "$_repo_root/agent/packaging/timekpr-hub-agent.service" \
+    install -Dm644 agent/packaging/timekpr-hub-agent.service \
         "$pkgdir/usr/lib/systemd/system/timekpr-hub-agent.service"
-    install -Dm644 "$_repo_root/agent/packaging/sysusers.d/timekpr-hub-agent.conf" \
+    install -Dm644 agent/packaging/sysusers.d/timekpr-hub-agent.conf \
         "$pkgdir/usr/lib/sysusers.d/timekpr-hub-agent.conf"
-    install -Dm644 "$_repo_root/agent/packaging/tmpfiles.d/timekpr-hub-agent.conf" \
+    install -Dm644 agent/packaging/tmpfiles.d/timekpr-hub-agent.conf \
         "$pkgdir/usr/lib/tmpfiles.d/timekpr-hub-agent.conf"
+
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
     # Comments only -- `enroll` writes the real values here itself
     # (agent/timekpr_hub_agent/config.py). Shipping a fake hub.example.com
     # here used to mean an un-enrolled `run` would crash-loop trying to
     # reach it; `run` now recognizes an empty TIMEKPR_HUB_URL and waits
     # instead (main.py "never exit on a transient condition").
-    install -Dm640 /dev/null "$pkgdir/etc/timekpr-hub-agent/agent.env"
+    install -dm755 "$pkgdir/etc/timekpr-hub-agent"
+    install -m640 /dev/null "$pkgdir/etc/timekpr-hub-agent/agent.env"
     cat > "$pkgdir/etc/timekpr-hub-agent/agent.env" <<'EOF'
 # Written by `timekpr-hub-agent enroll` -- do not edit by hand; re-run
 # enroll (with a new code from the hub) to change the hub URL, managed

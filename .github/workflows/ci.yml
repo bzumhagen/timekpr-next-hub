@@ -2,14 +2,56 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
+  # Called by .github/workflows/release.yml so a tag is gated on exactly
+  # the same checks a merge is, rather than on a second, drifting copy.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# One run per branch/PR. Tag runs (the release path) are never cancelled;
+# a superseded PR push is.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   TEST_DATABASE_URL: postgresql+asyncpg://timekpr_hub:timekpr_hub@localhost:5432/timekpr_hub_test
   TIMEKPR_HUB_REQUIRE_DB: "1"
 
 jobs:
+  # Split out of `test` so it runs once rather than once per Python in the
+  # matrix, and so a formatting slip reports in seconds instead of after
+  # the Postgres service has come up.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync workspace
+        run: uv sync --all-packages
+
+      - name: Check that every version site agrees
+        run: python3 scripts/check_versions.py
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Typecheck
+        run: uv run mypy core hub agent
+
+      - name: Shellcheck the shell scripts
+        run: shellcheck deploy/proxmox/*.sh scripts/*.sh
+
   test:
     runs-on: ubuntu-latest
 
@@ -47,19 +89,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Shellcheck the Proxmox packaging scripts
-        run: shellcheck deploy/proxmox/*.sh
-
       - name: Sync workspace
         run: uv sync --all-packages
-
-      - name: Lint
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
-
-      - name: Typecheck
-        run: uv run mypy core hub agent
 
       - name: Apply migrations
         env:
@@ -68,3 +99,24 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+  # Proves the PKGBUILD still builds -- on PRs, against a tarball made from
+  # the branch rather than from a published release, so agent/packaging
+  # changes are caught before a tag rather than during one. The release
+  # workflow runs the same PKGBUILD against the real release tarball.
+  package:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      # Before the checkout, deliberately: archlinux:base-devel ships no
+      # git, and without it actions/checkout silently falls back to a
+      # tarball download with no .git directory -- which the --local build
+      # below needs, since it packages `git archive HEAD`.
+      - name: Install packaging tools
+        run: pacman -Syu --noconfirm --needed git namcap pacman-contrib
+
+      - uses: actions/checkout@v5
+
+      - name: Build the Arch package from this checkout
+        run: ./scripts/build_arch_package.sh --local

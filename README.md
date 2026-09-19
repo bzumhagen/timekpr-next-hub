@@ -45,9 +45,20 @@ cp deploy/.env.example deploy/.env   # fill in a real POSTGRES_PASSWORD, HUB_TZ
 make deploy-up
 ```
 
+This pulls the published hub image (`ghcr.io/bzumhagen/timekpr-hub`,
+amd64 and arm64) — nothing is compiled on your server. Set
+`HUB_VERSION=0.1.0` in `deploy/.env` to pin an exact
+[release](https://github.com/bzumhagen/timekpr-next-hub/releases) instead
+of tracking `latest`.
+
 A LAN-only or VPN/Tailscale-gated deployment is recommended — see step 2.
 
 `make deploy-logs` tails everything if you want to watch it come up.
+
+To **upgrade** later: bump `HUB_VERSION` (or leave it on `latest`), then
+`docker compose -f deploy/docker-compose.yml --env-file deploy/.env pull &&
+make deploy-up`. Migrations run themselves on start. Take a `pg_dump`
+first — see [Backups](#backups).
 
 ### Proxmox (smallest footprint)
 
@@ -187,7 +198,9 @@ deploy/                     -- docker-compose (Postgres + hub) for a real
                               deployment, a native Proxmox LXC install, plus
                               a throwaway dev/test Postgres compose file
 tests/                      -- unit, integration (some DB-backed), e2e
-docs/                       -- phase 0/agent findings, this review
+docs/                       -- phase 0/agent findings, reviews, release process
+scripts/                    -- version/changelog/packaging helpers used by
+                              both the Makefile and CI
 ```
 
 `core` has no dependency on `hub` or `agent`; `hub` and `agent` both depend
@@ -228,19 +241,39 @@ Run `make help` for the authoritative, current list. Grouped summary:
 | `test` | Tests needing no services (unit, property, `FakeTimekprDaemon` simulation) |
 | `test-db` | Only the Postgres-backed tests (starts + migrates the dev DB) |
 | `test-all` | The full suite in one run, DB required — this is the CI gate |
-| `check` | `lint` + `typecheck` + `test` |
+| `check` | `check-version` + `lint` + `typecheck` + `test` |
+| `check-version` | Verify all six places declaring a version agree |
 | `db-up` / `db-down` / `db-shell` | Manage the local dev/test Postgres |
 | `migrate` / `migrate-test` | Apply Alembic migrations to the dev / test database |
 | `revision MSG="..."` | Autogenerate a new migration |
 | `dev` | Run the hub locally with auto-reload against the dev database |
 | `build` | Build wheels for all three packages + the hub's container image |
-| `deploy-up` / `deploy-down` / `deploy-logs` | Manage the production stack |
+| `pkg` | Build the agent's Arch package from `HEAD` (Arch host only) |
+| `bump VERSION="..."` | Set the version in all six places at once |
+| `release-tarball` / `release-notes` | The source tarball / changelog entry a release would carry |
+| `deploy-up` / `deploy-down` / `deploy-logs` | Manage the production stack (pulls the published image) |
+| `deploy-up-source` | Same, but build the hub image from this checkout |
 | `clean` / `distclean` | Remove caches / caches + the venv |
 
 There is no `make run-agent`: the agent needs the system's `dbus`/`PyGObject`
 bindings, which a plain uv venv doesn't have. Its logic is exercised in
 `make test` via `FakeTimekprDaemon`, a model of timekpr's own accounting
 semantics (`agent/timekpr_hub_agent/fake_timekpr.py`).
+
+## CI and releases
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push
+to `main` and every PR: lint + typecheck + shellcheck + the version-
+consistency check, the full test suite against a real Postgres on Python
+3.12 **and** 3.13 (the LXC install runs trixie's 3.13), and a build of the
+agent's Arch package in an `archlinux` container so a packaging change
+can't break only at release time.
+
+Releases are cut by pushing a `vX.Y.Z` tag, which runs that same workflow
+and then publishes the source tarball, wheels, the Arch package, a
+multi-arch container image, and the AUR update. The whole procedure — plus
+why the version lives in six files and how the PKGBUILD's checksum works —
+is in [`docs/releasing.md`](docs/releasing.md).
 
 ## Testing
 
@@ -284,6 +317,13 @@ make deploy-up
 make deploy-logs                     # tail everything
 ```
 
+`make deploy-up` pulls `ghcr.io/bzumhagen/timekpr-hub` (pin a version with
+`HUB_VERSION` in `deploy/.env`). To run the hub from this checkout instead
+— an unreleased fix, or a local change under the real production stack —
+use `make deploy-up-source`, which layers
+[`deploy/compose.source.yml`](deploy/compose.source.yml) on top and builds
+`hub/Dockerfile` locally.
+
 It serves plain HTTP -- meant for a LAN or a Tailscale/WireGuard tunnel, not
 the open internet. Put your own reverse proxy in front of it for TLS.
 
@@ -299,17 +339,30 @@ The agent's own code is stdlib-only beyond `pydantic` (it uses
 installs straight into system site-packages under a Python-version-
 independent path (`/usr/lib/timekpr-hub-agent/`).
 
-**Via the PKGBUILD** (`agent/packaging/PKGBUILD`, Arch/CachyOS). Builds
-directly from this checkout (via `$startdir/../..`) rather than a
-`source=()` archive — run it from `agent/packaging/`:
+**From the AUR** (Arch/CachyOS — the easiest path, and how you get
+upgrades):
 
 ```sh
-cd agent/packaging && makepkg -f      # builds timekpr-hub-agent-*.pkg.tar.zst
-sudo pacman -U timekpr-hub-agent-*.pkg.tar.zst
+paru -S timekpr-hub-agent      # or yay, or any other AUR helper
+```
+
+**From a release** (Arch/CachyOS, no AUR helper). Every
+[release](https://github.com/bzumhagen/timekpr-next-hub/releases) attaches
+a built package:
+
+```sh
+sudo pacman -U ./timekpr-hub-agent-0.1.0-1-any.pkg.tar.zst
+```
+
+**From the PKGBUILD**, if you'd rather build it yourself — the same file
+the release is built from, downloading that release's source tarball:
+
+```sh
+cd agent/packaging && makepkg -si
 ```
 
 pacman's own systemd hooks handle `sysusers`/`tmpfiles`/`daemon-reload`
-automatically — nothing else to run by hand.
+automatically in every case — nothing else to run by hand.
 
 **Manual install** (any systemd distro with `python-dbus`/`python-gobject`
 available):
@@ -409,5 +462,8 @@ for the plan.
   findings about the real `timekprd`'s DBUS behavior.
 - [`docs/agent-live-test-findings.md`](docs/agent-live-test-findings.md) —
   bugs found by running the agent against a live daemon.
+- [`docs/releasing.md`](docs/releasing.md) — how a release is cut, what a
+  tag produces, and the one-time AUR/GHCR setup.
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed in each release.
 - [`CHECKLIST.md`](CHECKLIST.md) — execution status against the original
   design plan, phase by phase.

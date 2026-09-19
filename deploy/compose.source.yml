@@ -1,0 +1,15 @@
+# Override layered over deploy/docker-compose.yml by `make deploy-up-source`:
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/compose.source.yml \
+#     --env-file deploy/.env up -d --build
+#
+# The base file pulls the published ghcr.io image, which is what a normal
+# install wants. This is for running a source checkout instead -- an
+# unreleased fix, or a local change you want to try under the real
+# production stack. The `image:` name from the base file still applies, so
+# what gets built is tagged locally under that name rather than pulled.
+services:
+  hub:
+    build:
+      context: ..
+      dockerfile: hub/Dockerfile

@@ -1,0 +1,292 @@
+# Cut a release by tagging: `make bump VERSION=0.2.0`, commit, then
+# `git tag -a v0.2.0 -m ... && git push --follow-tags`. Everything below
+# runs off that tag. See docs/releasing.md for the whole procedure,
+# including the one-time secrets this needs.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # A tag is gated on exactly the checks a merge is -- same file, not a
+  # copy. Nothing below starts until this passes.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Derive the version from the tag
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # 0.2.0rc1 / 0.2.0b3 are pre-releases: no `latest` container
+          # tag, and flagged as such on the GitHub Release.
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The gate that makes the tag authoritative: the tag, all four
+      # pyprojects, AGENT_VERSION and the PKGBUILD's pkgver must agree, or
+      # the release stops here rather than shipping a package whose
+      # `timekpr-hub-agent status` reports the wrong version.
+      - name: Verify the tag matches every declared version
+        run: python3 scripts/check_versions.py --expect "${{ steps.version.outputs.version }}"
+
+      # Also a fail-fast gate: a tag with no changelog entry stops here,
+      # before anything is built or published, rather than at the final
+      # `gh release create`.
+      - name: Verify this version has release notes
+        run: python3 scripts/changelog_section.py "${{ steps.version.outputs.version }}"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # One tarball, three consumers: the Arch package's source=(), the
+      # Proxmox install onto a box with no git checkout, and anyone who
+      # just wants the source of an exact release.
+      - name: Build the release tarball
+        run: make release-tarball
+
+      - name: Build wheels and sdists
+        run: uv build --all-packages -o dist/
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum ./*.tar.gz ./*.whl | tee SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  arch:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      # Before the checkout: archlinux:base-devel ships no git, and
+      # without it actions/checkout falls back to a tarball download.
+      - name: Install packaging tools
+        run: pacman -Syu --noconfirm --needed git namcap pacman-contrib
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # Packages the exact tarball the release will carry, so the sha256
+      # baked into the published PKGBUILD is the one AUR users will
+      # download. Emits PKGBUILD/.SRCINFO/.install alongside the package
+      # for the `aur` job below.
+      - name: Build the Arch package
+        run: |
+          ./scripts/build_arch_package.sh \
+            --tarball "dist/timekpr-next-hub-${{ needs.build.outputs.version }}.tar.gz" \
+            --out dist/arch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: dist/arch/
+          include-hidden-files: true   # .SRCINFO
+          if-no-files-found: error
+
+  image:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compute image tags
+        id: tags
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          version="$VERSION"
+          image="ghcr.io/$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')/timekpr-hub"
+          tags="$image:$version"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # A floating MAJOR.MINOR tag lets deploy/.env pin to a patch
+            # series; `latest` is what deploy/docker-compose.yml defaults to.
+            tags="$tags,$image:${version%.*},$image:latest"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      # arm64 because the README points at a Raspberry Pi as a hub host.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: hub/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.build.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=GPL-3.0-only
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Deliberately last of the build jobs: the release only appears once the
+  # tarball, the wheels, the Arch package and the image have all succeeded,
+  # so there is no window where a published release is missing assets.
+  release:
+    needs: [build, arch, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # all tags, to find the previous one below
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: arch
+          path: dist/arch
+
+      # The body is this version's hand-written CHANGELOG entry plus a
+      # compare link. Assembled here rather than with `gh --generate-notes`
+      # so it is exactly what CHANGELOG.md says, and so `make release-notes`
+      # locally shows the same thing.
+      - name: Assemble release notes
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          python3 scripts/changelog_section.py "$VERSION" > notes.md
+          # `|| true`: on the very first release there is no previous tag,
+          # and grep's empty-match exit status must not fail the step.
+          prev=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" | head -1 || true)
+          if [[ -n "$prev" ]]; then
+            link="compare/$prev...$GITHUB_REF_NAME"
+          else
+            link="commits/$GITHUB_REF_NAME"
+          fi
+          printf '\n**Full changelog**: %s/%s/%s\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$link" >> notes.md
+          cat notes.md
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          args=(--title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag)
+          if [[ "$PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" \
+            dist/*.tar.gz dist/*.whl dist/SHA256SUMS \
+            dist/arch/*.pkg.tar.zst dist/arch/PKGBUILD
+
+  aur:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      # Not a job-level `if:` -- the `secrets` context isn't available
+      # there, only in steps. A missing key skips the publish with a
+      # notice rather than failing the release that already succeeded.
+      - name: Check for an AUR deploy key
+        id: key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$AUR_SSH_PRIVATE_KEY" ]]; then
+            echo "have_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AUR_SSH_PRIVATE_KEY is not set -- skipping the AUR publish. See docs/releasing.md to set it up."
+          else
+            echo "have_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install git and ssh
+        if: steps.key.outputs.have_key == 'true'
+        run: pacman -Syu --noconfirm --needed git openssh
+
+      - uses: actions/download-artifact@v4
+        if: steps.key.outputs.have_key == 'true'
+        with:
+          name: arch
+          path: arch
+
+      - name: Trust aur.archlinux.org
+        if: steps.key.outputs.have_key == 'true'
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 aur.archlinux.org > ~/.ssh/known_hosts 2>/dev/null
+          # Fail closed rather than trusting whatever answered. Verify this
+          # against https://wiki.archlinux.org/title/Arch_User_Repository
+          # ("SSH host keys") if the AUR ever rotates it.
+          got=$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')
+          want="SHA256:HQ03dn6EasJHNDlt51KpQpFkT3yBX83x7BoIkA1iv2k"
+          if [[ "$got" != "$want" ]]; then
+            echo "aur.archlinux.org host key is $got, expected $want" >&2
+            exit 1
+          fi
+
+      - name: Publish to the AUR
+        if: steps.key.outputs.have_key == 'true'
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
+
+          git config --global user.name "timekpr-next-hub release"
+          git config --global user.email "noreply@github.com"
+          git config --global --add safe.directory '*'
+
+          git clone ssh://aur@aur.archlinux.org/timekpr-hub-agent.git aur-repo
+          # The AUR repo holds exactly these three: the checksummed
+          # PKGBUILD, its .SRCINFO (what the AUR web frontend reads), and
+          # the .install script makepkg needs next to the PKGBUILD.
+          cp arch/PKGBUILD arch/.SRCINFO arch/timekpr-hub-agent.install aur-repo/
+          cd aur-repo
+          git add -A
+          if git diff --cached --quiet; then
+            echo "::notice::AUR package is already at $VERSION -- nothing to push."
+            exit 0
+          fi
+          git commit -m "Update to $VERSION"
+          git push origin master

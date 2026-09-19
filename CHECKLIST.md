@@ -543,8 +543,9 @@ editor beyond additive grants, no parent auth at all) were closed together.
 - [x] `deploy/proxmox/README.md` — bring-up, upgrade, backup/restore, sizing rationale,
       and the risks worth knowing about (Python 3.13 vs this repo's pinned 3.12, cluster
       locale/encoding, `/dev/shm` in LXC, no PG major-version auto-upgrade).
-- [x] `make deploy-tarball` — a `git archive` tarball for installing onto a fresh LXC
-      with no git checkout.
+- [x] `make release-tarball` (was `deploy-tarball`) — a `git archive` tarball for
+      installing onto a fresh LXC with no git checkout. Now also the Arch PKGBUILD's
+      `source=()` and a GitHub Release asset, so all three consume one artifact.
 - [x] CI: `shellcheck deploy/proxmox/*.sh`, and a `python-version: ["3.12", "3.13"]`
       matrix — the LXC runs trixie's 3.13, which CI never exercised before.
 - [ ] Actually provisioned on a real Proxmox host and left running — the install
@@ -553,8 +554,44 @@ editor beyond additive grants, no parent auth at all) were closed together.
       exercised end-to-end inside a live LXC (`pct create` isn't available outside
       Proxmox itself).
 - [ ] Submit to `community-scripts/ProxmoxVE` (`ct/timekpr-hub.sh` +
-      `install/timekpr-hub-install.sh`) once there's a tagged release — `install.sh`
-      above is the payload that submission would carry.
+      `install/timekpr-hub-install.sh`) — `install.sh` above is the payload that
+      submission would carry. Unblocked now: tagged releases exist (`docs/releasing.md`).
+
+## Releases & CI (see `docs/releasing.md`)
+
+One version covers all three packages — they share a wire contract and the same
+convergence math, so separate version numbers would imply a compatibility matrix
+nobody maintains.
+
+- [x] `scripts/check_versions.py` — the six places declaring a version (four
+      `pyproject.toml`s, `AGENT_VERSION`, `pkgver`) must agree; CI fails if they drift,
+      and the release workflow re-checks them against the tag before building anything.
+      `make bump VERSION=x.y.z` writes all six.
+- [x] `CHANGELOG.md` + `scripts/changelog_section.py` — the version's entry becomes the
+      GitHub Release notes, and a tag with no entry fails fast rather than publishing
+      empty notes.
+- [x] CI (`.github/workflows/ci.yml`): triggers fixed (`main`, not the `master` this
+      repo never had); lint/typecheck/shellcheck/version-check split out of the Python
+      matrix so they run once; full suite on 3.12 + 3.13 against a real Postgres; and an
+      Arch package build on every PR.
+- [x] Release (`.github/workflows/release.yml`), on a `vX.Y.Z` tag: reuses CI via
+      `workflow_call` (one definition, not a drifting copy), then publishes the source
+      tarball, wheels + sdists, `SHA256SUMS`, the Arch package, a multi-arch
+      (amd64/arm64) GHCR image, and the AUR update. The GitHub Release is created only
+      after every build job succeeds, so it is never published missing assets.
+- [x] `deploy/docker-compose.yml` pulls the published image (`HUB_VERSION` pins a
+      release) instead of building from source on every deploy;
+      `make deploy-up-source` + `deploy/compose.source.yml` keep the build-from-checkout
+      path for development.
+- [ ] Actually cut `v0.1.0` — everything above is verified by local dry-runs
+      (`scripts/build_arch_package.sh --local` builds a real package on this Arch box)
+      but no tag has been pushed, so no workflow has run end-to-end on GitHub yet.
+- [ ] One-time AUR setup (account, SSH key, `AUR_SSH_PRIVATE_KEY` secret, first manual
+      push to create the package) and verifying the pinned `aur.archlinux.org` host-key
+      fingerprint — see `docs/releasing.md`.
+- [ ] Make the GHCR package public after the first image push; it is created private.
+- [ ] Sign releases (tag signing is a `git tag -s` away; artifact signing would want
+      something like cosign/minisign and a published key).
 
 ## Multi-distro support (not started — Arch/CachyOS only today)
 
@@ -573,16 +610,25 @@ logind for session tracking).
       `agent/timekpr_hub_agent/hubclient.py` is built on `urllib.request`,
       and `agent/pyproject.toml` declares no `httpx` dependency (only
       `timekpr-hub-core`, for its pure convergence/calendar logic).
-- [ ] Build `.deb`/`.rpm`/Arch packages from one payload (e.g.
-      [nfpm](https://nfpm.goreleaser.com/)) in CI, attached to GitHub
-      Releases — this also finally gives the Arch PKGBUILD a real
-      `source=()` tarball instead of building from `$startdir/../..`.
+- [x] Arch: built in CI (`scripts/build_arch_package.sh`, an `archlinux`
+      container on every PR *and* every tag) and attached to GitHub
+      Releases. The PKGBUILD now has a real `source=()` release tarball
+      with a checksum injected by `updpkgsums` at release time, instead of
+      building from `$startdir/../..`.
+- [ ] `.deb`/`.rpm` from the same payload (e.g.
+      [nfpm](https://nfpm.goreleaser.com/)), added to the same release
+      workflow.
 - [ ] Per-format post-install scripts (`systemd-sysusers`,
       `systemd-tmpfiles --create`, `systemctl daemon-reload`) for
       `.deb`/`.rpm` — Arch's own pacman hooks already cover this
       (`timekpr-hub-agent.install` only prints the next step).
-- [ ] Publish per distro as demand warrants: AUR first (closest to today's
-      PKGBUILD), then a PPA/COPR/OBS submission.
+- [x] AUR: `.github/workflows/release.yml`'s `aur` job pushes the
+      checksummed PKGBUILD + `.SRCINFO` on every tag. Needs the one-time
+      account/package/`AUR_SSH_PRIVATE_KEY` setup in `docs/releasing.md`;
+      until that's done the job skips itself with a notice rather than
+      failing the release.
+- [ ] Publish per distro as demand warrants beyond AUR: a PPA/COPR/OBS
+      submission.
 - [ ] Confirm each distro's timekpr-next package actually creates the
       `timekpr` group the agent's `sysusers.d` config joins, and that
       `timekpr_paths.py`'s search (`dist-packages`/`site-packages`) finds

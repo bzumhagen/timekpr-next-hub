@@ -13,10 +13,15 @@ MAKEFLAGS += --no-builtin-rules
 .DEFAULT_GOAL := help
 
 UV ?= uv
+PYTHON ?= python3
 COMPOSE ?= docker compose
 IMAGE ?= timekpr-hub:dev
 PYTEST_ARGS ?=
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# The declared release version (root pyproject.toml), which
+# scripts/check_versions.py holds equal to the other five sites. Everything
+# a release names is keyed off this rather than off `git describe`: the Arch
+# PKGBUILD's source=() names the tarball by this exact string.
+RELEASE_VERSION = $(shell $(PYTHON) -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
 
 DEV_COMPOSE := $(COMPOSE) -f deploy/compose.dev.yml
 PROD_COMPOSE := $(COMPOSE) -f deploy/docker-compose.yml --env-file deploy/.env
@@ -24,9 +29,10 @@ PROD_COMPOSE := $(COMPOSE) -f deploy/docker-compose.yml --env-file deploy/.env
 DEV_DATABASE_URL ?= postgresql+asyncpg://timekpr_hub:timekpr_hub@127.0.0.1:55432/timekpr_hub_dev
 TEST_DATABASE_URL ?= postgresql+asyncpg://timekpr_hub:timekpr_hub@127.0.0.1:55432/timekpr_hub_test
 
-.PHONY: help install lock upgrade fmt lint lint-sh typecheck test test-db test-e2e test-all check \
+.PHONY: help install lock upgrade fmt lint lint-sh typecheck check-version test test-db test-e2e test-all check \
         db-up db-down db-shell migrate migrate-test revision dev \
-        build build-wheels image deploy-tarball deploy-up deploy-down deploy-logs clean distclean
+        build build-wheels image pkg bump release-tarball release-notes \
+        deploy-up deploy-up-source deploy-down deploy-logs clean distclean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | sort | \
@@ -62,8 +68,11 @@ lint: .venv/.synced ## Check formatting and lint rules (no changes made)
 typecheck: .venv/.synced ## Run mypy across core/hub/agent
 	$(UV) run mypy core hub agent
 
-lint-sh: ## Shellcheck the Proxmox packaging scripts
-	shellcheck deploy/proxmox/*.sh
+lint-sh: ## Shellcheck the shell scripts (Proxmox install + packaging)
+	shellcheck deploy/proxmox/*.sh scripts/*.sh
+
+check-version: ## Check that all six places declaring a version agree
+	$(PYTHON) scripts/check_versions.py
 
 # ------------------------------------------------------------------ tests --
 
@@ -82,7 +91,7 @@ test-all: .venv/.synced db-up migrate-test ## Run the full suite in one process,
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" TIMEKPR_HUB_REQUIRE_DB=1 \
 		$(UV) run pytest $(PYTEST_ARGS)
 
-check: lint typecheck test ## Everything CI runs before a merge (lint + typecheck + non-DB tests)
+check: check-version lint typecheck test ## Everything CI runs before a merge (version + lint + typecheck + non-DB tests)
 
 # --------------------------------------------------------------------- db --
 
@@ -121,15 +130,36 @@ image: ## Build the hub's production container image
 
 build: build-wheels image ## Build wheels and the hub container image
 
-deploy-tarball: ## Build a source tarball for a Proxmox install with no git checkout (lands in dist/)
+pkg: ## Build the agent's Arch package from HEAD (needs an Arch host; lands in dist/arch/)
+	./scripts/build_arch_package.sh --local
+
+# ------------------------------------------------------------------ release --
+
+bump: ## Set the version in all six places at once: make bump VERSION=0.2.0
+	@if [ -z "$(VERSION)" ]; then echo "usage: make bump VERSION=0.2.0" >&2; exit 1; fi
+	$(PYTHON) scripts/bump_version.py "$(VERSION)"
+
+# One tarball, three consumers: the Arch PKGBUILD's source=(), a Proxmox
+# install onto a box with no git checkout, and anyone who wants the exact
+# source of a release. Named by RELEASE_VERSION (not `git describe`)
+# because the PKGBUILD's source=() names this file literally.
+release-tarball: ## Build the release source tarball into dist/
 	mkdir -p dist
-	git archive --format=tar.gz --prefix=timekpr-next-hub/ -o dist/timekpr-next-hub-$(VERSION).tar.gz HEAD
+	git archive --format=tar.gz --prefix=timekpr-next-hub-$(RELEASE_VERSION)/ \
+		-o dist/timekpr-next-hub-$(RELEASE_VERSION).tar.gz HEAD
+
+release-notes: ## Print the CHANGELOG entry that would become this version's release notes
+	@$(PYTHON) scripts/changelog_section.py $(RELEASE_VERSION)
 
 # ------------------------------------------------------------------ deploy --
 
-deploy-up: ## Start the production stack (hub + postgres)
+deploy-up: ## Start the production stack from the published image (hub + postgres)
 	@test -f deploy/.env || { echo "deploy/.env missing -- copy deploy/.env.example and fill it in" >&2; exit 1; }
-	$(PROD_COMPOSE) up -d --build
+	$(PROD_COMPOSE) up -d
+
+deploy-up-source: ## Start the production stack, building the hub image from this checkout instead of pulling
+	@test -f deploy/.env || { echo "deploy/.env missing -- copy deploy/.env.example and fill it in" >&2; exit 1; }
+	$(PROD_COMPOSE) -f deploy/compose.source.yml up -d --build
 
 deploy-down: ## Stop the production stack
 	$(PROD_COMPOSE) down

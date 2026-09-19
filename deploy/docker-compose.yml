@@ -9,6 +9,9 @@
 #
 # Backups are yours to arrange (see README.md) -- there's no backup service
 # here.
+#
+# The hub image is pulled from GHCR by default. `make deploy-up` does the
+# right thing either way; see the `hub` service below.
 services:
   postgres:
     image: docker.io/library/postgres:16-alpine
@@ -26,9 +29,13 @@ services:
       retries: 10
 
   hub:
-    build:
-      context: ..
-      dockerfile: hub/Dockerfile
+    # Pulled, not built: every tag publishes a multi-arch (amd64/arm64)
+    # image from .github/workflows/release.yml. Pin a release in deploy/.env
+    # (HUB_VERSION=0.1.0) so an upgrade is a deliberate act; `latest` is the
+    # newest non-prerelease. To run the hub from a source checkout instead,
+    # use `make deploy-up-source`, which layers deploy/compose.source.yml
+    # over this file and builds hub/Dockerfile locally.
+    image: ghcr.io/bzumhagen/timekpr-hub:${HUB_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       postgres:

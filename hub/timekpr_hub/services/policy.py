@@ -8,12 +8,25 @@ field-by-field diffing/adoption workflow is Phase 2 (see CHECKLIST.md).
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from timekpr_hub_core.models import PlayTimeActivity, PlayTimePayload, PolicyPayload, PolicyUpdate
+from timekpr_hub_core.effective_policy import (
+    materialize_allowed_hours,
+    policy_revision,
+    with_day_hour_override,
+)
+from timekpr_hub_core.models import (
+    AllowedHourInterval,
+    PlayTimeActivity,
+    PlayTimePayload,
+    PolicyPayload,
+    PolicyUpdate,
+)
 
 from timekpr_hub.db.models import Policy, User
+from timekpr_hub.services.day_hours import day_hour_override
 
 DEFAULT_DAILY_LIMITS_S = [3600] * 7  # 1h/day default for a newly-created user, all days
 
@@ -26,6 +39,13 @@ async def get_current_policy(session: AsyncSession, user: User) -> Policy | None
 
 
 def policy_to_payload(policy: Policy) -> PolicyPayload:
+    """Faithful to storage -- deliberately NOT materialized (see
+    `timekpr_hub_core.effective_policy.materialize_allowed_hours`) and
+    deliberately NOT day-hour-override-aware. This feeds the enroll-time
+    diff and the audit log's before/after blobs, both of which need to show
+    what was actually saved, not a 7-day-expanded, override-applied
+    projection of it. `effective_policy_payload` below is the function that
+    adds both of those for `/sync`'s benefit."""
     return PolicyPayload(
         version=policy.version,
         daily_limits_s=policy.daily_limits_json,
@@ -187,3 +207,47 @@ async def update_policy(
     await session.flush()
     locked_user.current_policy_id = policy.id
     return policy
+
+
+async def effective_policy_payload(
+    session: AsyncSession, *, policy: Policy, day: date, apply_day_overrides: bool = True
+) -> tuple[PolicyPayload, str]:
+    """The payload `/sync` actually decides whether to push, plus the
+    revision token that decision is gated on -- see
+    `timekpr_hub_core.effective_policy`'s module docstring for why this
+    can't just be `policy_to_payload` + `policy.version` once a one-day
+    hours override exists.
+
+    `day` is an explicit parameter rather than read from the clock inside,
+    specifically so a caller (a test, or a future "preview tomorrow" view)
+    can ask what the payload would be for any date without touching the
+    system clock -- `/sync` itself always passes its own server-computed
+    `stamp.day` and must keep doing so (see
+    `tests/integration/test_gates_and_overrides.py`'s warning that `/sync`
+    does not trust the request body for "today").
+
+    `apply_day_overrides=False` gets the always-materialized standing
+    payload (7 full weekday keys, no per-date substitution) -- what a
+    legacy agent (one that predates `policy_revision_applied`) must be
+    served, since it can only ever be told to revert via the policy
+    *version*, which an expiring hours override does not change."""
+    standing = policy_to_payload(policy)
+    materialized_hours = materialize_allowed_hours(standing.allowed_hours)
+    materialized = standing.model_copy(update={"allowed_hours": materialized_hours})
+
+    if not apply_day_overrides:
+        # A legacy agent (see `SyncUserRequest.policy_revision_applied`'s
+        # docstring): the materialized-but-not-overridden standing payload,
+        # gated on `policy.version` alone exactly as before this feature.
+        return materialized, f"{materialized.version}-legacy"
+
+    override = await day_hour_override(session, user_id=policy.user_id, day=day)
+    if override is None:
+        return materialized, policy_revision(materialized)
+
+    effective = with_day_hour_override(
+        materialized,
+        weekday=str(day.isoweekday()),
+        intervals=[AllowedHourInterval.model_validate(iv) for iv in override.intervals_json],
+    )
+    return effective, policy_revision(effective)

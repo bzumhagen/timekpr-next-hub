@@ -103,3 +103,26 @@ for now; worth a `FakeTimekprDaemon` extension if hour restrictions become
 load-bearing for the hub's own policy (they currently are represented in
 `PolicyPayload.allowed_hours` but not yet enforced by the agent beyond
 passing them through — tracked as Phase 2 policy-push work).
+
+## Open item: does a widened `ALLOWED_HOURS` release a currently locked-out session?
+
+Introduced with the one-day allowed-hours override (CHECKLIST.md's "Phase 2"
+entry). The feature lets a parent widen (or narrow) today's allowed window --
+e.g. "let them start at noon instead of 15:00" -- and pushes it to the device
+via `setAllowedHours` on the device's next `/sync`. What's untested against a
+real daemon: if the account is *already logged in and locked out* (timekprd
+enforcing a lockout because the current time falls outside the old window)
+when the widened window lands, does `timekprd` re-evaluate and release the
+session immediately, or does the child have to log out and back in for the
+new window to take effect?
+
+`FakeTimekprDaemon` can't answer this -- its own module docstring says hour
+restrictions are out of its modeled scope entirely (the same gap Bug 2 above
+ran into), so every unit/integration/e2e test for this feature necessarily
+asserts only that the *correct DBUS payload* was sent (`tests/unit/
+test_apply_policy_push.py`'s revert test, `tests/e2e/test_acceptance.py::
+test_day_hour_override_is_pushed_and_reverted`), never what the real daemon
+does with it once applied. Worth a live dogfooding pass the same way Bugs 1
+and 2 above were found: lock an account out under the standing schedule,
+push a widened override, and watch whether the session unlocks without any
+action from the child.

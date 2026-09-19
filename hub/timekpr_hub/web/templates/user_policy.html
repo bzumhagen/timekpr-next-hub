@@ -55,11 +55,28 @@
       </div>
     </div>
 
+    {% if today_hours_override %}
+      <div class="notice" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;">
+        <span>
+          &#128337; Heads up: today ({{ today }}) is temporarily set to
+          <strong>{{ today_hours_override }}</strong>, not the schedule below. Saving this form will
+          <strong>not</strong> clear that.
+        </span>
+        <form method="post" action="/ui/users/{{ username }}/day-hours/clear">
+          <input type="hidden" name="day" value="{{ today }}">
+          <input type="hidden" name="redirect_to" value="/users/{{ username }}">
+          <button type="submit">Clear today's override</button>
+        </form>
+      </div>
+    {% endif %}
+
     <div class="card">
       <p class="card-title">Allowed times of day</p>
       <p class="card-subtitle">
         Most days are "all day" or "between two times". Pick "custom" only for a day that needs
-        more than one window (e.g. before and after school).
+        more than one window (e.g. before and after school). To temporarily widen or narrow just
+        today's window without touching this standing schedule, use "Adjust a day's hours" on the
+        dashboard card instead.
       </p>
       {% for day in weekday_tokens %}
         {% set d = p.hours_by_day[day] %}

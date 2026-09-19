@@ -51,6 +51,26 @@
     </div>
   {% endif %}
 
+  {% if u.today_hours_override %}
+    <div class="notice" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;">
+      <span>&#128337; Today: {{ u.today_hours_override }} (usually {{ u.standing_hours_today }})</span>
+      <form data-post="/ui/users/{{ u.username }}/day-hours/clear" data-target="closest .user-card" data-swap="outerHTML">
+        <input type="hidden" name="day" value="{{ u.today }}">
+        <button type="submit">Clear</button>
+      </form>
+    </div>
+  {% endif %}
+
+  {% if u.tomorrow_hours_override %}
+    <div class="notice" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;">
+      <span>&#128337; Tomorrow ({{ u.tomorrow }}): {{ u.tomorrow_hours_override }}</span>
+      <form data-post="/ui/users/{{ u.username }}/day-hours/clear" data-target="closest .user-card" data-swap="outerHTML">
+        <input type="hidden" name="day" value="{{ u.tomorrow }}">
+        <button type="submit">Clear</button>
+      </form>
+    </div>
+  {% endif %}
+
   <div class="actions">
     <form data-post="/ui/users/{{ u.username }}/grants" data-target="closest .user-card" data-swap="outerHTML">
       <input type="hidden" name="seconds" value="1800">
@@ -83,6 +103,26 @@
         <input type="number" name="limit_m" min="0" max="59" value="0" style="width:3rem;">
         <span class="unit">m</span>
       </span>
+      <input type="text" name="reason" placeholder="reason (optional)" style="flex:1;min-width:8rem;">
+      <button type="submit">Apply</button>
+    </form>
+  </details>
+
+  <details>
+    <summary>Adjust a day's hours</summary>
+    <form data-post="/ui/users/{{ u.username }}/day-hours" data-target="closest .user-card" data-swap="outerHTML" class="policy-form" style="flex-wrap:wrap;">
+      <input type="date" name="day" value="{{ u.today }}" required>
+      <span class="seg small">
+        <input type="radio" name="mode" id="hmode-window-{{ u.username }}" value="window" checked>
+        <label for="hmode-window-{{ u.username }}">Between</label>
+        <input type="radio" name="mode" id="hmode-any-{{ u.username }}" value="any">
+        <label for="hmode-any-{{ u.username }}">Any time that day</label>
+      </span>
+      <input type="time" name="from" step="900" value="09:00">
+      <input type="time" name="to" step="900" value="17:00">
+      <label style="display:flex;align-items:center;gap:.25rem;">
+        <input type="checkbox" name="to_midnight"> until midnight
+      </label>
       <input type="text" name="reason" placeholder="reason (optional)" style="flex:1;min-width:8rem;">
       <button type="submit">Apply</button>
     </form>

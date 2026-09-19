@@ -52,6 +52,21 @@ def test_load_ignores_unknown_keys_instead_of_crashing(tmp_path):
     assert state.users["alice"].last_hub_contact_utc == 0.0
 
 
+def test_load_defaults_policy_revision_applied_when_state_predates_the_field(tmp_path):
+    """A state.json written by an agent version before the one-day
+    allowed-hours override feature has no `policy_revision_applied` key --
+    it must load with the field's default ("") rather than crash, and that
+    default is itself meaningful: it's indistinguishable from a brand-new
+    user, so the very next sync report goes out with revision "" and the
+    hub treats it as "a new-enough agent, first tick" (see
+    `SyncUserRequest.policy_revision_applied`'s docstring)."""
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"users": {"alice": {"day": "2026-01-01", "policy_version_applied": 3}}}))
+    state = load(path)
+    assert state.users["alice"].policy_version_applied == 3
+    assert state.users["alice"].policy_revision_applied == ""
+
+
 def test_load_skips_non_dict_user_entries(tmp_path):
     path = tmp_path / "state.json"
     path.write_text(json.dumps({"users": {"alice": "not a dict"}}))

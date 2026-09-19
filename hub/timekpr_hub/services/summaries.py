@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.calendar import canonical_stamp
-from timekpr_hub_core.models import UserSummary
+from timekpr_hub_core.models import AllowedHourInterval, UserSummary
 
 from timekpr_hub.db.models import Device, Policy, User
 from timekpr_hub.services.aggregate import (
@@ -33,6 +33,7 @@ from timekpr_hub.services.aggregate import (
     global_spent_wallclock_history,
     latest_activity_states_batch,
 )
+from timekpr_hub.services.day_hours import day_hour_overrides_history
 from timekpr_hub.services.limits import (
     base_daily_limit,
     combine_limit,
@@ -183,6 +184,13 @@ class DayUsage:
     overridden: bool = False
     gated: bool = False
     gate_released: bool = False
+    hours_overridden: bool = False
+    hours_override_intervals: list[AllowedHourInterval] | None = None
+    """The stored override for this day, if `hours_overridden` -- carried
+    as intervals rather than a pre-formatted string so the display wording
+    stays in one place (`api/ui.py::_hours_display`, the same function the
+    dashboard card and policy editor banner use) instead of being re-derived
+    here, which would risk the three disagreeing on phrasing."""
 
 
 @dataclass
@@ -224,6 +232,9 @@ async def compute_usage_history(
     released_days = await gate_releases_history(
         session, user_id=user.id, start_day=start_day, end_day=end_day
     )
+    hours_overrides_by_day = await day_hour_overrides_history(
+        session, user_id=user.id, start_day=start_day, end_day=end_day
+    )
 
     days: list[DayUsage] = []
     for offset in range(num_days):
@@ -243,6 +254,8 @@ async def compute_usage_history(
                 overridden=overridden,
                 gated=gated,
                 gate_released=released,
+                hours_overridden=day in hours_overrides_by_day,
+                hours_override_intervals=hours_overrides_by_day.get(day),
             )
         )
 

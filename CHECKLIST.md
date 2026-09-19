@@ -450,6 +450,50 @@ editor beyond additive grants, no parent auth at all) were closed together.
       hardcoded agent-side (`main.py`'s `offline_policy="capped"` comment:
       "per-user override is hub-side (Phase 2 wiring)") and the fourth is
       read nowhere at all; exposing them would have been editable-but-inert.
+- [x] **One-day allowed-hours override** — "kids are home early today, let
+      them start at noon instead of 15:00, back to normal tomorrow" (a slice
+      of the Phase 4 "Calendar overrides" item, pulled forward). Unlike
+      every override above, `allowed_hours` lives in `PolicyPayload` and IS
+      pushed to the device over DBUS, keyed by weekday — timekpr has no
+      date-scoped hours — so a one-day window has to be pushed AND
+      explicitly un-pushed on the next occurrence of that weekday, not just
+      folded into a number in the `/sync` response. New pure module
+      `timekpr_hub_core.effective_policy`: `materialize_allowed_hours` fills
+      all 7 weekday keys (an absent key is never rewritten by
+      `_apply_allowed_hours`, so a never-edited policy's `{}` would make the
+      revert push a no-op); `with_day_hour_override` substitutes one day;
+      `policy_revision` hashes the *effective* payload as an opaque token —
+      the `/sync` push gate can no longer be `policy.version` alone, since
+      an hours override changes what belongs on the device without bumping
+      it. New table `day_hour_overrides(user, day, intervals_json)`
+      (`CHECK jsonb_array_length(intervals_json) > 0` — the empty-hours
+      lockout trap, unrepresentable at the DB level), new
+      `services/day_hours.py` and `services/policy.py::
+      effective_policy_payload`. The gate is two-branched on whether the
+      *agent* has ever echoed a `policy_revision_applied` at all
+      (`None` vs. `""` vs. a real value) — an agent that predates this
+      field is served the standing (materialized, non-overridden) payload
+      and gated on `policy_version` exactly as before, since it can only
+      ever report the int version back and would otherwise apply an
+      override it could never be told to revert. Reverting rides the same
+      gate as setting it, so the guarantee is structural, not timing-based:
+      a stale window on weekday W only matters once W recurs, so the
+      override is correctly reverted as long as the device syncs at least
+      once in the 7 days between D and D+7 — an agent offline across
+      midnight leaks nothing at all. New UI: an "Adjust a day's hours"
+      dashboard disclosure (any-time / between, defaulting to *today* unlike
+      the limit override's tomorrow default), a today/tomorrow heads-up +
+      Clear on the dashboard card, a "this is temporarily overridden" banner
+      on the policy editor (save there deliberately does NOT clear it), and
+      a clock-glyph marker on the usage-stats bars. JSON API twins:
+      `PUT/DELETE .../day-hours[/{day}]`, 422 (write-time) and a silent
+      read-time skip (policy edited after the override was set) when the
+      day's weekday isn't in `allowed_weekdays`. Open item, unverified on
+      real hardware: whether `timekprd` releases a user *currently* locked
+      out when a widened `ALLOWED_HOURS` is written, or whether they must
+      log in again — `FakeTimekprDaemon` models no hour restrictions at all,
+      so nothing in this repo's test suite can answer it (see
+      `docs/agent-live-test-findings.md`).
 - [ ] Drift detection + adopt/ignore workflow (local `timekpra` edits)
 - [ ] Local-grant capture & auto-promotion (`unexplained` offset detection)
 - [ ] Clock-skew + NTP detection (`org.freedesktop.timedate1`)
@@ -465,7 +509,8 @@ editor beyond additive grants, no parent auth at all) were closed together.
 
 ## Phase 4 — Later / optional (PLAN: "Phase 4")
 - [ ] Kid-initiated bonus-time requests
-- [ ] Calendar overrides
+- [x] Calendar overrides -- the one-day allowed-hours case is done (Phase 2,
+      see above); a full multi-day/recurring calendar view remains open.
 - [ ] One-active-device leases
 - [ ] PlayTime pooling
 - [ ] Per-device weighting

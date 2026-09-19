@@ -353,6 +353,49 @@ class DayOverride(Base):
     )
 
 
+class DayHourOverride(Base):
+    """A one-day replacement for the policy's standing allowed time-of-day
+    window -- "today, 12:00-20:00 instead of the usual 15:00-20:00", or a
+    fully unrestricted day. Unlike `DayOverride`/`Grant`, this DOES reach
+    the device: `allowed_hours` is part of `PolicyPayload` and gets pushed
+    over DBUS, keyed by weekday, so the hub must materialize and push a
+    replacement, then push the standing value back once the date has
+    passed -- see `timekpr_hub_core.effective_policy` for the full
+    reasoning and `services/policy.py::effective_policy_payload` for where
+    that merge happens.
+
+    `intervals_json` stores the resolved `AllowedHourInterval` list (the
+    same per-hour wire shape `PolicyPayload.allowed_hours` uses) rather than
+    a separate "mode" flag -- `api/ui.py::_classify_day_hours` already
+    infers all/between/custom back from stored intervals for display, and
+    that's the one tested inversion; a second `mode` column would just be a
+    second source of truth for the same fact.
+
+    One row per (user, day): setting a new override for an already-overridden
+    date replaces it (see services/day_hours.py::set_day_hour_override)."""
+
+    __tablename__ = "day_hour_overrides"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    intervals_json: Mapped[list] = mapped_column(JSONB, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(255))
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "day", name="uq_day_hour_overrides_user_day"),
+        # An empty interval list would, if ever pushed, mean "forbidden all
+        # day" to timekpr rather than "unrestricted" (see
+        # `timekpr_hub_core.allowed_hours.unrestricted`'s docstring) --
+        # making it unrepresentable at the DB level closes off the single
+        # most consequential mistake this table could encode.
+        CheckConstraint("jsonb_array_length(intervals_json) > 0", name="ck_day_hour_overrides_nonempty"),
+        Index("ix_day_hour_overrides_user_day", "user_id", "day"),
+    )
+
+
 class GateRelease(Base):
     """Records that a gated day's precondition (chores, homework, ...) was
     satisfied for one specific date.

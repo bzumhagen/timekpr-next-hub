@@ -47,6 +47,12 @@ from timekpr_hub.api.parent_auth import get_current_parent_ui
 from timekpr_hub.db.models import Device, Grant, Parent, User
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.audit import record_audit_event
+from timekpr_hub.services.day_hours import (
+    clear_day_hour_override,
+    day_hour_override,
+    day_hour_overrides_batch,
+    set_day_hour_override,
+)
 from timekpr_hub.services.limits import (
     clear_day_override,
     day_overrides_batch,
@@ -107,10 +113,14 @@ async def _user_summaries(session: AsyncSession, *, usernames: list[str] | None 
         return []
 
     now = datetime.now(UTC)
-    tomorrow = canonical_stamp(now, settings.tz).day + timedelta(days=1)
+    today = canonical_stamp(now, settings.tz).day
+    tomorrow = today + timedelta(days=1)
     tomorrow_overrides = await day_overrides_batch(
         session, user_ids=[row.user.id for row in rows], day=tomorrow
     )
+    user_ids = [row.user.id for row in rows]
+    today_hours_overrides = await day_hour_overrides_batch(session, user_ids=user_ids, day=today)
+    tomorrow_hours_overrides = await day_hour_overrides_batch(session, user_ids=user_ids, day=tomorrow)
 
     return [
         {
@@ -122,8 +132,20 @@ async def _user_summaries(session: AsyncSession, *, usernames: list[str] | None 
             "as_of": row.as_of,
             "gated_today": row.gated_today,
             "gate_released_today": row.gate_released_today,
+            "today": today.isoformat(),
             "tomorrow": tomorrow.isoformat(),
             "tomorrow_override_s": tomorrow_overrides.get(row.user.id),
+            "standing_hours_today": _hours_display(
+                _to_wire_intervals(
+                    (row.policy.allowed_hours_json or {}).get(str(today.isoweekday())) if row.policy else None
+                )
+            ),
+            "today_hours_override": _hours_display(today_hours_overrides.get(row.user.id))
+            if row.user.id in today_hours_overrides
+            else None,
+            "tomorrow_hours_override": _hours_display(tomorrow_hours_overrides.get(row.user.id))
+            if row.user.id in tomorrow_hours_overrides
+            else None,
         }
         for row in rows
     ]
@@ -249,6 +271,127 @@ async def clear_day_override_ui(
             ip=_client_ip(request),
         )
         await session.commit()
+
+    users = await _user_summaries(session, usernames=[username])
+    return templates.TemplateResponse(request, "_users_fragment.html", {"users": users})
+
+
+# --------------------------------------------------------------------------
+# One-day allowed-hours override ("today, 12:00-20:00 instead of the usual
+# 15:00-20:00" / "any time today"). Separate control from the day-override
+# above: that replaces the day's LIMIT (seconds), this replaces WHEN it may
+# be used -- and unlike every override on this page so far, this one DOES
+# reach the device on its next /sync (see timekpr_hub_core.effective_policy).
+# --------------------------------------------------------------------------
+
+
+@router.post("/ui/users/{username}/day-hours", response_class=HTMLResponse)
+async def set_day_hour_override_ui(
+    request: Request,
+    username: str,
+    day: str = Form(...),
+    mode: str = Form("window"),
+    from_: str = Form("", alias="from"),
+    to: str = Form(""),
+    to_midnight: str | None = Form(None),
+    reason: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_ui),
+) -> HTMLResponse:
+    """`mode="any"` writes the explicit unrestricted map (never `[]` -- see
+    `timekpr_hub_core.allowed_hours.unrestricted`'s docstring); `mode="window"`
+    parses `from`/`to` the same way the policy editor's "between" mode does
+    (`_parse_day_hours`), except `to_midnight` stands in for `to` when
+    checked -- `<input type=time>` can't submit "24:00" itself (see the
+    comment on `_BETWEEN_SEED` above for why)."""
+    user = await _get_user_or_404(session, username)
+    override_day = date.fromisoformat(day)
+
+    if str(override_day.isoweekday()) not in (
+        (await get_or_create_policy(session, user)).allowed_weekdays_json or _WEEKDAY_TOKENS
+    ):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{day} isn't one of {user.display_name}'s allowed login days, so an hours window "
+            "would have no effect -- change 'Days allowed to log in' in the policy first",
+        )
+
+    if mode == "any":
+        records = intervals_to_hours(unrestricted())
+        intervals = [
+            AllowedHourInterval(hour=r.hour, start_min=r.start_min, end_min=r.end_min) for r in records
+        ]
+    else:
+        from_min = _parse_time_str(from_, "start time")
+        to_min = 24 * 60 if to_midnight is not None else _parse_time_str(to, "end time")
+        try:
+            interval = TimeInterval(from_min, to_min)
+            validate_intervals([interval])
+        except (ValueError, IntervalConflictError) as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        records = intervals_to_hours([interval])
+        intervals = [
+            AllowedHourInterval(hour=r.hour, start_min=r.start_min, end_min=r.end_min) for r in records
+        ]
+
+    await set_day_hour_override(
+        session,
+        user_id=user.id,
+        day=override_day,
+        intervals=intervals,
+        reason=reason,
+        created_by="ui",
+    )
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="day_hours.set",
+        target_type="user",
+        target_id=username,
+        after={"day": day, "mode": mode, "reason": reason},
+        ip=_client_ip(request),
+    )
+    await session.commit()
+
+    users = await _user_summaries(session, usernames=[username])
+    return templates.TemplateResponse(request, "_users_fragment.html", {"users": users})
+
+
+@router.post("/ui/users/{username}/day-hours/clear", response_model=None)
+async def clear_day_hour_override_ui(
+    request: Request,
+    username: str,
+    day: str = Form(...),
+    redirect_to: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_ui),
+) -> HTMLResponse | RedirectResponse:
+    """`redirect_to` is set only by the policy editor's banner (see
+    user_policy.html) -- a full page, not a dashboard `.user-card` fragment,
+    so it can't use the usual `data-post`/outerHTML-swap flow: there's no
+    `.user-card` on that page for the JS in `_base.html` to swap into. A
+    plain (non-AJAX) form submit here gets an ordinary 303 back to that
+    page instead. The dashboard card's own Clear button leaves this blank
+    and gets the fragment swap exactly as every other per-date control
+    does."""
+    user = await _get_user_or_404(session, username)
+    cleared = await clear_day_hour_override(session, user_id=user.id, day=date.fromisoformat(day))
+    if cleared:
+        await record_audit_event(
+            session,
+            actor_type="parent",
+            actor_id=str(parent.id),
+            action="day_hours.clear",
+            target_type="user",
+            target_id=username,
+            before={"day": day},
+            ip=_client_ip(request),
+        )
+        await session.commit()
+
+    if redirect_to:
+        return RedirectResponse(redirect_to, status_code=status.HTTP_303_SEE_OTHER)
 
     users = await _user_summaries(session, usernames=[username])
     return templates.TemplateResponse(request, "_users_fragment.html", {"users": users})
@@ -395,6 +538,27 @@ def _fmt_hm(total_min: int) -> str:
     return f"{total_min // 60:02d}:{total_min % 60:02d}"
 
 
+def _to_wire_intervals(raw: list[dict] | None) -> list[AllowedHourInterval] | None:
+    """`Policy.allowed_hours_json[day]` is a plain JSON list of dicts (raw
+    storage); this is the wire-model form `_classify_day_hours` and
+    `_hours_display` expect."""
+    if raw is None:
+        return None
+    return [AllowedHourInterval.model_validate(iv) for iv in raw]
+
+
+def _hours_display(intervals: list[AllowedHourInterval] | None) -> str:
+    """A short human string for one day's allowed-hours -- "any time",
+    "12:00-20:00", or "custom hours" -- reusing `_classify_day_hours`'s
+    tested inversion rather than re-deriving a mode from raw intervals."""
+    classified = _classify_day_hours(intervals)
+    if classified["mode"] == "all":
+        return "any time"
+    if classified["mode"] == "between":
+        return f"{_fmt_hm(classified['from_min'])}–{_fmt_hm(classified['to_min'])}"
+    return "custom hours"
+
+
 def _policy_view_model(payload) -> dict:
     """Shapes a `PolicyPayload` for the editor template. Time values are
     handed over as `{h, m}` pairs (never bare minutes) so the template never
@@ -441,6 +605,8 @@ async def user_policy_page(
 ) -> HTMLResponse:
     user = await _get_user_or_404(session, username)
     policy = await get_or_create_policy(session, user)
+    today = canonical_stamp(datetime.now(UTC), settings.tz).day
+    today_override = await day_hour_override(session, user_id=user.id, day=today)
     await session.commit()
     payload = policy_to_payload(policy)
     return templates.TemplateResponse(
@@ -453,6 +619,15 @@ async def user_policy_page(
             "weekday_tokens": _WEEKDAY_TOKENS,
             "lockout_options": _LOCKOUT_OPTIONS,
             "p": _policy_view_model(payload),
+            # "Today is temporarily overridden" banner -- without it the
+            # editor would render this weekday's stored hours while the
+            # device is actually running something else (see
+            # timekpr_hub_core.effective_policy). Saving this form does
+            # NOT clear the override; the two are deliberately independent.
+            "today": today.isoformat(),
+            "today_hours_override": _hours_display(_to_wire_intervals(today_override.intervals_json))
+            if today_override is not None
+            else None,
         },
     )
 
@@ -704,6 +879,12 @@ async def user_stats_page(
         session, user=user, policy=policy, num_days=num_days, tz=settings.tz
     )
     max_s = max([d.limit_s for d in history.days] + [d.spent_s for d in history.days] + [1])
+    # Precomputed here (not in the template) so the wording matches the
+    # dashboard card and policy editor banner exactly -- all three go
+    # through `_hours_display`.
+    hours_override_display = {
+        d.day: _hours_display(d.hours_override_intervals) for d in history.days if d.hours_overridden
+    }
     return templates.TemplateResponse(
         request,
         "user_stats.html",
@@ -713,6 +894,7 @@ async def user_stats_page(
             "days": num_days,
             "history": history,
             "max_s": max_s,
+            "hours_override_display": hours_override_display,
         },
     )
 

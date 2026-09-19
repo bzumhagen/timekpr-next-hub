@@ -21,6 +21,7 @@ from tests.e2e.harness import (
     SimulatedDevice,
     VirtualClock,
     enroll_device,
+    parent_api_request,
     query_global_spent,
     set_accounting_mode,
     tick_device,
@@ -168,3 +169,70 @@ def test_wallclock_accounting_counts_overlapping_use_once(live_hub, tmp_path):
     set_accounting_mode(USERNAME, "parallel")
     parallel_total = query_global_spent(USERNAME, today, mode="parallel")
     assert parallel_total >= wallclock_total * 1.8
+
+
+def test_day_hour_override_is_pushed_and_reverted(live_hub, tmp_path):
+    """A real one-day allowed-hours override, driven through the real
+    parent API, the real /sync push gate, and the real agent tick loop:
+    PUT an override for today -> a tick applies it; DELETE it -> the next
+    tick reverts weekday W back to the standing hours -- and, just as
+    important, once the revision has settled, FURTHER ticks push nothing
+    at all (a gate that never converges and keeps re-pushing every 20s
+    forever is the most likely bug in this feature, and nothing else in
+    the suite catches it -- see `FakeEnforcer.set_allowed_hours_calls`)."""
+    clock = VirtualClock.starting_at()
+    daemon = FakeTimekprDaemon(limit_today_s=ONE_HOUR)
+    hub = enroll_device(
+        base_url=live_hub,
+        token_path=tmp_path / "device-token",
+        machine_id=f"machine-{uuid.uuid4()}",
+        hostname="device",
+        local_users=[USERNAME],
+    )
+    enforcer = FakeEnforcer({USERNAME: daemon})
+    device = SimulatedDevice(hub=hub, enforcer=enforcer)
+
+    today = datetime.now(UTC).date()
+    weekday = str(today.isoweekday())
+
+    # Tick 1: no override yet -- the freshly-seeded default policy's hours
+    # are unrestricted for every weekday.
+    tick_device(device, clock, managed_users=[USERNAME])
+    assert len(enforcer._allowed_hours[USERNAME][weekday]) == 24
+    calls_after_tick_1 = enforcer.set_allowed_hours_calls
+
+    # A tick with nothing changed must push nothing further.
+    tick_device(device, clock, managed_users=[USERNAME])
+    assert enforcer.set_allowed_hours_calls == calls_after_tick_1
+
+    # PUT a narrower override for today ("home early" widened to "any
+    # time" wouldn't be visible against an already-unrestricted default,
+    # so this narrows it instead -- the opposite direction, but the same
+    # push/revert mechanism).
+    parent_api_request(
+        live_hub,
+        "PUT",
+        f"/users/{USERNAME}/day-hours",
+        {"day": today.isoformat(), "mode": "window", "from_min": 9 * 60, "to_min": 17 * 60, "reason": "e2e"},
+    )
+    tick_device(device, clock, managed_users=[USERNAME])
+    assert len(enforcer._allowed_hours[USERNAME][weekday]) == 8  # 09:00-17:00
+    calls_after_override = enforcer.set_allowed_hours_calls
+    assert calls_after_override > calls_after_tick_1
+
+    # Once applied, a further unchanged tick must push nothing more --
+    # this is the assertion that catches a gate stuck re-pushing forever.
+    tick_device(device, clock, managed_users=[USERNAME])
+    assert enforcer.set_allowed_hours_calls == calls_after_override
+
+    # DELETE the override: the next tick must revert weekday W back to
+    # unrestricted.
+    parent_api_request(live_hub, "DELETE", f"/users/{USERNAME}/day-hours/{today.isoformat()}")
+    tick_device(device, clock, managed_users=[USERNAME])
+    assert len(enforcer._allowed_hours[USERNAME][weekday]) == 24
+    calls_after_revert = enforcer.set_allowed_hours_calls
+    assert calls_after_revert > calls_after_override
+
+    # And, again, the push must stop once the revert has landed.
+    tick_device(device, clock, managed_users=[USERNAME])
+    assert enforcer.set_allowed_hours_calls == calls_after_revert

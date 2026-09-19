@@ -88,6 +88,68 @@ def test_apply_policy_push_rejects_wrong_daily_limit_count():
     assert _apply_policy_push(enforcer, "kiddo", bad) is False
 
 
+def _wire_hours(intervals) -> list[dict]:
+    from timekpr_hub_core.allowed_hours import intervals_to_hours
+
+    return [
+        {"hour": r.hour, "start_min": r.start_min, "end_min": r.end_min, "unaccounted": r.unaccounted}
+        for r in intervals_to_hours(intervals)
+    ]
+
+
+def _dbus_hours(start_hour: int, end_hour_exclusive: int) -> dict:
+    """The `setAllowedHours` payload shape for a contiguous whole-hour
+    range, matching what `hours_to_dbus_payload` produces."""
+    hours = range(start_hour, end_hour_exclusive)
+    return {str(h): {"STARTMIN": 0, "ENDMIN": 60, "UACC": False} for h in hours}
+
+
+def test_a_materialized_hours_payload_pushes_all_seven_weekdays():
+    """The one-day-hours-override feature depends on the hub always sending
+    a fully materialized `allowed_hours` (all 7 keys) -- see
+    `timekpr_hub_core.effective_policy.materialize_allowed_hours`'s
+    docstring for why an absent key can never be reverted. This asserts the
+    agent applies exactly that: 7 `setAllowedHours` calls, string keys
+    throughout, one per weekday."""
+    from timekpr_hub_core.allowed_hours import unrestricted
+
+    materialized = {str(day): _wire_hours(unrestricted()) for day in range(1, 8)}
+    enforcer = _fresh_enforcer()
+    policy = dict(_FULL_POLICY, allowed_hours=materialized)
+    assert _apply_policy_push(enforcer, "kiddo", policy) is True
+    assert set(enforcer._allowed_hours["kiddo"].keys()) == {"1", "2", "3", "4", "5", "6", "7"}
+    for payload in enforcer._allowed_hours["kiddo"].values():
+        assert payload == _dbus_hours(0, 24)
+
+
+def test_pushing_an_hours_override_then_the_standing_payload_reverts_it():
+    """The single most important test for the one-day allowed-hours
+    override: proves the un-push. Weekday 3's standing hours are
+    09:00-17:00; a one-day override widens it to "any time" for a push
+    (simulating today's `/sync`); a LATER push (simulating the day after,
+    once the override no longer applies) sends the standing payload again
+    and must land back on 09:00-17:00 -- not leave weekday 3 stuck open."""
+    from timekpr_hub_core.allowed_hours import TimeInterval, unrestricted
+
+    standing_window = _wire_hours([TimeInterval(9 * 60, 17 * 60)])
+    unrestricted_wire = _wire_hours(unrestricted())
+    standing_hours = {str(day): (standing_window if day == 3 else unrestricted_wire) for day in range(1, 8)}
+    overridden_hours = dict(standing_hours, **{"3": unrestricted_wire})
+
+    enforcer = _fresh_enforcer()
+
+    # Tick 1: the override is in effect for weekday 3.
+    override_policy = dict(_FULL_POLICY, allowed_hours=overridden_hours)
+    assert _apply_policy_push(enforcer, "kiddo", override_policy) is True
+    assert enforcer._allowed_hours["kiddo"]["3"] == _dbus_hours(0, 24)
+
+    # Tick 2: the standing payload is pushed again -- weekday 3 must be
+    # back to 09:00-17:00, not left at "any time".
+    standing_policy = dict(_FULL_POLICY, allowed_hours=standing_hours)
+    assert _apply_policy_push(enforcer, "kiddo", standing_policy) is True
+    assert enforcer._allowed_hours["kiddo"]["3"] == _dbus_hours(9, 17)
+
+
 @given(
     daily_limits=st.lists(st.integers(min_value=0, max_value=86400), min_size=7, max_size=7),
     allowed_days=st.lists(st.sampled_from(["1", "2", "3", "4", "5", "6", "7"]), min_size=1, unique=True),

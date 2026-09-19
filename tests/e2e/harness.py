@@ -184,6 +184,21 @@ def mint_enrollment_code(base_url: str) -> str:
         return json.loads(resp.read())["code"]
 
 
+def parent_api_request(base_url: str, method: str, path: str, body: dict | None = None) -> dict:
+    """A parent-API call (PUT/DELETE/POST) as the fixture's overridden
+    parent, for endpoints `enroll_device`/`mint_enrollment_code` don't
+    already cover -- e.g. the one-day allowed-hours override."""
+    data = json.dumps(body).encode() if body is not None else b"{}"
+    req = urllib.request.Request(
+        f"{base_url}/api/v1{path}",
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
 def enroll_device(
     *,
     base_url: str,
@@ -331,6 +346,13 @@ class FakeEnforcer:
         self._playtime_allowed_weekdays: dict[str, list[str]] = {}
         self._playtime_daily_limits: dict[str, list[int]] = {}
         self._playtime_activities: dict[str, list[tuple[str, str]]] = {}
+        self.set_allowed_hours_calls = 0
+        """Counts every `set_allowed_hours` invocation (successful or not)
+        -- lets an e2e test assert a one-day allowed-hours override's push
+        actually STOPS once the revision settles, rather than only checking
+        that a push happened at all. A gate that never converges and
+        re-pushes every tick forever is the failure this counter exists to
+        catch (see test_acceptance.py's day-hours override test)."""
 
     def get_user_observation(self, username: str) -> UserObservation | None:
         d = self.daemons.get(username)
@@ -381,6 +403,7 @@ class FakeEnforcer:
         return True
 
     def set_allowed_hours(self, username: str, day_number: str, hours: dict) -> bool:
+        self.set_allowed_hours_calls += 1
         if not hours:
             return False
         # Real timekpr's checkAndSetAllowedHours does

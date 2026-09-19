@@ -15,8 +15,17 @@ from datetime import UTC, date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from timekpr_hub_core.allowed_hours import (
+    IntervalConflictError,
+    TimeInterval,
+    intervals_to_hours,
+    unrestricted,
+)
+from timekpr_hub_core.allowed_hours import validate_intervals as _validate_intervals
 from timekpr_hub_core.calendar import canonical_stamp
 from timekpr_hub_core.models import (
+    AllowedHourInterval,
+    DayHourOverrideCreate,
     DayOverrideCreate,
     GateReleaseCreate,
     GrantCreate,
@@ -30,10 +39,36 @@ from timekpr_hub.api.parent_auth import get_current_parent_api
 from timekpr_hub.db.models import Device, EnrollmentCode, Parent, User
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.audit import record_audit_event
+from timekpr_hub.services.day_hours import clear_day_hour_override, set_day_hour_override
 from timekpr_hub.services.limits import clear_day_override, release_gate, set_day_override, unrelease_gate
 from timekpr_hub.services.policy import get_current_policy, policy_to_payload, update_policy
 from timekpr_hub.services.summaries import compute_user_summaries
 from timekpr_hub.settings import settings
+
+
+def _wire_intervals(records) -> list[AllowedHourInterval]:
+    return [
+        AllowedHourInterval(hour=r.hour, start_min=r.start_min, end_min=r.end_min, unaccounted=r.unaccounted)
+        for r in records
+    ]
+
+
+def _day_hour_override_intervals(body: DayHourOverrideCreate) -> list[AllowedHourInterval]:
+    """`DayHourOverrideCreate`'s two modes -> the wire `AllowedHourInterval`
+    list `set_day_hour_override` stores. "unrestricted" always writes the
+    explicit all-24-hours form (never `[]` -- see
+    `timekpr_hub_core.allowed_hours.unrestricted`'s docstring); "window"
+    goes through the same validate/expand chain the policy editor's
+    "between" mode uses (`api/ui.py::_parse_day_hours`), so a caller gets
+    the identical one-clock-hour-per-interval error message either way."""
+    if body.mode == "unrestricted":
+        return _wire_intervals(intervals_to_hours(unrestricted()))
+    interval = TimeInterval(body.from_min, body.to_min, unaccounted=False)
+    try:
+        _validate_intervals([interval])
+    except IntervalConflictError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    return _wire_intervals(intervals_to_hours([interval]))
 
 
 def _client_ip(request: Request) -> str | None:
@@ -195,6 +230,100 @@ async def clear_user_day_override(
             actor_type="parent",
             actor_id=str(parent.id),
             action="override.clear",
+            target_type="user",
+            target_id=username,
+            before={"day": day},
+            ip=_client_ip(request),
+        )
+    await session.commit()
+    return {"day": day, "cleared": cleared}
+
+
+@router.put("/users/{username}/day-hours")
+async def set_user_day_hour_override(
+    username: str,
+    body: DayHourOverrideCreate,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    """Sets (or replaces) a one-day replacement for the policy's standing
+    allowed time-of-day window. Kept separate from `day-override` above,
+    which replaces the day's *limit* -- this replaces *when* the limit may
+    be used. Unlike every other per-date exception, this one does reach the
+    device (see `timekpr_hub_core.effective_policy`'s module docstring), on
+    the device's next `/sync`.
+
+    422s if `day`'s weekday isn't one of the policy's `allowed_weekdays`:
+    an hours window on a day the user can't log in at all would silently
+    have no effect (see `effective_policy_payload`'s read-path skip for the
+    same case, which covers a policy edited *after* this override is set)."""
+    result = await session.execute(select(User).where(User.canonical_username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+
+    day = date.fromisoformat(body.day)
+    policy = await get_current_policy(session, user)
+    allowed_weekdays = (policy.allowed_weekdays_json if policy else None) or [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+    ]
+    if str(day.isoweekday()) not in allowed_weekdays:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{body.day} isn't one of this user's allowed login days, so an hours window "
+            "would have no effect -- change 'Days allowed to log in' in the policy first",
+        )
+
+    intervals = _day_hour_override_intervals(body)
+    override = await set_day_hour_override(
+        session,
+        user_id=user.id,
+        day=day,
+        intervals=intervals,
+        reason=body.reason,
+        created_by="parent-api",
+    )
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="day_hours.set",
+        target_type="user",
+        target_id=username,
+        after={"day": body.day, "mode": body.mode, "reason": body.reason},
+        ip=_client_ip(request),
+    )
+    await session.commit()
+    return {"id": str(override.id), "day": body.day, "mode": body.mode}
+
+
+@router.delete("/users/{username}/day-hours/{day}")
+async def clear_user_day_hour_override(
+    username: str,
+    day: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    result = await session.execute(select(User).where(User.canonical_username == username))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+
+    cleared = await clear_day_hour_override(session, user_id=user.id, day=date.fromisoformat(day))
+    if cleared:
+        await record_audit_event(
+            session,
+            actor_type="parent",
+            actor_id=str(parent.id),
+            action="day_hours.clear",
             target_type="user",
             target_id=username,
             before={"day": day},

@@ -10,8 +10,9 @@ verbatim; if you're changing a field name here, update the plan/API docs too.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class EnforcementMode(str, Enum):
@@ -152,6 +153,17 @@ class SyncUserRequest(BaseModel):
     observed: SyncObserved
     local_grant_s: int = 0
     policy_version_applied: int = 0
+    policy_revision_applied: str | None = None
+    """The `timekpr_hub_core.effective_policy.policy_revision` value last
+    successfully applied, echoed back so the hub knows whether today's
+    effective payload (standing policy + any one-day allowed-hours override)
+    still matches what's on the device. `None` -- not `""` -- specifically
+    means "this agent predates this field" (Pydantic only produces `None`
+    when the key is absent from the request body): such an agent must be
+    served the *standing* payload only, gated on `policy_version_applied`
+    exactly as before, never the effective one -- otherwise it would apply
+    an hours override it can never be told to revert (it only ever echoes
+    the int version, which an expiring override does not change)."""
 
 
 class SyncRequest(BaseModel):
@@ -172,6 +184,10 @@ class SyncUserResponse(BaseModel):
     enforcement: EnforcementMode
     suppressed: bool = False
     policy_version: int
+    policy_revision: str = ""
+    """See `SyncUserRequest.policy_revision_applied`. Defaulted so the
+    unmapped-user (observe-only) branch of `/sync` needs no change: an
+    unmapped user is never pushed a policy either way."""
     policy: PolicyPayload | None = None
 
 
@@ -333,6 +349,33 @@ class DayOverrideCreate(BaseModel):
     day: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     limit_seconds: int = Field(ge=0, le=86400)
     reason: str = Field(default="", max_length=255)
+
+
+class DayHourOverrideCreate(BaseModel):
+    """PUT /users/{u}/day-hours -- a one-day replacement for the policy's
+    standing allowed time-of-day window, e.g. "today, allow 12:00-20:00
+    instead of the usual 15:00-20:00" or "any time today". Kept deliberately
+    separate from `DayOverrideCreate` (which replaces the day's *limit*, in
+    seconds) -- this replaces *when* the day's time may be used, not *how
+    much* of it there is; the two compose (see
+    `timekpr_hub.services.limits.combine_limit`'s docstring on gates
+    composing with overrides for the same reasoning).
+
+    Unlike `DayOverrideCreate` and `GrantCreate`, this DOES eventually reach
+    the device -- see `timekpr_hub_core.effective_policy` for why an hours
+    change can't stay hub-side the way a seconds change can."""
+
+    day: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    mode: Literal["unrestricted", "window"]
+    from_min: int = Field(default=0, ge=0, le=24 * 60)
+    to_min: int = Field(default=24 * 60, ge=0, le=24 * 60)
+    reason: str = Field(default="", max_length=255)
+
+    @model_validator(mode="after")
+    def _window_is_ordered(self) -> DayHourOverrideCreate:
+        if self.mode == "window" and self.from_min >= self.to_min:
+            raise ValueError("'from' must be earlier than 'to'")
+        return self
 
 
 class GateReleaseCreate(BaseModel):

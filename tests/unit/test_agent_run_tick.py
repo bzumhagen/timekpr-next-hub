@@ -397,3 +397,101 @@ def test_activity_state_is_draining_when_burning_and_idle_when_not():
         tz_name="UTC",
     )
     assert hub2.payloads[0]["users"][0]["observed"]["activity_state"] == "idle"
+
+
+_MINIMAL_POLICY = {
+    "daily_limits_s": [3600] * 7,
+    "allowed_weekdays": ["1", "2", "3", "4", "5", "6", "7"],
+    "weekly_limit_s": 25200,
+    "monthly_limit_s": 108000,
+    "lockout_type": "lock",
+    "track_inactive": False,
+    "hide_tray_icon": False,
+    "allowed_hours": {str(d): [{"hour": h, "start_min": 0, "end_min": 60}] for d in range(1, 8) for h in [0]},
+    "playtime": {
+        "enabled": False,
+        "override_enabled": False,
+        "unaccounted_intervals_enabled": True,
+        "allowed_weekdays": [],
+        "daily_limits_s": [0] * 7,
+        "activities": [],
+    },
+}
+
+
+def _sync_response_with_policy(
+    username: str, *, policy_version: int, policy_revision: str, policy: dict | None
+) -> dict:
+    resp = _sync_response(username, effective_limit_today_s=3600, global_spent_s=0)
+    resp["users"][0]["policy_version"] = policy_version
+    resp["users"][0]["policy_revision"] = policy_revision
+    resp["users"][0]["policy"] = policy
+    return resp
+
+
+def test_policy_revision_is_echoed_only_after_a_successful_push():
+    """See `SyncUserRequest.policy_revision_applied`'s docstring: both the
+    int version and the revision only advance together, on success -- a
+    push that never reaches DBUS must not be silently marked applied
+    (the exact bug main.py:262's comment records having fixed for the int)."""
+    daemon = FakeTimekprDaemon(limit_today_s=3600)
+    enforcer = FakeEnforcer({"alice": daemon})
+    state = state_mod.AgentState()
+    response = _sync_response_with_policy(
+        "alice", policy_version=1, policy_revision="1-abc", policy=_MINIMAL_POLICY
+    )
+    hub = ScriptedHub([response])
+
+    run_tick(
+        enforcer=enforcer, hub=hub, state=state, managed_users=["alice"], agent_version="0.1.0", tz_name="UTC"
+    )
+
+    assert state.users["alice"].policy_version_applied == 1
+    assert state.users["alice"].policy_revision_applied == "1-abc"
+
+
+def test_no_repush_when_the_echoed_revision_already_matches():
+    """Once the agent has echoed the current revision back, an unchanged
+    hub response (revision unchanged) must send no policy at all next tick
+    -- exactly what sync.py's gate is for, exercised end-to-end from the
+    agent's perspective via what it reports on tick 2."""
+    daemon = FakeTimekprDaemon(limit_today_s=3600)
+    enforcer = FakeEnforcer({"alice": daemon})
+    state = state_mod.AgentState()
+    state.users["alice"] = state_mod.UserState(policy_version_applied=1, policy_revision_applied="1-abc")
+
+    response = _sync_response_with_policy("alice", policy_version=1, policy_revision="1-abc", policy=None)
+    hub = ScriptedHub([response])
+    run_tick(
+        enforcer=enforcer, hub=hub, state=state, managed_users=["alice"], agent_version="0.1.0", tz_name="UTC"
+    )
+
+    assert hub.payloads[0]["users"][0]["policy_revision_applied"] == "1-abc"
+    assert hub.payloads[0]["users"][0]["policy_version_applied"] == 1
+    # Nothing changed on the enforcer -- no push happened, matching the
+    # `policy: None` in the scripted response.
+    assert "alice" not in enforcer._allowed_hours
+
+
+def test_repush_when_only_the_revision_changed_not_the_int_version():
+    """The whole point of the revision gate: a one-day hours override
+    changes what belongs on the device WITHOUT bumping `policy.version` --
+    the agent must still re-push when only the revision differs."""
+    daemon = FakeTimekprDaemon(limit_today_s=3600)
+    enforcer = FakeEnforcer({"alice": daemon})
+    state = state_mod.AgentState()
+    state.users["alice"] = state_mod.UserState(policy_version_applied=1, policy_revision_applied="1-abc")
+
+    # Same int version (1), different revision -- e.g. today picked up a
+    # one-day allowed-hours override.
+    response = _sync_response_with_policy(
+        "alice", policy_version=1, policy_revision="1-def", policy=_MINIMAL_POLICY
+    )
+    hub = ScriptedHub([response])
+    run_tick(
+        enforcer=enforcer, hub=hub, state=state, managed_users=["alice"], agent_version="0.1.0", tz_name="UTC"
+    )
+
+    assert state.users["alice"].policy_revision_applied == "1-def"
+    assert state.users["alice"].policy_version_applied == 1
+    assert "alice" in enforcer._allowed_hours  # the push actually happened

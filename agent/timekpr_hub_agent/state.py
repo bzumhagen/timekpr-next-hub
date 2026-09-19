@@ -24,6 +24,11 @@ class UserState:
     raw_prev_s: int = 0
     applied_offset_s: int = 0
     policy_version_applied: int = 0
+    policy_revision_applied: str = ""
+    """The `policy_revision` last successfully applied (see
+    `SyncUserRequest.policy_revision_applied`'s docstring for why this is a
+    separate field from the int version above rather than a replacement for
+    it -- both are kept and both only advance on a successful push)."""
     last_enforcement: str = ""  # "enforce", "observe", or "revoked" -- only used to log on transition
 
     # Cached last-known values from the hub, used while offline (PLAN

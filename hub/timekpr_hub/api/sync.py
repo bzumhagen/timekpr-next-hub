@@ -36,7 +36,7 @@ from timekpr_hub.services.aggregate import (
     upsert_usage_counter,
 )
 from timekpr_hub.services.limits import effective_daily_limit
-from timekpr_hub.services.policy import get_or_create_policy, policy_to_payload
+from timekpr_hub.services.policy import effective_policy_payload, get_or_create_policy
 from timekpr_hub.settings import settings
 
 router = APIRouter()
@@ -149,9 +149,28 @@ async def sync(
 
         enforcement = EnforcementMode.OBSERVE if device.enforcement == "observe" else EnforcementMode.ENFORCE
 
-        policy_payload = (
-            policy_to_payload(policy) if user_sync.policy_version_applied != policy.version else None
+        # Two branches, gated on whether THIS agent has ever echoed a
+        # `policy_revision_applied` at all (see that field's docstring in
+        # core/timekpr_hub_core/models.py). A legacy agent only ever reports
+        # back the int policy version, so it must be served the standing
+        # payload and gated on that version alone -- exactly today's
+        # behavior -- because it can never be told to revert a one-day
+        # hours override (an expiring override does not change
+        # `policy.version`). Any agent that HAS reported a revision (even
+        # an empty one, on its very first tick) gets the effective payload
+        # -- standing policy plus today's hours override, if any -- gated
+        # on the revision, which changes exactly when what belongs on the
+        # device changes (see timekpr_hub_core.effective_policy).
+        payload, revision = await effective_policy_payload(
+            session,
+            policy=policy,
+            day=stamp.day,
+            apply_day_overrides=user_sync.policy_revision_applied is not None,
         )
+        if user_sync.policy_revision_applied is not None:
+            policy_payload = payload if user_sync.policy_revision_applied != revision else None
+        else:
+            policy_payload = payload if user_sync.policy_version_applied != policy.version else None
 
         user_responses.append(
             SyncUserResponse(
@@ -164,6 +183,7 @@ async def sync(
                 enforcement=enforcement,
                 suppressed=False,  # one-active-device-at-a-time is Phase 4
                 policy_version=policy.version,
+                policy_revision=revision,
                 policy=policy_payload,
             )
         )

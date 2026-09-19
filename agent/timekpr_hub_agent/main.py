@@ -221,6 +221,7 @@ def run_tick(
                 },
                 "local_grant_s": 0,  # unexplained-offset detection happens per-user below
                 "policy_version_applied": user_state.policy_version_applied,
+                "policy_revision_applied": user_state.policy_revision_applied,
             }
         )
 
@@ -269,6 +270,15 @@ def run_tick(
                 # payload again.
                 if _apply_policy_push(enforcer, username, policy_payload):
                     user_state.policy_version_applied = resp_user["policy_version"]
+                    # Both are advanced only together, on success -- the int
+                    # for a hub that predates `policy_revision` (it simply
+                    # won't be in the response, and `.get` below keeps the
+                    # old value rather than clobbering it with ""), the
+                    # revision for the one-day hours-override gate (see
+                    # `SyncUserRequest.policy_revision_applied`'s docstring).
+                    user_state.policy_revision_applied = resp_user.get(
+                        "policy_revision", user_state.policy_revision_applied
+                    )
                 else:
                     log.warning("%s: policy push failed, will retry next tick", username)
 

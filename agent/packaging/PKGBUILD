@@ -18,7 +18,7 @@
 # manual install path in README.md ("Installing the agent"), which is the
 # same copy-into-/usr/lib layout without the packaging round trip.
 #
-# No venv (see docs/best-practices-review.md): the agent's code has ZERO
+# No venv: the agent's code has ZERO
 # third-party dependencies -- hubclient.py is built on stdlib
 # `urllib.request`, and the agent never imports pydantic (only
 # timekpr_hub_core.models does, for the hub's wire types, which the agent

@@ -1,5 +1,4 @@
-"""Layer 1 verification: property-test union_seconds against a brute-force
-per-second oracle (PLAN "Verification", Layer 1)."""
+"""Property-test union_seconds against a brute-force per-second oracle."""
 
 from __future__ import annotations
 

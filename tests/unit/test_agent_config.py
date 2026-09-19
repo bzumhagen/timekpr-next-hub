@@ -1,6 +1,5 @@
-"""agent.env round trip and lookup precedence (Phase 2 "single-command
-enrollment" -- `enroll` writes this file itself, `run`'s argparse defaults
-read it back)."""
+"""agent.env round trip and lookup precedence -- `enroll` writes this file
+itself, and `run`'s argparse defaults read it back."""
 
 from __future__ import annotations
 

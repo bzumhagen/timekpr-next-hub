@@ -13,6 +13,4 @@ dist
 build
 tests
 docs
-scratchpad
-CHECKLIST.md
 deploy/.env

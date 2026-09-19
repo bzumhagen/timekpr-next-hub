@@ -1,5 +1,5 @@
-"""PLAN Verification Layer 6 starter: exercise the agent's failure-mode
-handling against the same real hub+Postgres harness as
+"""Exercise the agent's failure-mode handling against the same real
+hub+Postgres harness as
 tests/e2e/test_acceptance.py, rather than only the scripted-hub unit tests
 in tests/unit/test_agent_run_tick.py. Corrupted-state.json coverage already
 lives in tests/unit/test_agent_state.py (it needs no DB, so it stays there
@@ -112,8 +112,8 @@ def test_clock_jump_backwards_does_not_break_the_sync(live_hub, tmp_path):
     backwards across a tick must not crash the agent or corrupt the hub's
     union: the span this tick would naively construct starts and ends
     before the previous tick's own emitted end, which main.py's
-    last_tick_utc clamp and sync.py's end<=start guard (docs/best-practices-
-    review.md) exist specifically to keep out of activity_intervals."""
+    last_tick_utc clamp and sync.py's end<=start guard exist specifically
+    to keep out of activity_intervals."""
     clock = VirtualClock.starting_at()
     daemon = FakeTimekprDaemon(limit_today_s=ONE_HOUR)
     real_hub = _enroll_one(live_hub, tmp_path)

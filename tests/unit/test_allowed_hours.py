@@ -1,8 +1,7 @@
 """Property tests for the interval <-> per-hour ALLOWED_HOURS conversion
-(core/timekpr_hub_core/allowed_hours.py), per the plan's "highest-leverage
-artifact" verification note: round-trip stability against a brute-force
-per-minute oracle, plus the specific correctness issues the advanced policy
-editor would otherwise expose silently.
+(core/timekpr_hub_core/allowed_hours.py): round-trip stability against a
+brute-force per-minute oracle, plus the specific correctness issues the
+advanced policy editor would otherwise expose silently.
 """
 
 from __future__ import annotations

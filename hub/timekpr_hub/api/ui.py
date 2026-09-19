@@ -1,11 +1,11 @@
-"""Hub-UI routes (PLAN: "One UI page... (Jinja2 + HTMX)", extended with a
-full per-user policy editor and usage-statistics view -- see the plan's
-"Full policy management + usage statistics in the hub UI").
+"""Hub-UI routes: the dashboard, the per-user policy editor, and the
+usage-statistics view.
 
 Deliberately thin: reuses the same service functions as the JSON parent API
 (`api/parent.py`) rather than duplicating logic, and renders server-side
-HTML fragments/pages -- no client-side JS beyond htmx.min.js, the dashboard's
-small inline ticker, and the policy editor's own "check/clear a whole day"
+HTML fragments/pages -- no client-side JS beyond `_base.html`'s small
+form/poll helper, the dashboard's inline ticker, and the policy editor's
+own "check/clear a whole day"
 convenience buttons.
 
 Every route here (and every /api/v1/* parent route) requires an
@@ -808,8 +808,8 @@ async def update_policy_ui(
 # a device (which weekdays are chore-gated, the accounting mode). A separate
 # page with its own single save button, deliberately not a second card on
 # the policy editor -- that page has exactly one Save, and a second one
-# would reintroduce the tab-scoped-Apply confusion this project's own
-# `timekpra` prior-art review called out (CHECKLIST.md).
+# would reintroduce the tab-scoped-Apply confusion that makes `timekpra`'s
+# own settings window easy to get wrong.
 # --------------------------------------------------------------------------
 
 
@@ -914,8 +914,7 @@ async def devices_fragment(request: Request, session: AsyncSession = Depends(get
             seen_label, stale = "never synced", True
         else:
             age_s = (now - d.last_seen_at).total_seconds()
-            # "Stale" at 3x the poll interval (docs/best-practices-review.md
-            # / Phase 3 "hub device health") -- a couple of missed ticks is
+            # "Stale" at 3x the poll interval -- a couple of missed ticks is
             # normal jitter, three in a row means the device is actually
             # unreachable, asleep, or the agent has stopped.
             stale = age_s > 3 * (settings.default_next_poll_ms / 1000)
@@ -991,8 +990,8 @@ async def revoke_device_ui(
 async def set_device_observe_mode_ui(
     request: Request, device_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    """Dry-run mode (PLAN "Layer 7 -- household safety net"): the agent
-    keeps syncing but never writes to DBUS -- see api/parent.py's
+    """Dry-run mode: the agent keeps syncing but never writes to DBUS --
+    see api/parent.py's
     `set_device_observe_mode` for the JSON-API twin this wraps."""
     result = await session.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
@@ -1054,9 +1053,8 @@ async def create_enrollment_code_ui(
     from timekpr_hub.api.parent import create_enrollment_code
 
     result = await create_enrollment_code(session)
-    # The real flag is --hub-url (not --hub) -- previously wrong here
-    # (docs/best-practices-review.md), which meant copy-pasting this line
-    # straight into a terminal failed. Built from the request's own
+    # The real flag is --hub-url (not --hub), so this line can be
+    # copy-pasted straight into a terminal. Built from the request's own
     # host:port so it works for a LAN hostname or Tailscale address too, not
     # just whatever URL happened to be typed into a README example.
     command = f"sudo timekpr-hub-agent enroll --hub-url {request.base_url} --code {result['code']}"

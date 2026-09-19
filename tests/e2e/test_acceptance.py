@@ -1,6 +1,6 @@
-"""The three PLAN "Phase 1 acceptance test" scenarios (CHECKLIST.md), never
-run against real components until now -- see tests/e2e/harness.py's module
-docstring for why that mattered. Each scenario here drives the real agent
+"""The three acceptance scenarios, driven against real components -- see
+tests/e2e/harness.py's module docstring for why that matters. Each drives
+the real agent
 tick loop (`timekpr_hub_agent.main.run_tick`), the real convergence math
 (`timekpr_hub_core.convergence.plan`), a real hub over real HTTP (uvicorn),
 and real Postgres, with FakeTimekprDaemon standing in only for the local
@@ -43,7 +43,7 @@ def _setup_two_devices(
 ) -> tuple[SimulatedDevice, SimulatedDevice]:
     """Enroll two devices for the same brand-new hub user via the real
     /enroll endpoint -- the hub seeds a 1h/day default policy (no
-    local_policies reported), matching PLAN's "user with 1h limit"."""
+    local_policies reported)."""
     daemon_a = FakeTimekprDaemon(limit_today_s=ONE_HOUR)
     daemon_b = FakeTimekprDaemon(limit_today_s=ONE_HOUR)
 
@@ -77,7 +77,7 @@ def _burn_minutes(
 
 
 def test_sequential_two_device_handoff(live_hub, tmp_path):
-    """PLAN acceptance #1: two devices, user with 1h limit; burn 40min on A,
+    """Two devices, user with 1h limit; burn 40min on A,
     log into B, confirm ~20min left within one sync interval."""
     clock = VirtualClock.starting_at()
     _device_a, device_b = _setup_two_devices(live_hub, tmp_path, clock)
@@ -92,8 +92,8 @@ def test_sequential_two_device_handoff(live_hub, tmp_path):
 
 
 def test_both_devices_lock_at_the_shared_limit(live_hub, tmp_path):
-    """PLAN acceptance #2: burn the remaining 20min on B, confirm both lock,
-    and the pool's total consumption stays within the PLAN overshoot bound
+    """Burn the remaining 20min on B, confirm both lock, and the pool's
+    total consumption stays within the overshoot bound
     (D*N + TK_POLLTIME(3s) + TIMEKPR_TERMINATION_TIME(15s), D=2 devices,
     N=10s interval -- the same bound tests/integration/
     test_multi_device_simulation.py already checks in its own SimHub-based
@@ -135,7 +135,7 @@ def test_both_devices_lock_at_the_shared_limit(live_hub, tmp_path):
 
 
 def test_wallclock_accounting_counts_overlapping_use_once(live_hub, tmp_path):
-    """PLAN acceptance #3: both devices active simultaneously for 30min,
+    """Both devices active simultaneously for 30min,
     confirm ~30min consumed pool-wide, not 60 -- this is the one scenario
     that drives real overlapping activity_intervals through the real agent
     and the real `range_agg` union (hub/timekpr_hub/services/aggregate.py),

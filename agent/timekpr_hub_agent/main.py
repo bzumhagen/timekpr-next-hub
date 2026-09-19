@@ -1,10 +1,8 @@
 """Agent entry point: the tick loop.
 
-PLAN reference: "Each agent tick" (full pseudocode) and "Offline / hub-
-unreachable" for the degraded-mode handling. Deliberately a plain
-`while True` on `time.monotonic()` -- no GLib main loop needed (PLAN
-"Repo layout and stack": call `initTimekprConnection(pTryOnce=True)` so
-there's nothing to share a loop with).
+Deliberately a plain `while True` on `time.monotonic()` -- no GLib main
+loop needed, since `initTimekprConnection(pTryOnce=True)` leaves nothing to
+share a loop with.
 """
 
 from __future__ import annotations
@@ -60,7 +58,7 @@ AGENT_VERSION = "0.1.0"
 MACHINE_ID_PATHS = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
 SERVICE_UNIT = "timekpr-hub-agent.service"
 
-# PLAN "Offline / hub-unreachable behavior" defaults.
+# Offline / hub-unreachable defaults.
 DEFAULT_OFFLINE_GRACE_S = 900
 DEFAULT_OFFLINE_CAP_S = 1800
 
@@ -83,8 +81,7 @@ def _canonical_day_str(dt: datetime, tz_name: str) -> str:
     A wrong guess here only matters for the single tick straddling the
     actual boundary -- the very next sync corrects `AgentState.hub_tz` from
     the hub's authoritative answer, and this function is re-evaluated fresh
-    every tick. See docs/best-practices-review.md "agent computes its
-    canonical day/rollover in UTC, not HUB_TZ" (this fixes that gap).
+    every tick.
     """
     try:
         tz = ZoneInfo(tz_name) if tz_name else ZoneInfo("UTC")
@@ -106,7 +103,7 @@ def run_tick(
 ) -> int:
     """One full tick across every managed user. Returns the next poll delay
     in milliseconds (hub-provided when reachable, a local fallback
-    otherwise -- PLAN "Overshoot bound and sync interval").
+    otherwise).
 
     `now`/`debug_clock` exist only for tests/e2e's compressed-time simulation
     (tests/e2e/harness.py) -- `now` is honored ONLY when `debug_clock=True`,
@@ -140,15 +137,14 @@ def run_tick(
             # First tick ever for this user on this device (fresh enrollment,
             # or a state.json that predates this user being managed): credit
             # whatever timekpr already shows as spent today, rather than
-            # silently forgiving it. See docs/best-practices-review.md /
-            # Phase 5f -- pre-enrollment usage used to vanish because the
-            # baseline was unconditionally 0.
+            # silently forgiving it -- an unconditionally-0 baseline would
+            # make pre-enrollment usage vanish.
             cum_state = CumulativeState(cum_local_s=obs.spent_day_s, raw_prev_s=obs.spent_day_s)
             user_state.day = today_str
             force_absolute = True
             cum_local_before = 0
         elif user_state.day != today_str:
-            # Canonical day rollover (PLAN "Canonical rollover"): baseline at
+            # Canonical day rollover: baseline at
             # whatever the device currently shows, whatever its own local
             # clock/rollover state is.
             cum_state = reset_for_new_canonical_day(obs.spent_day_s)
@@ -231,7 +227,7 @@ def run_tick(
             {
                 "agent_time": now.isoformat(),
                 "tz": tz_name,
-                "ntp_synced": True,  # PLAN: real NTP check is Phase 2
+                "ntp_synced": True,  # no real NTP check yet
                 "agent_version": agent_version,
                 "users": sync_users,
             }
@@ -347,7 +343,7 @@ def run_tick(
                 username=username,
                 obs=obs,
                 user_state=user_state,
-                offline_policy="capped",  # PLAN default; per-user override is hub-side (Phase 2 wiring)
+                offline_policy="capped",  # a per-user override would be hub-side; not wired yet
                 offline_grace_s=DEFAULT_OFFLINE_GRACE_S,
                 offline_cap_s=DEFAULT_OFFLINE_CAP_S,
                 now=now,
@@ -521,20 +517,19 @@ def _apply_playtime(
 def _apply_offline_policy(
     *, enforcer, username, obs, user_state, offline_policy, offline_grace_s, offline_cap_s, now
 ) -> None:
-    """PLAN "Offline / hub-unreachable behavior" table -- for a device that
-    can't currently be *verified* against the pool, not one an admin has
-    actually removed (DeviceRevokedError above no longer routes here at
-    all -- a revoked/deleted device relinquishes control instead). Only
-    `capped` has a caller today (HubUnreachableError, `run_tick`); `closed`
-    has none yet -- kept for the "per-user override is hub-side" offline
-    policy this PLAN table describes as Phase 2 work, not dead code left
-    over by accident.
+    """Degraded-mode handling for a device that can't currently be
+    *verified* against the pool -- not one an admin has actually removed
+    (DeviceRevokedError doesn't route here at all; a revoked/deleted device
+    relinquishes control instead). Only `capped` has a caller today
+    (HubUnreachableError, `run_tick`); `closed` has none yet, and is kept
+    for a future hub-side per-user override rather than being dead code
+    left over by accident.
 
     Uses wall-clock time (epoch seconds), never time.monotonic(): monotonic's
     epoch is arbitrary and resets on reboot, which used to make
     seconds_since_contact deeply negative after a restart -- in_grace read
     True forever and the agent silently stayed unenforced while genuinely
-    offline (docs/best-practices-review.md). A negative or implausibly large
+    offline. A negative or implausibly large
     elapsed time here is treated as grace already expired, erring toward
     `capped`/`closed`, never toward silently staying `open`.
     """
@@ -640,8 +635,8 @@ def _prompt_or_die(value: str | None, *, label: str, flag: str) -> str:
 
 def _validate_users(enforcer: TimekprEnforcer, requested: list[str]) -> list[str]:
     """Reject usernames timekpr doesn't know about, instead of silently
-    skipping them tick after tick (docs/best-practices-review.md /
-    Phase 2). Best-effort: if the user list can't be read at all (e.g.
+    skipping them tick after tick. Best-effort: if the user list can't be
+    read at all (e.g.
     timekprd not reachable right now), fall back to trusting the caller
     rather than blocking enrollment on a transient DBUS hiccup."""
     known = enforcer.get_user_list()
@@ -841,8 +836,7 @@ def _check(label: str, ok: bool, detail: str = "") -> bool:
 def _cmd_status(args: argparse.Namespace) -> None:
     """`timekpr-hub-agent status`: one line per check, so a parent (or this
     agent's own `run` at startup) can see exactly which link in the chain
-    is broken instead of a bare "it's not working" (docs/best-practices-
-    review.md / Phase 3)."""
+    is broken instead of a bare "it's not working"."""
     all_ok = True
 
     try:

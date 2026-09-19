@@ -213,9 +213,9 @@ def test_sync_reloads_a_rotated_token_and_retries_instead_of_treating_it_as_revo
     __init__ -- but a re-enroll on the same machine rewrites the token
     file on disk out from under it. Previously every subsequent /sync 401'd
     forever (indistinguishable from a genuine revoke) until something
-    restarted the service (docs/best-practices-review.md-style live
-    finding: `status`, a fresh process, succeeded while the long-running
-    `run` service kept getting rejected on the very same tick). `sync` now
+    restarted the service -- observed live, where `status` (a fresh
+    process) succeeded while the long-running `run` service kept getting
+    rejected on the very same tick. `sync` now
     notices the on-disk token differs from what it's holding and retries
     once with the fresh one before giving up."""
     _, handler = server

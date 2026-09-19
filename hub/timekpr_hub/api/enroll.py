@@ -1,4 +1,4 @@
-"""POST /enroll -- PLAN "API": device enrollment via a one-time code.
+"""POST /enroll -- device enrollment via a one-time code.
 
 No device auth on this endpoint (there's no token yet); the enrollment code
 itself is the credential, single-use and short-lived.
@@ -39,8 +39,8 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
     # Atomically claim the code (used_at IS NULL AND not expired, in the
     # same UPDATE) rather than a plain SELECT followed by a later UPDATE --
     # two concurrent enrolls with the same code could otherwise both pass
-    # the used_at is None check before either commits
-    # (docs/best-practices-review.md). Zero rows back means unknown/used/
+    # the used_at is None check before either commits.
+    # Zero rows back means unknown/used/
     # expired; a follow-up SELECT (safe now -- nothing left to race) picks
     # which for the error.
     claim = await session.execute(
@@ -105,12 +105,10 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
             token_hash=_hash_token(raw_token),
             token_prefix=raw_token[:12],
             # A parent-minted enrollment code is itself the approval -- there's
-            # no separate authentication on either endpoint yet for a second
-            # "approve" step to actually gate anything (docs/best-practices-
-            # review.md), and it becomes properly meaningful once parent auth
-            # lands: minting a code will require being logged in. The old
-            # 'pending' default meant a brand-new device could already sync
-            # (auth.py only rejected 'revoked'), so this also removes a step
+            # no separate authentication on either endpoint for a second
+            # "approve" step to actually gate anything. A 'pending' default
+            # would mean a brand-new device could already sync anyway
+            # (auth.py only rejects 'revoked'), so this also removes a step
             # that added friction without adding security. `approve_device`
             # (parent.py) and the UI button are kept for any device enrolled
             # before this change, or a future opt-in "require approval" mode.
@@ -128,7 +126,7 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
     policies: dict[str, object] = {}
 
     # Provision or merge into an existing canonical user per reported local
-    # username (PLAN "Enrollment"): a fresh username gets a new User row, a
+    # username: a fresh username gets a new User row, a
     # username matching one already known to the hub (e.g. this account also
     # exists on another device) just gets a new alias pointing at it.
     for local_username in req.local_users:
@@ -150,7 +148,7 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
         if is_new:
             new_users.append(local_username)
             # Seed the initial policy from this device's own configured
-            # limits when it reported one (Phase 5a), rather than always
+            # limits when it reported one, rather than always
             # falling back to the hub's 1h/day placeholder -- a brand-new
             # user whose only device already has, say, a 2h/day limit
             # configured shouldn't suddenly show 1h/day in the hub UI.

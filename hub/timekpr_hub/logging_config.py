@@ -1,9 +1,9 @@
 """App-level logging setup.
 
-Nothing configured the "timekpr_hub" logger at all until now
-(docs/best-practices-review.md): `logging.getLogger("timekpr_hub")` calls
-throughout the codebase (app.py's unclaimed-hub warning, main.py's tick
-logging, etc.) relied on Python's defaults -- level WARNING, and only
+Without this, nothing configures the "timekpr_hub" logger at all:
+`logging.getLogger("timekpr_hub")` calls throughout the codebase (app.py's
+unclaimed-hub warning, main.py's tick logging, etc.) would fall back to
+Python's defaults -- level WARNING, and only
 reaching stderr at all via the standard library's unformatted "last resort"
 handler (no timestamp, no logger name), with every `log.debug`/`log.info`
 call silently dropped. Called once, at import time, by app.py.

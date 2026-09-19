@@ -1,8 +1,7 @@
 """Canonical calendar boundaries.
 
-PLAN reference: "Rollover, clocks, and week/month" — one household timezone
-lives on the hub; the hub is the only thing that computes dates, and it must
-match timekpr's own boundary rules exactly:
+One household timezone lives on the hub; the hub is the only thing that
+computes dates, and it must match timekpr's own boundary rules exactly:
 
   * day   = local calendar date in the canonical timezone
   * week  = ISO week, Monday start (matches timekpr's own

@@ -1,11 +1,10 @@
 """HTTP client for talking to the hub.
 
-PLAN reference: "API" and "Auth and threat model". Built on `urllib.request`
-rather than a third-party HTTP library: the agent only ever makes simple
-JSON POSTs (no streaming, no connection pooling, no async), and stdlib-only
-means the agent has zero non-stdlib dependencies of its own beyond
-timekpr-next itself (CHECKLIST.md "Multi-distro support") -- one less thing
-every future distro's packaging has to provide. No async needed either way,
+Built on `urllib.request` rather than a third-party HTTP library: the agent
+only ever makes simple JSON POSTs (no streaming, no connection pooling, no
+async), and stdlib-only means the agent has zero non-stdlib dependencies of
+its own beyond timekpr-next itself -- one less thing every distro's
+packaging has to provide. No async needed either way,
 since the agent has no GLib/asyncio loop to share time with.
 """
 
@@ -28,7 +27,7 @@ class HubUnreachableError(RuntimeError):
 
 
 class DeviceRevokedError(RuntimeError):
-    """Raised on 401/403 -- PLAN pitfall: 'Never fail open on an auth error.'"""
+    """Raised on 401/403 -- never fail open on an auth error."""
 
 
 class EnrollError(RuntimeError):
@@ -41,7 +40,7 @@ class EnrollError(RuntimeError):
 class HubClientConfig:
     base_url: str
     token_path: Path = DEFAULT_TOKEN_PATH
-    ca_cert: str | None = None  # PLAN: "--ca-cert" for self-signed deployments
+    ca_cert: str | None = None  # --ca-cert, for self-signed deployments
 
 
 class HubClient:
@@ -160,7 +159,7 @@ class HubClient:
         return data
 
     def sync(self, payload: dict) -> dict:
-        """POST /sync. Raises DeviceRevokedError on 401/403 (PLAN: agent must
+        """POST /sync. Raises DeviceRevokedError on 401/403 (the agent must
         treat this as immediate `closed` enforcement, never fail open) and
         HubUnreachableError on any network-level failure or 5xx (agent's
         offline-grace/cap/closed logic takes over)."""

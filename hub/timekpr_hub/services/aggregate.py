@@ -1,10 +1,9 @@
 """Hub-side aggregation: the MAX-merge of usage_counters and the wall-clock
 union of activity_intervals.
 
-PLAN reference: "Idempotency: report absolute counters, never deltas" and
-"Wall-clock union (the 'burn once' requirement)". Both queries below were
-validated directly against a real Postgres 16 instance during
-implementation (see CHECKLIST.md Phase 1 notes) before being wrapped here.
+Agents report absolute counters, never deltas, so a replayed or duplicated
+report is idempotent; the wall-clock union is what makes concurrent
+activity on two devices burn budget once.
 """
 
 from __future__ import annotations
@@ -66,7 +65,7 @@ async def insert_activity_interval(
     window_end_ts: datetime,
 ) -> None:
     """Idempotent on (device_id, window_end_ts) -- a retried /sync POST for
-    the same tick is a no-op, per PLAN's idempotency requirement."""
+    the same tick is a no-op."""
     stmt = pg_insert(ActivityInterval).values(
         id=uuid.uuid4(),
         user_id=user_id,
@@ -83,9 +82,8 @@ async def insert_activity_interval(
 
 async def global_spent_wallclock(session: AsyncSession, *, user_id: uuid.UUID, day: date) -> int:
     """Wall-clock union of all devices' activity for (user, day) -- the
-    'burn once' accounting mode. Validated against real Postgres 16 with an
-    overlapping two-device scenario (30min + 30min overlapping by 15min ->
-    45min, not 60min) during Phase 1 implementation.
+    'burn once' accounting mode: two devices active 30min each, overlapping
+    by 15min, consume 45min of budget, not 60.
 
     Floored at MAX(usage_counters.spent_seconds) across devices: that
     absolute, idempotently MAX-merged counter is a hard lower bound on the
@@ -127,8 +125,8 @@ async def global_spent_wallclock_batch(
     session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
 ) -> dict[uuid.UUID, int]:
     """`global_spent_wallclock` for every user in `user_ids` in one
-    round-trip instead of one query per user (docs/best-practices-review.md's
-    N+1 finding, used by services/summaries.py) -- same GREATEST(wall-clock
+    round-trip instead of one query per user (used by
+    services/summaries.py) -- same GREATEST(wall-clock
     union, MAX-merged counter) formula as the single-user version above,
     grouped by user_id. A user with neither an activity_intervals row nor a
     usage_counters row today is simply absent from the result; callers
@@ -172,7 +170,7 @@ async def global_spent_parallel_batch(
     session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
 ) -> dict[uuid.UUID, int]:
     """`global_spent_parallel` for every user in `user_ids` in one
-    round-trip (docs/best-practices-review.md's N+1 finding). A user with no
+    round-trip instead of one query per user. A user with no
     usage_counters row today is simply absent; callers should default to 0."""
     if not user_ids:
         return {}
@@ -191,7 +189,7 @@ async def latest_activity_states_batch(
     session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
 ) -> dict[uuid.UUID, tuple[str, datetime]]:
     """`latest_activity_state` for every user in `user_ids` in one
-    round-trip (docs/best-practices-review.md's N+1 finding). A user with no
+    round-trip instead of one query per user. A user with no
     reported activity_state today is simply absent; callers should default
     to `("logged_out", None)`, same as the single-user version."""
     if not user_ids:

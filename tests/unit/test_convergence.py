@@ -1,5 +1,5 @@
-"""Layer 1 verification (PLAN "Verification"): property tests on the pure
-convergence controller, plus a small model of timekpr's own balance
+"""Property tests on the pure convergence controller, plus a small model
+of timekpr's own balance
 arithmetic to check the *effect* of applying a Plan, not just the Plan
 itself.
 """
@@ -25,8 +25,8 @@ CFG = ConvergenceConfig()
 
 
 # ---------------------------------------------------------------------------
-# A tiny model of timekpr's own setTimeLeft semantics, verified against the
-# real daemon in docs/phase0-findings.md and server/config/configprocessor.py.
+# A tiny model of timekpr's own setTimeLeft semantics, verified against a
+# real daemon and against server/config/configprocessor.py.
 # Used here to check the *effect* of a Plan, not just the Plan's shape.
 # ---------------------------------------------------------------------------
 
@@ -63,8 +63,8 @@ offsets = st.integers(min_value=-86400, max_value=86400)
 def test_plan_converges_time_left_to_hub_effective_limit_even_when_device_limit_differs(
     balance_s, spent_local_s, global_spent_s, device_limit_s, hub_limit_s, applied_offset_s
 ):
-    """Phase 5c: generalizes `test_plan_converges_when_balance_within_limit`
-    to the case where the device's own configured limit (`device_limit_s`,
+    """Generalizes `test_plan_converges_when_balance_within_limit` to the
+    case where the device's own configured limit (`device_limit_s`,
     before a policy push has landed, or after a hub-side grant that never
     gets pushed as a local limit change) doesn't match the hub's effective
     limit (`hub_limit_s`, policy + grants). What must converge is TIME LEFT
@@ -109,8 +109,7 @@ def test_plan_converges_when_balance_within_limit(
     `B + correction == G`, and an absolute op sets `B := limit - (limit - G)
     == G` directly. The difference between the two is NOT the resulting
     balance -- it's whether spent_local (the measurement) is left alone
-    ('+'/'-') or put at risk of the '=' regression (see PLAN "⚠ The '='
-    regression trap").
+    ('+'/'-') or put at risk of the '=' regression trap.
     """
     obs = Observation(balance_s=balance_s, spent_local_s=spent_local_s, limit_today_s=limit_today_s)
     target = HubTarget(limit_today_s=limit_today_s, global_spent_s=global_spent_s)
@@ -244,8 +243,8 @@ def test_suppressed_device_is_driven_to_the_limit():
 
 def test_overspent_balance_uses_absolute_reset_not_clamped_relative_op():
     """If B already exceeds the limit, a '-'/'+' write would clamp via
-    min(balance, limit) and silently erase the overspend (PLAN pitfall #6).
-    plan() must choose '=' in this case."""
+    min(balance, limit) and silently erase the overspend. plan() must
+    choose '=' in this case."""
     obs = Observation(balance_s=5000, spent_local_s=1000, limit_today_s=3600)
     target = HubTarget(limit_today_s=3600, global_spent_s=1000)
 
@@ -265,9 +264,8 @@ def test_absolute_write_uses_device_limit_not_hub_target_limit():
     `observed.limit_today_s` (the device's actual configured limit) in the
     `seconds` computation was exactly this bug.
 
-    Phase 5c superseded the original invariant here ("BALANCE lands on
-    plain G") with a more general one that also covers a mismatched limit
-    correctly: TIME LEFT (the only thing that actually matters -- what
+    The invariant is stated in terms of time left rather than balance, so
+    that it also covers a mismatched limit correctly: TIME LEFT (the only thing that actually matters -- what
     timekpr enforces and what the child sees) must land on
     `target.limit_today_s - target.global_spent_s`, the hub's *effective*
     limit minus its global spent total, regardless of what the device's own
@@ -299,8 +297,8 @@ def test_advance_cumulative_normal_progress():
 
 def test_advance_cumulative_absorbs_small_regression_from_equals_op():
     """A drop of <= regression_tolerance_s must be silently absorbed (credit
-    nothing), per the '=' op's flush-discard artifact confirmed in
-    docs/phase0-findings.md."""
+    nothing), per the '=' op's flush-discard artifact confirmed against a
+    real daemon."""
     state = CumulativeState(cum_local_s=1000, raw_prev_s=600)
     state = advance_cumulative(state, 580, CFG)  # dropped by 20s -- within 90s tolerance
     assert state.cum_local_s == 1000  # unchanged, not decreased and not double-counted

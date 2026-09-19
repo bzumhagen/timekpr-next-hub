@@ -1,15 +1,13 @@
 """The convergence controller.
 
-PLAN reference: "The core mechanism" and "⚠ The '=' regression trap".
+This module is pure and IO-free by design: it takes a snapshot of what the
+agent observed and what the hub reported, and returns a `Plan` describing
+the single DBUS write (if any) the agent should make. Nothing here touches
+DBUS, the network, or the clock — the caller supplies every value, which is
+what makes this testable with Hypothesis in milliseconds and unambiguous to
+reason about.
 
-This module is pure and IO-free by design (PLAN "Verification", Layer 1): it
-takes a snapshot of what the agent observed and what the hub reported, and
-returns a `Plan` describing the single DBUS write (if any) the agent should
-make. Nothing here touches DBUS, the network, or the clock — the caller
-supplies every value, which is what makes this testable with Hypothesis in
-milliseconds and unambiguous to reason about.
-
-Core invariant (verified against the real daemon, see docs/phase0-findings.md):
+Core invariant, verified against a real `timekprd`:
 
     setTimeLeft(user, '-', secs) / ('+', secs)
         -> moves TIME_SPENT_BALANCE only, never TIME_SPENT_DAY/WEEK/MONTH.
@@ -18,7 +16,7 @@ Core invariant (verified against the real daemon, see docs/phase0-findings.md):
            TK_SAVE_INTERVAL (30s) of not-yet-flushed TIME_SPENT_DAY, because
            it triggers pPreserveSpent=False on the daemon side.
 
-Definitions (see PLAN for the full derivation):
+Definitions:
 
     L  = effective daily limit today (policy + grants + carryover)
     s  = local TIME_SPENT_DAY (measurement; the agent never writes this)
@@ -102,13 +100,14 @@ class Observation:
     locally today). This is NOT necessarily the same value as the hub's
     intended policy limit (`HubTarget.limit_today_s`) -- they only agree
     once the hub's policy has actually been pushed down via
-    setTimeLimitForDays. Using the wrong one here is a real bug that was
-    only caught by live dogfooding against a real daemon, not by any test:
+    setTimeLimitForDays. Using the wrong one here is a real bug, and one no
+    synthetic test catches, because the fake daemon and the real one only
+    diverge on it when the two limits differ:
     the real `setTimeLeft(user, '=', secs)` computes
     `BALANCE := DEVICE'S OWN configured limit - secs`, so any '=' write's
-    `secs` argument, and any clamp-avoidance check gating a '='
-    (PLAN pitfall #6), must be computed against *this* value, never against
-    what the hub believes the limit to be -- see `plan()`'s use below."""
+    `secs` argument, and any clamp-avoidance check gating a '=', must be
+    computed against *this* value, never against what the hub believes the
+    limit to be -- see `plan()`'s use below."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,9 +118,8 @@ class HubTarget:
     """L_eff: the hub's effective daily limit for this user (policy + grants).
     Not necessarily equal to `Observation.limit_today_s` (the device's own
     currently-configured limit, L_dev) -- they only agree once a policy push
-    has landed on this device via setTimeLimitForDays. Before that (every
-    device in Phase 1, since policy push wasn't wired up yet) or after a
-    hub-side grant (which never gets pushed as a limit change), L_eff and
+    has landed on this device via setTimeLimitForDays. Before that, or after
+    a hub-side grant (which never gets pushed as a limit change), L_eff and
     L_dev can differ, and the target below is built to converge correctly
     either way -- see `plan()`."""
 
@@ -129,8 +127,8 @@ class HubTarget:
     """G: the hub's canonical total spent today for this user, across all devices."""
 
     suppressed: bool = False
-    """One-active-device-at-a-time loser (PLAN §"Bonus features", phase 4) — drive
-    this device's balance to the limit regardless of the arithmetic below."""
+    """One-active-device-at-a-time loser — drive this device's balance to the
+    limit regardless of the arithmetic below."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +142,7 @@ class Plan:
     tick's unexplained-offset (local grant) detection. This is deliberately
     `observed_offset + actually_applied_correction`, never the target `R` —
     using the target would make the un-applied deadband residue look like a
-    phantom local grant on every subsequent tick (see PLAN pitfall #2)."""
+    phantom local grant on every subsequent tick."""
 
     local_grant_s: int
     """Positive: a parent appears to have granted time locally via timekpra
@@ -165,11 +163,10 @@ def plan(
     """Decide the single DBUS write (if any) to make this tick.
 
     ``applied_offset_s`` is the agent's own memory of the offset (B - s) it
-    last established, carried in its persisted state file (PLAN
-    "Offline / hub-unreachable").
+    last established, carried in its persisted state file.
 
     ``force_absolute`` should be True exactly once, on the tick where the
-    agent detects a canonical-day rollover (PLAN "Canonical rollover") — it
+    agent detects a canonical-day rollover — it
     forces an authoritative '=' write instead of a relative nudge, because a
     relative nudge from a stale offset would carry yesterday's state into the
     new day.
@@ -212,7 +209,7 @@ def plan(
     needs_absolute = (
         force_absolute
         # The clamp this guards against -- min(BALANCE, limit) in '+'/'-'
-        # (PLAN pitfall #6) -- is applied by the REAL daemon against the
+        # -- is applied by the REAL daemon against the
         # DEVICE's own configured limit, not the hub's target, so that's
         # what this comparison must use too.
         or observed.balance_s > observed.limit_today_s
@@ -223,10 +220,10 @@ def plan(
         # setTimeLeft(user, '=', secs) => BALANCE := DEVICE'S limit - secs.
         # We want BALANCE == target_balance == G + L_dev - L_eff, so
         #   secs := L_dev - target_balance = L_eff - G.
-        # Note this is independent of L_dev, and looks identical to the
-        # very bug fixed in docs/agent-live-test-findings.md (using
-        # target.limit_today_s where observed.limit_today_s was needed) --
-        # it isn't the same bug, because the *target* changed to compensate
+        # Note this is independent of L_dev, and looks identical to a real
+        # bug this once had (using target.limit_today_s where
+        # observed.limit_today_s was needed) -- it isn't the same bug,
+        # because the *target* changed to compensate
         # (see target_balance above): BALANCE still lands on
         # G + L_dev - L_eff exactly, so time left is still L_eff - G. When
         # L_dev == L_eff this reduces to the original `L_dev - G` formula.
@@ -281,7 +278,7 @@ class CumulativeState:
 
     Kept separate from timekpr's own TIME_SPENT_DAY/WEEK/MONTH because those
     reset on timekpr's own (possibly stale) local-clock day boundary, not the
-    hub's canonical one (PLAN "Canonical rollover").
+    hub's canonical one.
     """
 
     cum_local_s: int = 0
@@ -295,9 +292,9 @@ def advance_cumulative(
 ) -> CumulativeState:
     """Advance the cumulative counter by the genuine local delta this tick.
 
-    Handles the '=' regression trap (PLAN "⚠ The '=' regression trap",
-    confirmed empirically in docs/phase0-findings.md §2): a `'='` write can
-    make the observed local-spent value jump *backwards* by up to ~30s as an
+    Handles the '=' regression trap, confirmed empirically against a real
+    daemon: a `'='` write can make the observed local-spent value jump
+    *backwards* by up to ~30s as an
     artifact of the daemon reloading unflushed state from disk. A naive
     "went backwards => day rolled over => credit everything" rule would then
     double-count the whole day. Disambiguate by magnitude: a genuine local
@@ -321,7 +318,7 @@ def advance_cumulative(
 
 
 def reset_for_new_canonical_day(observed_spent_local_s: int) -> CumulativeState:
-    """Call when the hub's canonical `day` advances (PLAN "Canonical rollover").
+    """Call when the hub's canonical `day` advances.
 
     Baselines at the *current* observed value, whatever it is — correct
     whether or not the device's own local midnight has passed yet.

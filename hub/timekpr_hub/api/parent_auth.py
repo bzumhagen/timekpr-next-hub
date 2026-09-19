@@ -1,10 +1,8 @@
 """Parent-facing login/logout/first-run-setup, and the two dependencies that
 gate every other parent/UI route.
 
-PLAN: "Parent auth" -- until this landed, every route in `api/parent.py` and
-`api/ui.py` was reachable by anyone who could reach the hub at all (the one
-open HIGH finding in docs/best-practices-review.md, which blocked pointing
-`deploy/Caddyfile`'s HUB_DOMAIN at a real public domain). First account is
+Without this, every route in `api/parent.py` and `api/ui.py` would be
+reachable by anyone who could reach the hub at all. The first account is
 created via a first-run `/setup` page rather than a CLI command or an env
 var: `/setup` 404s once a parent exists, so the window during which an
 unclaimed hub is reachable is exactly "before the first parent visits it and

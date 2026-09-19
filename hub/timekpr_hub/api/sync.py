@@ -1,4 +1,4 @@
-"""POST /sync -- PLAN "API": the workhorse endpoint.
+"""POST /sync -- the workhorse endpoint.
 
 One call covers every managed user on a device. For each user, the hub:
   1. records the wall-clock activity span and the absolute cumulative
@@ -11,8 +11,8 @@ One call covers every managed user on a device. For each user, the hub:
      write back to the local timekpr daemon.
 
 The hub does NOT run the convergence algorithm itself -- that stays on the
-agent, next to the DBUS call it drives (PLAN: "The agent is deliberately
-dumb: measure -> report -> receive a target -> nudge the balance").
+agent, next to the DBUS call it drives. The agent is deliberately dumb:
+measure -> report -> receive a target -> nudge the balance.
 """
 
 from __future__ import annotations
@@ -115,8 +115,7 @@ async def sync(
             if end <= start:
                 # Malformed/zero-width span (clock oddity, bad buffering) --
                 # skip rather than let tstzrange or the union computation
-                # choke on it (docs/best-practices-review.md: unvalidated
-                # input can 500).
+                # choke on it -- unvalidated input here can 500.
                 continue
             await insert_activity_interval(
                 session,
@@ -141,9 +140,9 @@ async def sync(
 
         # 3. effective limits
         limit_today = await effective_daily_limit(session, policy=policy, user=user, day=stamp.day)
-        # Week/month pooling is Phase 3 (PLAN milestone breakdown) -- for now
-        # the agent gets the raw policy ceilings, which is a strict superset
-        # (never MORE restrictive than intended) of the eventual behavior.
+        # Week/month pooling isn't built yet -- for now the agent gets the
+        # raw policy ceilings, which is a strict superset (never MORE
+        # restrictive than intended) of the eventual behavior.
         week_limit = policy.weekly_limit_s
         month_limit = policy.monthly_limit_s
 
@@ -181,7 +180,7 @@ async def sync(
                 effective_week_limit_s=week_limit,
                 effective_month_limit_s=month_limit,
                 enforcement=enforcement,
-                suppressed=False,  # one-active-device-at-a-time is Phase 4
+                suppressed=False,  # one-active-device-at-a-time isn't built yet
                 policy_version=policy.version,
                 policy_revision=revision,
                 policy=policy_payload,

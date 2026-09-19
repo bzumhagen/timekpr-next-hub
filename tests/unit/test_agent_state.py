@@ -1,8 +1,6 @@
-"""Phase 1 "reboot survival" regression tests for agent state persistence.
-
-PLAN reference: docs/best-practices-review.md's "agent's offline grace
-timer uses time.monotonic()" finding, and the unknown-key crash-loop risk
-it also names.
+"""Reboot-survival regression tests for agent state persistence: the
+offline-grace timer must not use `time.monotonic()`, and an unknown key in
+state.json must not crash-loop the agent.
 """
 
 from __future__ import annotations

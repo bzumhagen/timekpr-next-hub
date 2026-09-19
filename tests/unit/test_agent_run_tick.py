@@ -1,6 +1,7 @@
-"""run_tick-level regression tests for Phase 5e/5f and observe-mode handling,
-using FakeTimekprDaemon (already validated against the real daemon -- see
-fake_timekpr.py's module docstring) behind a minimal fake enforcer, and a
+"""run_tick-level regression tests for offline convergence, a device's
+first tick for a user, and observe-mode handling, using FakeTimekprDaemon
+(already validated against the real daemon -- see fake_timekpr.py's module
+docstring) behind a minimal fake enforcer, and a
 scripted fake hub client instead of a real HubClient. (tests/e2e drives the
 real HubClient/urllib and a real hub against this same run_tick -- see its
 harness.py module docstring for why both are worth having.)
@@ -64,7 +65,7 @@ def _sync_response(
 
 
 def test_pre_enrollment_usage_is_credited_not_forgiven():
-    """Phase 5f: a device's first tick for a user must report whatever
+    """A device's first tick for a user must report whatever
     timekpr already shows as spent today, not reset to 0."""
     daemon = FakeTimekprDaemon(limit_today_s=7200)
     daemon.tick(500, active=True)  # already used 500s before the agent ever ran
@@ -101,8 +102,8 @@ def test_observe_enforcement_never_writes_a_local_limit():
 
 
 def test_offline_capped_policy_never_refunds_local_activity():
-    """Phase 5e: the original bug converged every offline-past-grace tick
-    to the stale last_global_spent_s, refunding whatever the child used
+    """Converging every offline-past-grace tick to the stale
+    last_global_spent_s would refund whatever the child used
     locally since the last hub contact -- an offline device would stop
     counting time at all. The estimate must only ever grow while offline.
 

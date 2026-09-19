@@ -1,8 +1,9 @@
 """Agent persisted state.
 
-PLAN reference: "Offline / hub-unreachable behavior" -- "Agent state
-persisted at /var/lib/timekpr-hub-agent/state.json (atomic write+fsync+rename),
-containing last-known policy, L, R_d, G, applied_offset, cum_local, day."
+Persisted at /var/lib/timekpr-hub-agent/state.json (atomic
+write+fsync+rename), holding the last-known policy, L, R_d, G,
+applied_offset, cum_local and day -- everything the agent needs to keep
+enforcing correctly while the hub is unreachable.
 """
 
 from __future__ import annotations
@@ -36,8 +37,7 @@ class UserState:
     # time.monotonic(): monotonic's epoch is arbitrary and resets on
     # reboot, which used to make "seconds since contact" go deeply negative
     # after a restart -- in_grace would then read True forever and the
-    # agent would silently stay unenforced while genuinely offline. See
-    # docs/best-practices-review.md.
+    # agent would silently stay unenforced while genuinely offline.
     last_effective_limit_today_s: int = 0
     last_global_spent_s: int = 0
     last_hub_contact_utc: float = 0.0
@@ -86,8 +86,7 @@ def load(path: Path = DEFAULT_STATE_PATH) -> AgentState:
     try:
         raw = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
-        # Corrupted state file (PLAN "Verification" Layer 6: chaos-tests a
-        # corrupted state file) -- start fresh rather than crash-looping the
+        # Corrupted state file -- start fresh rather than crash-looping the
         # agent. Worst case this looks like a canonical-day rollover on the
         # next tick, which is a safe (if slightly wasteful) fallback.
         return AgentState()
@@ -126,7 +125,7 @@ def save(state: AgentState, path: Path = DEFAULT_STATE_PATH) -> None:
         # Also fsync the containing directory -- without this, the rename
         # itself can be lost on a power cut even though the file content
         # was durable, on filesystems that don't order directory entry
-        # updates with file writes (PLAN "reboot survival").
+        # updates with file writes.
         dir_fd = os.open(str(path.parent), os.O_RDONLY)
         try:
             os.fsync(dir_fd)

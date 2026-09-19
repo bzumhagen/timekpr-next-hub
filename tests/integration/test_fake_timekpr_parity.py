@@ -1,6 +1,6 @@
-"""Layer 2 verification (PLAN "Verification"): validate FakeTimekprDaemon's
-qualitative behavior against the real daemon, using the exact scenario and
-numbers recorded in docs/phase0-findings.md.
+"""Validate FakeTimekprDaemon's qualitative behavior against the real
+daemon, using the exact scenario and numbers observed against a live
+`timekprd`.
 
 This does not require a running timekprd -- it's a regression test that pins
 the fake model to what was actually observed, so future edits to
@@ -13,7 +13,7 @@ from timekpr_hub_agent.fake_timekpr import FakeTimekprDaemon
 
 
 def test_relative_ops_never_touch_spent_counters():
-    """Mirrors phase0-findings.md §1: '-' 60s then '+' 60s must move BALANCE
+    """'-' 60s then '+' 60s must move BALANCE
     and restore it exactly, while SPENT_DAY/WEEK/MONTH never move."""
     d = FakeTimekprDaemon(limit_today_s=86400)
     d.tick(180, active=True)  # matches observed starting SPENT_DAY=180
@@ -34,7 +34,7 @@ def test_relative_ops_never_touch_spent_counters():
 
 
 def test_equals_op_regression_matches_observed_shape():
-    """Mirrors phase0-findings.md §2: an '=' write after real (unflushed)
+    """An '=' write after real (unflushed)
     activity has accrued causes spent_day to drop back to the last-saved
     value -- the exact mechanism, not just the same order of magnitude.
 

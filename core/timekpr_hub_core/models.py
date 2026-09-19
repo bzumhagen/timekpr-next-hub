@@ -1,10 +1,7 @@
 """Wire types shared by the hub and the agent.
 
-PLAN reference: "API" — "All wire shapes are Pydantic models in a shared
-core/ package imported by both hub and agent, so the contract cannot drift."
-
-These models intentionally mirror the JSON shapes in the plan almost
-verbatim; if you're changing a field name here, update the plan/API docs too.
+Every wire shape is a Pydantic model in this shared package, imported by
+both the hub and the agent, so the contract cannot drift between them.
 """
 
 from __future__ import annotations
@@ -45,7 +42,7 @@ class GrantSource(str, Enum):
 
 class LocalPolicySnapshot(BaseModel):
     """A device's own currently-configured limits for one local user, sent
-    at enroll time (Phase 5a) so a brand-new hub user's policy is seeded
+    at enroll time so a brand-new hub user's policy is seeded
     from what's actually configured on the first device to report it,
     rather than always starting from the hub's 1h/day placeholder default."""
 
@@ -58,9 +55,8 @@ class LocalPolicySnapshot(BaseModel):
 class EnrollRequest(BaseModel):
     # max_length values mirror the column sizes in hub/timekpr_hub/db/models.py
     # (Device.hostname/machine_id/agent_version/tz, UserAlias.local_username)
-    # -- unbounded input here used to reach the DB and 500 as a raw
-    # asyncpg.StringDataRightTruncationError instead of a 422 (docs/best-
-    # practices-review.md).
+    # -- unbounded input here would otherwise reach the DB and 500 as a raw
+    # asyncpg.StringDataRightTruncationError instead of a 422.
     enrollment_code: str = Field(max_length=16)
     hostname: str = Field(max_length=255)
     machine_id: str = Field(max_length=64)
@@ -323,7 +319,7 @@ class EventBatch(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# Parent-facing API (subset needed for Phase 1)
+# Parent-facing API
 # --------------------------------------------------------------------------
 
 
@@ -392,9 +388,8 @@ class UserSettingsUpdate(BaseModel):
     reach `PolicyPayload` or a device: which weekdays are approval-gated, and
     the accounting mode. Deliberately NOT part of PolicyUpdate/update_policy
     -- these have no policy version, no device push, and their own single
-    save button in the UI (see docs/best-practices-review.md's "tab-scoped
-    Apply" anti-pattern this avoids by not sharing a save action with the
-    policy editor)."""
+    save button in the UI, rather than sharing a save action with the policy
+    editor."""
 
     gated_weekdays: list[str] = Field(default_factory=list)
     accounting_mode: AccountingMode = AccountingMode.WALLCLOCK

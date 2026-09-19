@@ -1,10 +1,7 @@
 """SQLAlchemy ORM models.
 
-PLAN reference: "Data model". Phase 1 scope only (see CHECKLIST.md): the
-tables needed for enrollment, the daily pooled budget, and bonus-time grants.
-`alerts` and full `audit_log` detail are deferred to Phase 2 per the plan's
-milestone breakdown, but the tables are included now (empty of application
-logic) since they're cheap to have and avoid a disruptive migration later.
+Everything needed for enrollment, the daily pooled budget, bonus-time
+grants, policies, and the audit log.
 
 Everything derived (global/week/month spent, effective limits) is computed
 from `usage_counters` + `activity_intervals`, never stored directly — see
@@ -248,8 +245,8 @@ class Policy(Base):
 
 class UsageCounter(Base):
     """The idempotent, MAX-merged absolute cumulative-spent counter per
-    (user, device, day). See PLAN "Idempotency: report absolute counters,
-    never deltas"."""
+    (user, device, day). Agents report absolute counters, never deltas, so
+    a replayed or duplicated report can't double-count."""
 
     __tablename__ = "usage_counters"
 
@@ -421,7 +418,7 @@ class GateRelease(Base):
 
 
 # --------------------------------------------------------------------------
-# Alerts / audit log (schema present now, application logic in Phase 2)
+# Alerts / audit log
 # --------------------------------------------------------------------------
 
 

@@ -2,14 +2,13 @@
 real HTTP hub (uvicorn, real Postgres), with FakeTimekprDaemon standing in
 for the local timekpr daemon.
 
-PLAN reference: "Verification" Layers 2/4/5. Each of those layers exists
-separately today (Layer 2's `test_multi_device_simulation.py` drives
-FakeTimekprDaemon against an in-process `SimHub` stand-in; Layer 4's
-`test_hub_api.py` drives the real hub with hand-written JSON) but never meet
-in one test. See `docs/agent-live-test-findings.md` for why that gap
-mattered: both real bugs recorded there were invisible to every synthetic
-test that existed when they were found, precisely because nothing wired the
-real agent tick loop to a real hub.
+The other test layers each cover one half of this:
+`test_multi_device_simulation.py` drives FakeTimekprDaemon against an
+in-process `SimHub` stand-in, and `test_hub_api.py` drives the real hub with
+hand-written JSON -- but neither wires the real agent tick loop to a real
+hub. Both of the real bugs found by running the agent against a live daemon
+were invisible to every synthetic test that existed at the time, precisely
+because of that gap.
 
 The hub runs as a genuine `uvicorn` server on an ephemeral loopback port, in
 a background thread with its own event loop, rather than `httpx.ASGITransport`
@@ -227,7 +226,7 @@ def enroll_device(
 
 def set_accounting_mode(username: str, mode: str) -> None:
     """Flip a user's accounting_mode directly in the DB -- there's no
-    parent-API endpoint for this yet (Phase 2), and the wall-clock
+    parent-API endpoint for this, and the wall-clock
     acceptance scenario needs to exercise both modes against the same real
     union query."""
 

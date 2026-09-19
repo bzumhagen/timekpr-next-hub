@@ -1,5 +1,5 @@
-"""Integration coverage for chore gates and per-date limit overrides --
-see the plan's verification section. Exercises the full stack (hub API,
+"""Integration coverage for chore gates and per-date limit overrides.
+Exercises the full stack (hub API,
 DB, the `combine_limit` collapse in services/limits.py + summaries.py)
 rather than just the pure `combine_limit` unit tests
 (tests/unit/test_combine_limit.py).

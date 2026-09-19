@@ -1,7 +1,7 @@
 """Device bearer-token authentication.
 
-PLAN: "Device tokens: secrets.token_urlsafe(32), prefixed tkh_, sha256 at
-rest, scoped so a device can only touch users mapped to it, revocable."
+Device tokens are `secrets.token_urlsafe(32)`, prefixed `tkh_`, sha256 at
+rest, scoped so a device can only touch users mapped to it, and revocable.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ async def get_current_device(
     if device is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid device token")
     if device.status == "revoked":
-        # PLAN pitfall: "Never fail open on an auth error" -- 403, not a
+        # Never fail open on an auth error -- 403, not a
         # silent pass-through, so the agent's offline handling treats this
         # as an immediate `closed` enforcement mode.
         raise HTTPException(status.HTTP_403_FORBIDDEN, "device token revoked")

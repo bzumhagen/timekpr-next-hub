@@ -1,8 +1,7 @@
 """Shared helper for tests marked `db` (needs a reachable Postgres).
 
-PLAN reference: this repo's best-practices review flagged that the DB-backed
-integration tests `TRUNCATE`d whatever `DATABASE_URL` pointed at, and that
-env var defaults to the same database the dev hub itself uses -- a working
+The DB-backed integration tests `TRUNCATE` the database they run against,
+and `DATABASE_URL` defaults to the same database the dev hub itself uses -- a working
 `make dev` session sitting next to a stray `pytest` run could lose data with
 no warning. `require_db()` is the single choke point all DB-backed tests
 route through: it insists the target database name ends in `_test`, and

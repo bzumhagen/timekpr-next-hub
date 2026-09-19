@@ -49,7 +49,7 @@ machine they use, instead of `timekpr-next` tracking each one separately.
 ### Known limits
 
 - Pooled **daily** budget only; week/month pooling and drift detection
-  aren't built yet — see [`CHECKLIST.md`](CHECKLIST.md).
+  aren't built yet.
 - The agent ships for Arch/CachyOS only. Other systemd distros work via
   the manual install path, but have no package yet.
 - The hub serves plain HTTP: run it on your LAN or behind a

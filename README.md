@@ -7,11 +7,9 @@ machine, reporting usage to the hub and applying whatever balance the hub
 says is left — so a kid's daily limit is shared across their desktop and
 laptop instead of being tracked separately on each.
 
-**Status: Phase 1 (MVP), pooled daily budget only.** Week/month pooling,
-drift detection, and a few other planned features aren't built yet — see
-[`CHECKLIST.md`](CHECKLIST.md) for what's built vs. planned, and
-[`docs/best-practices-review.md`](docs/best-practices-review.md) for known
-gaps.
+**Scope today: a pooled daily budget.** Week/month pooling and drift
+detection aren't built yet. The agent packages for Arch/CachyOS; other
+systemd distros work via a manual install.
 
 This README has two parts: [setting up your hub](#setting-up-your-hub) if
 you just want to run it, and [developing on the hub](#developing-on-the-hub)
@@ -198,7 +196,7 @@ deploy/                     -- docker-compose (Postgres + hub) for a real
                               deployment, a native Proxmox LXC install, plus
                               a throwaway dev/test Postgres compose file
 tests/                      -- unit, integration (some DB-backed), e2e
-docs/                       -- phase 0/agent findings, reviews, release process
+docs/                       -- release process
 scripts/                    -- version/changelog/packaging helpers used by
                               both the Makefile and CI
 ```
@@ -420,12 +418,13 @@ current balance.
   machine can stop the service or uninstall the package. The hub UI flags a
   device that hasn't checked in recently.
 
-## Multi-distro support (not started)
+## Multi-distro support
 
 timekpr-next itself supports Ubuntu & derivatives (PPA), Debian (native),
 Arch/Manjaro (AUR), Fedora (COPR), and openSUSE (native). Only the Arch
-PKGBUILD exists today; see `CHECKLIST.md`'s "Multi-distro support" section
-for the plan.
+package exists here; the agent is stdlib-only and systemd-based, so the
+[manual install](#installing-the-agent) works on any of them — there's just
+no `.deb`/`.rpm` built for it yet.
 
 ## Configuration reference
 
@@ -456,14 +455,6 @@ for the plan.
 
 ## Further reading
 
-- [`docs/best-practices-review.md`](docs/best-practices-review.md) — known
-  gaps and findings against general Python/FastAPI/SQLAlchemy practices.
-- [`docs/phase0-findings.md`](docs/phase0-findings.md) — empirical
-  findings about the real `timekprd`'s DBUS behavior.
-- [`docs/agent-live-test-findings.md`](docs/agent-live-test-findings.md) —
-  bugs found by running the agent against a live daemon.
 - [`docs/releasing.md`](docs/releasing.md) — how a release is cut, what a
   tag produces, and the one-time AUR/GHCR setup.
 - [`CHANGELOG.md`](CHANGELOG.md) — what changed in each release.
-- [`CHECKLIST.md`](CHECKLIST.md) — execution status against the original
-  design plan, phase by phase.

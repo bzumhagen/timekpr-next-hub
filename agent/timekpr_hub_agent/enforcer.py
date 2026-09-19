@@ -1,11 +1,10 @@
 """Thin wrapper around timekpr's own DBUS admin connector.
 
-PLAN reference: "Agent -- Python 3.11+ (forced, and fine)": reuse
-`timekprAdminConnector` wholesale rather than reimplementing the DBUS layer,
-and call `initTimekprConnection(pTryOnce=True)` so it doesn't schedule GLib
-retries -- confirmed against the real signature in
-docs/phase0-findings.md §6 (no `pIsClient` kwarg; it's
-`(pTryOnce, pRescheduleConnection=False, pCLI=None)`).
+Reuses `timekprAdminConnector` wholesale rather than reimplementing the
+DBUS layer, and calls `initTimekprConnection(pTryOnce=True)` so it doesn't
+schedule GLib retries -- confirmed against the real signature, which takes
+no `pIsClient` kwarg; it's
+`(pTryOnce, pRescheduleConnection=False, pCLI=None)`.
 """
 
 from __future__ import annotations
@@ -24,9 +23,9 @@ class UserObservation:
     """What the agent read from timekpr this tick -- the subset of
     getUserInformation('F')'s payload the convergence controller needs.
 
-    logged_in reflects whether ACTUAL_* keys were present (PLAN pitfall #7:
-    "ACTUAL_* keys are absent when the user is logged out -- don't KeyError
-    at 2am; use their absence as the 'logged in?' signal.")
+    logged_in reflects whether ACTUAL_* keys were present: they are absent
+    when the user is logged out, so their absence is the "logged in?" signal
+    rather than a KeyError at 2am.
     """
 
     balance_s: int
@@ -53,10 +52,10 @@ class UserObservation:
 
 class TimekprEnforcer:
     """One instance per agent process; talks to the local timekprd over the
-    system DBUS. Deliberately synchronous and blocking (PLAN: "the agent
-    needs no GLib main loop and is a plain, testable `while True` on
-    time.monotonic()") -- DBUS round trips were measured at ~2ms in Phase 0,
-    negligible against any planned sync interval.
+    system DBUS. Deliberately synchronous and blocking, so the agent needs
+    no GLib main loop and stays a plain, testable `while True` on
+    `time.monotonic()` -- DBUS round trips measure ~2ms against a real
+    daemon, negligible against any sync interval.
     """
 
     def __init__(self) -> None:
@@ -73,9 +72,9 @@ class TimekprEnforcer:
 
     def connect(self) -> bool:
         self._admin.initTimekprConnection(pTryOnce=True, pCLI=True)
-        # initTimekprConnection swallows its own exceptions and logs (see
-        # phase0-findings.md §5); the only externally-visible signal of
-        # success is whether the admin interface got populated.
+        # initTimekprConnection swallows its own exceptions and logs; the
+        # only externally-visible signal of success is whether the admin
+        # interface got populated.
         self._connected = self._admin._timekprUserAdminDbusInterface is not None
         if not self._connected:
             # Previously swallowed entirely -- a child locked out because
@@ -261,7 +260,7 @@ class TimekprEnforcer:
     def get_user_policy_snapshot(self, username: str) -> dict | None:
         """This device's own currently-configured limits for `username`, in
         the shape `EnrollRequest`'s per-user policy snapshot expects
-        (Phase 5a). Used only at enroll time, to seed a brand-new hub user's
+        Used only at enroll time, to seed a brand-new hub user's
         policy from whatever this device already has configured, instead of
         always starting from the hub's 1h/day placeholder default."""
         if not self._connected and not self.connect():

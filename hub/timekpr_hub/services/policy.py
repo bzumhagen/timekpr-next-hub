@@ -1,8 +1,5 @@
-"""Policy lookup/versioning helpers.
-
-PLAN reference: "Policy push, and the 'a parent edited it locally' problem".
-Phase 1 scope: fetch the current policy version and payload for a user; full
-field-by-field diffing/adoption workflow is Phase 2 (see CHECKLIST.md).
+"""Policy lookup/versioning helpers: fetch the current policy version and
+payload for a user, and append a new version when a parent edits it.
 """
 
 from __future__ import annotations
@@ -84,8 +81,8 @@ async def create_initial_policy(
     (large placeholder), simple lock on expiry -- used when no snapshot is
     given (e.g. a user created by hand, or the parent API).
 
-    Phase 5a: `enroll` passes the enrolling device's own currently-configured
-    limits here instead, when it has them, so a brand-new hub user's policy
+    `enroll` passes the enrolling device's own currently-configured limits
+    here instead, when it has them, so a brand-new hub user's policy
     starts from what's actually running on that device rather than always
     resetting a possibly-already-configured child to the placeholder."""
     limits = daily_limits_s if daily_limits_s is not None else DEFAULT_DAILY_LIMITS_S
@@ -148,8 +145,7 @@ async def update_policy(
 ) -> Policy:
     """A parent-initiated change: PUT /users/{u}/policy (api/parent.py) and
     the UI's basic/advanced policy forms both funnel through here. Policies
-    are append-only (PLAN "Policy push, and the 'a parent edited it locally'
-    problem") -- this always inserts version + 1 and repoints
+    are append-only -- this always inserts version + 1 and repoints
     `current_policy_id` rather than mutating a row in place, so `sync.py`'s
     `policy_version_applied != policy.version` check picks it up and pushes
     it to every device on their very next tick.
@@ -164,8 +160,8 @@ async def update_policy(
 
     `SELECT ... FOR UPDATE` on the user row for the duration guards against
     two concurrent edits both reading the same current version and racing on
-    `uq_policies_user_version` (the same race flagged for enrollment in
-    docs/best-practices-review.md, now closed here too). `populate_existing`
+    `uq_policies_user_version` (the same race enrollment guards against).
+    `populate_existing`
     is required, not cosmetic: every caller here already loaded `user` once
     earlier in this same session (to resolve the username), so without it
     SQLAlchemy's identity map would hand back that same Python object,

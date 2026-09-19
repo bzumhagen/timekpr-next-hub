@@ -1,5 +1,4 @@
-"""Layer 4 verification (PLAN "Verification"): hub aggregation against a
-real Postgres instance.
+"""Hub aggregation against a real Postgres instance.
 
 Requires a running Postgres reachable via $TEST_DATABASE_URL (default:
 `postgresql+asyncpg://timekpr_hub:timekpr_hub@127.0.0.1:55432/timekpr_hub_test`,
@@ -237,8 +236,8 @@ async def test_wallclock_floor_does_not_override_a_larger_simultaneous_union(db_
 
 @pytest.mark.asyncio
 async def test_global_spent_wallclock_batch_matches_single_user_calls(db_session):
-    """`global_spent_wallclock_batch` (services/summaries.py's N+1 fix,
-    docs/best-practices-review.md) must return exactly what calling the
+    """`global_spent_wallclock_batch` (the batched form used by
+    services/summaries.py) must return exactly what calling the
     already-verified single-user `global_spent_wallclock` once per user
     would -- including for a third user with no data at all, who must
     simply be absent rather than reported as 0 or raising."""

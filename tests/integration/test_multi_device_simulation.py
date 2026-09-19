@@ -1,7 +1,7 @@
-"""Layer 2 verification: simulate multiple devices, each backed by its own
-FakeTimekprDaemon and its own convergence state, converging against a single
-in-process "hub" stand-in (just the wall-clock union + a limit), and assert
-the overshoot bound from PLAN "Overshoot bound and sync interval":
+"""Simulate multiple devices, each backed by its own FakeTimekprDaemon and
+its own convergence state, converging against a single in-process "hub"
+stand-in (just the wall-clock union + a limit), and assert the overshoot
+bound:
 
     overshoot <= D*N + TK_POLLTIME(3s) + TIMEKPR_TERMINATION_TIME(15s)
 
@@ -58,8 +58,8 @@ def run_tick_for_device(dev: SimDevice, hub: SimHub, real_seconds_this_tick: int
     #    here: once this device's own balance is at/over its limit, no more
     #    activity can be *accounted*, matching a locked/terminated session.
     #    Without this, the simulation harness (not the convergence algorithm)
-    #    would let "active" time accrue forever past exhaustion, which is not
-    #    what the overshoot bound in the plan is describing.
+    #    would let "active" time accrue forever past exhaustion, which is
+    #    not what the overshoot bound describes.
     if dev.daemon.observed_balance() >= hub.limit_today_s:
         active = False
 
@@ -94,8 +94,7 @@ def run_tick_for_device(dev: SimDevice, hub: SimHub, real_seconds_this_tick: int
 def test_sequential_two_device_convergence_hits_exact_limit():
     """Two devices, sequential (non-overlapping) use, 1h shared limit: burn
     40 min on A, then 20 min on B, and confirm B locks out at exactly the
-    30-minute mark it's allowed (60 - 40 - 20 = 0), reproducing PLAN's Phase 1
-    acceptance test #1/#2 in miniature."""
+    30-minute mark it's allowed (60 - 40 - 20 = 0)."""
     limit = 3600
     dev_a = SimDevice(daemon=FakeTimekprDaemon(limit_today_s=limit))
     dev_b = SimDevice(daemon=FakeTimekprDaemon(limit_today_s=limit))
@@ -121,14 +120,13 @@ def test_sequential_two_device_convergence_hits_exact_limit():
 
     assert dev_b.daemon.observed_balance() >= limit  # B is locked out
     total_spent = hub.global_spent()
-    # Overshoot bound (PLAN "Overshoot bound"): D*N + 3 + 15, D=2, N=10 -> <= 38s
+    # Overshoot bound: D*N + 3 + 15, D=2, N=10 -> <= 38s
     assert total_spent <= limit + (2 * sync_interval + 3 + 15)
 
 
 def test_thirty_days_random_activity_never_exceeds_overshoot_bound():
-    """PLAN Verification Layer 2: 'simulate 3 devices x 30 days of realistic
-    child behavior in under a second and assert Sum spent <= limit + D*N + 18
-    every day.'"""
+    """3 devices x 30 days of realistic child behavior, asserting
+    Sum spent <= limit + D*N + 18 every day."""
     rng = random.Random(1234)
     limit = 3600  # 1h/day shared budget
     sync_interval = 10

@@ -25,9 +25,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["timekpr_hub"]
 # hatchling includes every file under the package directory by default (not
-# just *.py), so web/templates/*.html ships inside the wheel automatically --
-# verified in the plan's build step (unzip the wheel, check for the .html
-# files). No force-include needed.
+# just *.py), so web/templates/*.html ships inside the wheel automatically.
+# No force-include needed.
 
 [tool.uv.sources]
 timekpr-hub-core = { workspace = true }

@@ -1,17 +1,14 @@
 """Effective limit computation: policy + grants + per-date overrides + the
-chore gate (+ carryover, Phase 2 future work).
+chore gate.
 
-PLAN: "effective_limit(u, day) = policy.daily_limits[dow] + Σ grants(u, day)",
+The base formula is `policy.daily_limits[dow] + Σ grants(u, day)`,
 extended by `combine_limit` below to also apply a per-date `DayOverride`
 (replaces the base outright) and the chore gate (`users.gated_weekdays_json` +
 `GateRelease`, forces the day to 0 until released).
 
-`combine_limit` is the ONE place this formula is computed. It used to be
-duplicated three times -- here, in services/summaries.py's batched dashboard
-path, and in its usage-history path -- agreeing only by coincidence
-(docs/best-practices-review.md-style finding). All three now call this
-function so a gated or overridden day reads the same everywhere: the
-dashboard, the stats page, and `/sync`'s actual enforcement.
+`combine_limit` is the ONE place this formula is computed -- the dashboard,
+the stats page, and `/sync`'s actual enforcement all call it, so a gated or
+overridden day reads the same everywhere.
 """
 
 from __future__ import annotations
@@ -29,7 +26,7 @@ from timekpr_hub.db.models import DayOverride, GateRelease, Grant, Policy, User
 
 def base_daily_limit(policy: Policy, day: date) -> int:
     """`daily_limits_json` is index 0 = Monday .. index 6 = Sunday (ISO
-    weekday - 1), matching PLAN's PolicyPayload docstring."""
+    weekday - 1), matching `PolicyPayload`'s own docstring."""
     return int(policy.daily_limits_json[day.isoweekday() - 1])
 
 
@@ -44,8 +41,8 @@ def combine_limit(*, base_s: int, grants_s: int, gated: bool, released: bool) ->
     that weekday or a `DayOverride.limit_seconds` if one exists for that
     date (the override REPLACES the base, per-date grants still ADD on top
     of either). A gated-and-unreleased day is forced to 0 regardless of
-    base/grants -- login is still allowed (see README/plan: this withholds
-    time, not access), the agent just converges to zero time left."""
+    base/grants -- login is still allowed (this withholds time, not access),
+    the agent just converges to zero time left."""
     if gated and not released:
         return 0
     return max(0, base_s + grants_s)
@@ -68,10 +65,9 @@ async def grants_totals_batch(
 ) -> dict[uuid.UUID, int]:
     """`grants_total` for every user in `user_ids` in one query (`GROUP BY
     user_id`) instead of one query per user -- used by
-    services/summaries.py, which previously ran this once per user shown on
-    the hub UI (docs/best-practices-review.md's N+1 finding). A user with
-    no grants today is simply absent from the result; callers should
-    default to 0."""
+    services/summaries.py, which would otherwise run one query per user
+    shown on the hub UI. A user with no grants today is simply absent from
+    the result; callers should default to 0."""
     if not user_ids:
         return {}
     result = await session.execute(

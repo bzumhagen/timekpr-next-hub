@@ -1,9 +1,7 @@
-"""Minimal parent-facing API -- PLAN "API" parent endpoints, Phase 1 subset.
+"""Parent-facing API: the JSON endpoints behind the hub UI.
 
-No auth wired yet in Phase 1 (PLAN's parent auth -- email + argon2id + TOTP
-session cookies -- is worth its own pass; tracked in CHECKLIST.md Phase 2).
-These endpoints are deliberately usable today for local development and the
-Phase 1 acceptance test, and are the extension point once auth lands.
+Every route here is gated on a logged-in parent session -- see
+`api/parent_auth.py`, which wires the dependency in `app.py`.
 """
 
 from __future__ import annotations
@@ -145,7 +143,7 @@ async def update_user_policy(
     update_policy. The agent already applies whatever this returns on its
     next tick (sync.py pushes the payload whenever policy_version_applied
     disagrees, and the agent already calls setTimeLimitForDays/Week/Month +
-    setAllowedDays -- CHECKLIST.md Phase 5)."""
+    setAllowedDays)."""
     result = await session.execute(select(User).where(User.canonical_username == username))
     user = result.scalar_one_or_none()
     if user is None:
@@ -509,8 +507,8 @@ async def revoke_device(
 
 @router.post("/devices/{device_id}/observe")
 async def set_device_observe_mode(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
-    """Dry-run mode (PLAN "Layer 7 -- household safety net"): the agent
-    keeps syncing and computing what it *would* write, logging it, but
+    """Dry-run mode: the agent keeps syncing and computing what it *would*
+    write, logging it, but
     never actually calls into DBUS -- see `main.py`'s
     `resp_user.get("enforcement") == "observe"` branch, which already
     existed for the unmapped-user case and now also serves this per-device

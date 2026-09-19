@@ -1,7 +1,4 @@
-"""Audit log writes -- Phase 2 (CHECKLIST.md "alerts, audit_log tables
-fully wired"). `AuditLog` has existed since Phase 1's initial schema but
-nothing ever wrote to it (docs/best-practices-review.md) until now.
-"""
+"""Audit log writes: an append-only record of every parent action."""
 
 from __future__ import annotations
 

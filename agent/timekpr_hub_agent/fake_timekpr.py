@@ -1,33 +1,33 @@
 """FakeTimekprDaemon — a small model of timekpr's own accounting semantics.
 
-PLAN reference: "Verification", Layer 2 — "the highest-ROI artifact in the
-whole project". This is NOT a general-purpose timekpr simulator: it
-reproduces *only* the specific accounting behaviors that the convergence
-controller depends on, each one verified against the real daemon (either by
-reading `server/user/userdata.py` / `server/config/configprocessor.py`
-directly, or empirically in `docs/phase0-findings.md`):
+This is NOT a general-purpose timekpr simulator: it reproduces *only* the
+specific accounting behaviors that the convergence controller depends on,
+each one verified against the real daemon (either by reading
+`server/user/userdata.py` / `server/config/configprocessor.py` directly, or
+empirically against a running `timekprd`):
 
   1. Real activity advances BALANCE and SPENT_DAY/WEEK/MONTH *together*, by
      the same delta (userdata.py:449-462).
   2. `setTimeLeft(user, '-'/'+', secs)` moves BALANCE only, via
      `min(BALANCE, limit) ± secs`, and never touches SPENT_DAY/WEEK/MONTH
-     (configprocessor.py:718-729; confirmed live in phase0-findings.md §1).
+     (configprocessor.py:718-729; confirmed live against a real daemon).
   3. `setTimeLeft(user, '=', secs)` sets `BALANCE := limit - secs` AND
      triggers `pPreserveSpent=False`, which reloads SPENT_DAY from the
      last-flushed-to-disk value -- discarding whatever real activity had
      accrued in memory since the last save (bounded by TK_SAVE_INTERVAL=30s;
-     confirmed live in phase0-findings.md §2, where 12s of unflushed
+     confirmed live against a real daemon, where 12s of unflushed
      ACTUAL_TIME_SPENT_DAY was lost).
   4. BALANCE is clamped to +/-86400 seconds (TK_LIMIT_PER_DAY-scale bound).
   5. A day rollover zeroes BALANCE and SPENT_DAY (and, when the week/month
      boundary is also crossed, SPENT_WEEK/SPENT_MONTH).
 
 This lets the convergence controller be simulated against *this* model for
-thousands of simulated days in milliseconds (PLAN: "simulate 3 devices x 30
-days of realistic child behavior in under a second"), without needing a real
+thousands of simulated days in milliseconds -- 3 devices x 30 days of
+realistic child behavior in under a second -- without needing a real
 timekprd, DBUS, or root. It is deliberately re-validated against the real
-daemon's *qualitative* behavior in `tests/integration/test_fake_timekpr_parity.py`
-using the exact numbers observed in docs/phase0-findings.md.
+daemon's *qualitative* behavior in
+`tests/integration/test_fake_timekpr_parity.py`, using the exact numbers
+observed against a live daemon.
 """
 
 from __future__ import annotations

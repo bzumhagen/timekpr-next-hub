@@ -1,6 +1,6 @@
 """Read/write /etc/timekpr-hub-agent/agent.env.
 
-PLAN "single-command enrollment": `enroll` writes this file itself instead
+Enrollment is a single command: `enroll` writes this file itself instead
 of printing it for a parent to paste by hand, and `run`'s argparse defaults
 come from it (falling back further to the environment, e.g. when
 `EnvironmentFile=` has already loaded it into the process for the systemd
@@ -126,7 +126,7 @@ def chown_to_service_user(path: Path, username: str = "timekpr-hub") -> None:
     works because systemd's StateDirectory= recursively re-owns the
     directory on first start; a re-enroll after the service has already
     run once would otherwise leave a root-owned token the service can't
-    read (see docs/best-practices-review.md)."""
+    read."""
     try:
         pw = pwd.getpwnam(username)
     except KeyError:

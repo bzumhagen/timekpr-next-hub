@@ -16,8 +16,8 @@ StartLimitIntervalSec=0
 Type=notify
 NotifyAccess=main
 WatchdogSec=120
-# PLAN "Auth and threat model": runs as a non-root user in the `timekpr`
-# supplementary group -- gets full admin DBUS access without root, per the
+# Runs as a non-root user in the `timekpr` supplementary group -- that
+# gets full admin DBUS access without root, per the
 # DBUS policy already shipped by timekpr-next itself
 # (resource/server/dbus/timekpr.conf: `<policy group="timekpr">`).
 User=timekpr-hub
@@ -41,7 +41,7 @@ ExecStart=/usr/bin/timekpr-hub-agent run --state-path /var/lib/timekpr-hub-agent
 Restart=always
 RestartSec=10
 
-# PLAN "Auth and threat model" -- agent hardening.
+# Agent hardening.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

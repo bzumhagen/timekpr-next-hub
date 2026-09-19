@@ -1,7 +1,5 @@
 """Locate the installed timekpr Python package on disk.
 
-PLAN reference: "Agent — Python 3.11+" and phase0-findings.md §4.
-
 `timekprd` itself invokes `/usr/bin/python3 /usr/lib/python3/dist-packages/
 timekpr/server/timekprd.py` directly by hardcoded path (confirmed by reading
 its installed shebang wrapper on this machine, an Arch/CachyOS box) -- it
@@ -36,8 +34,8 @@ def find_timekpr_package_dir() -> Path:
     """Return the directory that contains the `timekpr` package (i.e. the
     directory to add to `sys.path`, not the package directory itself).
 
-    Raises `TimekprNotFoundError` with an actionable message if not found --
-    per PLAN: "fails with a clear message" rather than a bare ImportError.
+    Raises `TimekprNotFoundError` with an actionable message if not found,
+    rather than a bare ImportError.
     """
     candidates = list(_DIST_PACKAGES_CANDIDATES) + sorted(glob.glob(_SITE_PACKAGES_GLOB))
 

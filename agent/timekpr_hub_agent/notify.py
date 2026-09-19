@@ -1,12 +1,12 @@
 """Minimal sd_notify client -- no dependency on python-systemd.
 
-PLAN "reboot survival": the systemd unit is `Type=notify` with a
+The systemd unit is `Type=notify` with a
 `WatchdogSec=`, so a hung DBUS call or a wedged HTTP request gets the agent
 killed and restarted (`Restart=always`) rather than sitting there forever
 looking alive to systemd. Talking to $NOTIFY_SOCKET directly is ~15 lines
 and avoids a dependency most distros ship as part of systemd's own Python
 bindings anyway (inconsistently named across distros), which matters for
-the "no bundled venv" packaging goal (CHECKLIST "Multi-distro support").
+packaging the agent with no bundled venv.
 """
 
 from __future__ import annotations

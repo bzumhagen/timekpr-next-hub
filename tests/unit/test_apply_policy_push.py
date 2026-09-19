@@ -1,6 +1,6 @@
 """Unit coverage for agent/timekpr_hub_agent/main.py::_apply_policy_push and
-its helpers -- the agent-side half of "extend the agent to push everything"
-(see the plan's Phase C). Exercises every field `PolicyPayload` can carry,
+its helpers -- the agent-side half of pushing a policy to a device.
+Exercises every field `PolicyPayload` can carry,
 plus the two correctness issues the advanced editor would otherwise expose
 silently: the ALLOWED_WEEKDAYS/LIMITS_PER_WEEKDAYS positional-index bug, and
 the empty-allowed_hours lockout trap.

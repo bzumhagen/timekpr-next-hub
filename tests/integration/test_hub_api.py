@@ -1,5 +1,5 @@
-"""Layer 4 verification (PLAN "Verification"): FastAPI app against a real
-Postgres, exercising the enroll -> approve -> sync flow end-to-end.
+"""FastAPI app against a real Postgres, exercising the enroll -> approve
+-> sync flow end-to-end.
 
 Requires a running Postgres reachable via $TEST_DATABASE_URL with
 migrations applied (same as test_aggregate_postgres.py) -- see README.md
@@ -84,9 +84,9 @@ async def test_enrollment_code_is_single_use(client):
 
 @pytest.mark.asyncio
 async def test_concurrent_enrollment_redemption_of_the_same_code_only_succeeds_once(client):
-    """Two concurrent /enroll calls racing to redeem the same code used to
-    both pass the `used_at is None` check before either committed
-    (docs/best-practices-review.md) -- the atomic
+    """Two concurrent /enroll calls racing to redeem the same code could
+    otherwise both pass the `used_at is None` check before either
+    committed. The atomic
     `UPDATE ... WHERE used_at IS NULL` in api/enroll.py now serializes
     them: the loser's WHERE clause re-checks the just-committed row and
     correctly sees it as already used."""
@@ -111,8 +111,7 @@ async def test_concurrent_enrollment_redemption_of_the_same_code_only_succeeds_o
 async def test_concurrent_first_policy_creation_for_a_shared_user_does_not_race(client):
     """Two devices enrolling with `local_users` naming the same
     already-existing-but-policy-less user concurrently used to both read
-    `current_policy_id is None` and race on `uq_policies_user_version`
-    (docs/best-practices-review.md) --
+    `current_policy_id is None` and race on `uq_policies_user_version`.
     `services/policy.py::get_or_create_policy`'s `SELECT ... FOR UPDATE`
     now serializes them into exactly one policy row."""
     await _seed_user("raced")
@@ -219,10 +218,10 @@ async def test_enroll_merges_into_an_existing_user_of_the_same_username(client):
 
 @pytest.mark.asyncio
 async def test_enrolled_device_is_immediately_active_and_can_sync(client):
-    """Phase 2 "code implies approval": a parent-minted enrollment code is
-    itself the approval -- there's no separate un-authenticated approval
-    step to actually gate anything, and the old 'pending' default just
-    added a step that could sync anyway (auth.py only rejected 'revoked')."""
+    """A parent-minted enrollment code is itself the approval -- there's no
+    separate un-authenticated approval step that would gate anything, and a
+    'pending' default would just add a step that could sync anyway (auth.py
+    only rejects 'revoked')."""
     code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
     enroll_resp = await client.post(
         "/api/v1/enroll",
@@ -276,7 +275,7 @@ async def test_enroll_response_includes_hub_tz(client):
 
 @pytest.mark.asyncio
 async def test_enroll_seeds_policy_from_device_snapshot_for_a_new_user(client):
-    """Phase 5a: a brand-new hub user's policy should start from what the
+    """A brand-new hub user's policy should start from what the
     enrolling device already has configured, not always the 1h/day
     placeholder."""
     code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
@@ -369,7 +368,7 @@ async def test_sync_requires_device_token(client):
 
 @pytest.mark.asyncio
 async def test_sync_rejects_revoked_device_immediately(client):
-    """PLAN pitfall: 'Never fail open on an auth error.'"""
+    """Never fail open on an auth error."""
     code_resp = await client.post("/api/v1/enrollment-codes")
     code = code_resp.json()["code"]
     enroll_resp = await client.post(
@@ -387,7 +386,7 @@ async def test_sync_rejects_revoked_device_immediately(client):
     device_id = enroll_resp.json()["device_id"]
     token = enroll_resp.json()["device_token"]
 
-    # revoke it directly (no admin endpoint yet in Phase 1 -- direct DB write)
+    # revoke it directly (no admin endpoint for this -- direct DB write)
     session_factory = _get_test_sessionmaker()
     async with session_factory() as session:
         await session.execute(text("UPDATE devices SET status = 'revoked' WHERE id = :id"), {"id": device_id})
@@ -409,7 +408,7 @@ async def test_sync_rejects_revoked_device_immediately(client):
 
 @pytest.mark.asyncio
 async def test_full_enroll_approve_sync_flow_two_devices_wallclock_burn_once(client):
-    """End-to-end acceptance test (PLAN "Layer 5"): two devices, one pooled
+    """End-to-end acceptance test: two devices, one pooled
     user, wall-clock 'burn once' accounting -- via the real HTTP API against
     real Postgres, not just the pure-Python simulation."""
     await _seed_user("alpha")
@@ -598,10 +597,8 @@ async def test_revoked_device_can_be_reenrolled_as_a_genuinely_new_row(client):
 
 @pytest.mark.asyncio
 async def test_grant_policy_update_and_device_revoke_are_all_audit_logged(client):
-    """Track 3b (CHECKLIST.md Phase 2 "alerts, audit_log tables fully
-    wired"): grants, policy edits, and device revoke/delete previously
-    wrote nothing to `audit_log` at all (docs/best-practices-review.md) --
-    confirm each now does, with a plausible before/after."""
+    """Grants, policy edits, and device revoke/delete must each write to
+    `audit_log`, with a plausible before/after."""
     await _seed_user("audited")
     code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
     enroll_resp = await client.post(
@@ -689,8 +686,8 @@ async def test_login_is_audit_logged(unauthenticated_client):
 
 @pytest.mark.asyncio
 async def test_device_observe_toggle_flips_enforcement_reported_by_sync(client):
-    """A parent switching a device to observe-only (Track 3a, PLAN "Layer 7
-    -- household safety net") should be reflected both in `GET /devices`
+    """A parent switching a device to observe-only should be reflected
+    both in `GET /devices`
     and in the very next `/sync`'s `enforcement` field -- the agent reads
     that to decide whether to actually write to DBUS."""
     await _seed_user("dry-run-kid")
@@ -824,8 +821,8 @@ async def test_policy_update_bumps_version_and_agent_receives_it_on_next_sync(cl
 @pytest.mark.asyncio
 async def test_concurrent_policy_updates_for_the_same_user_do_not_race(client):
     """Two concurrent PUT .../policy requests used to both read the same
-    current version and race on `uq_policies_user_version`
-    (docs/best-practices-review.md) -- and, more subtly, `update_policy`'s
+    current version and race on `uq_policies_user_version` -- and, more
+    subtly, `update_policy`'s
     own `SELECT ... FOR UPDATE` re-select of `user` (already loaded once by
     this endpoint to resolve the username) used to hand back the same
     stale cached object once the lock was granted instead of the

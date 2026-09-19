@@ -1,10 +1,9 @@
 """Per-user usage summary computation, shared by the parent JSON API
 (`api/parent.py`'s `GET /users`) and the HTML UI (`api/ui.py`'s users
-fragment) -- previously two near-identical copies of the same
-per-user-in-a-loop logic (docs/best-practices-review.md), which also ran
-~3 queries per user shown. Batched here into a handful of queries total
-regardless of how many users are shown, via the `*_batch` aggregate/limits
-helpers.
+fragment). Computed once here, batched into a handful of queries total
+regardless of how many users are shown (via the `*_batch` aggregate/limits
+helpers), rather than the ~3 queries per user a per-user loop in each
+caller would cost.
 
 Both `compute_user_summaries` and `compute_usage_history` route their limit
 math through `services.limits.combine_limit` -- the one place overrides and
@@ -91,9 +90,8 @@ async def compute_user_summaries(
     the wallclock/parallel accounting-mode groups' global spend, one for
     activity state, one for today's grants, one for today's day overrides,
     and one for today's gate releases -- versus the ~3-4 queries *per user*
-    this used to run before both `api/parent.py::list_users` and
-    `api/ui.py::_user_summaries` were collapsed into this one function
-    (docs/best-practices-review.md)."""
+    that `api/parent.py::list_users` and `api/ui.py::_user_summaries` would
+    each cost if they computed this themselves."""
     now = datetime.now(UTC)
     stamp = canonical_stamp(now, settings.tz)
     staleness_s = 3 * (settings.default_next_poll_ms / 1000)
@@ -214,7 +212,7 @@ async def compute_usage_history(
     plus a per-device split for the most recent day -- one query per
     dimension (spend, grants, overrides, gate releases, device split), not
     one per day, following the same batched-query discipline as
-    `compute_user_summaries` (docs/best-practices-review.md's N+1 finding)."""
+    `compute_user_summaries`."""
     now = datetime.now(UTC)
     stamp = canonical_stamp(now, tz)
     end_day = stamp.day

@@ -137,12 +137,12 @@
     {% block content %}{% endblock %}
   </div>
   <script>
-    // Replaces htmx (dropped so the hub makes zero outbound requests at
-    // runtime -- it previously pulled htmx.org from a CDN on every page
-    // load, which broke the dashboard whenever the hub's WAN was down).
-    // Covers the only two things the templates use: a form whose response
-    // replaces part of the page, and an element that polls a fragment on
-    // an interval.
+    // The hub makes zero outbound requests at runtime, so there is no
+    // client-side framework here -- a CDN fetch on every page load would
+    // break the dashboard whenever the hub's WAN was down. This covers the
+    // only two things the templates need: a form whose response replaces
+    // part of the page, and an element that polls a fragment on an
+    // interval.
     (() => {
       const swap = (el, html, mode) =>
         mode === 'outerHTML' ? (el.outerHTML = html) : (el.innerHTML = html);
@@ -160,7 +160,7 @@
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams(new FormData(f)),
         });
-        if (!res.ok) return; // htmx also declines to swap on a non-2xx response
+        if (!res.ok) return; // never swap in an error response
         swap(targetOf(f), await res.text(), f.dataset.swap);
       });
       for (const el of document.querySelectorAll('[data-poll]')) {

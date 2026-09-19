@@ -1,5 +1,4 @@
-# PLAN reference: "Deploy: docker-compose with hub + postgres." Run from the
-# repo root:
+# The production stack: hub + postgres. Run from the repo root:
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
 #
 # Postgres is bound only to the docker network (no host port published) --

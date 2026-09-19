@@ -1,5 +1,5 @@
-"""Calendar boundary tests, including the ISO-week year-boundary case called
-out in the plan (PLAN "Verification", Layer 4): 2025-12-29 is ISO week 2026-W01.
+"""Calendar boundary tests, including the ISO-week year-boundary case:
+2025-12-29 is ISO week 2026-W01.
 """
 
 from __future__ import annotations

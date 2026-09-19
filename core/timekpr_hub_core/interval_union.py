@@ -1,20 +1,16 @@
 """Wall-clock union of activity intervals.
 
-PLAN reference: "Wall-clock union (the 'burn once' requirement)".
+Budget is accounted "burn once": 30 minutes of activity on two devices at
+the same time consumes 30 minutes of budget, not 60. Per-device cumulative
+counters can't express that on their own, so each agent tick also reports
+the wall-clock span it covered, and the hub computes the *union* of all
+devices' spans for the day.
 
-The user chose wall-clock ("burn once") accounting: 30 minutes of activity on
-two devices at the same time should consume 30 minutes of budget, not 60.
-Per-device cumulative counters can't express that on their own, so each
-agent tick also reports the wall-clock span it covered, and the hub computes
-the *union* of all devices' spans for the day.
-
-In production this union is computed by Postgres 14+'s ``range_agg`` (see
-PLAN "Data model") for performance at scale. This module is the pure-Python
-reference implementation: it is used directly by the hub's aggregation layer
-when Postgres range types aren't available (e.g. a first cut, or a unit test
-that wants to check the SQL query against ground truth without spinning up
-Postgres — see PLAN "Verification" Layer 1, "property-test the interval
-union against a brute-force per-second set implementation").
+In production this union is computed by Postgres 14+'s ``range_agg``, for
+performance at scale. This module is the pure-Python reference
+implementation: it is used directly by the hub's aggregation layer when
+Postgres range types aren't available, and by tests that check the SQL
+query against ground truth without spinning up Postgres.
 """
 
 from __future__ import annotations
@@ -62,8 +58,8 @@ def union_seconds_bruteforce(spans: list[Span]) -> int:
     """Reference oracle: a brute-force per-second set implementation.
 
     Deliberately inefficient (O(total_span_seconds)) — used only in tests to
-    validate ``union_seconds`` via Hypothesis property testing, per the plan's
-    verification strategy. Never use this in production code.
+    validate ``union_seconds`` via Hypothesis property testing. Never use
+    this in production code.
     """
     covered: set[int] = set()
     for span in spans:
@@ -74,9 +70,9 @@ def union_seconds_bruteforce(spans: list[Span]) -> int:
 def snap_to_grid(timestamp_s: int, grid_s: int = 5) -> int:
     """Snap a timestamp down to a canonical grid.
 
-    PLAN: "both endpoints snapped to a 5-second grid in canonical time so
+    Both endpoints are snapped to a 5-second grid in canonical time, so
     near-simultaneous activity on two devices reliably overlaps instead of
-    leaving a sliver gap." Two devices reporting spans independently will
+    leaving a sliver gap. Two devices reporting spans independently will
     have start/end timestamps that differ by a second or two (tick jitter,
     small clock skew); snapping every endpoint to the *same* grid means spans
     that are "morally" adjacent or overlapping land on identical or

@@ -1,8 +1,8 @@
 """FastAPI app entrypoint.
 
-PLAN: "https://hub.example.com/api/v1". Run with:
+Run with:
     uvicorn timekpr_hub.app:app --host 0.0.0.0 --port 8000
-(see deploy/docker-compose.yml for the containerized version, fronted by Caddy).
+(see deploy/docker-compose.yml for the containerized deployment).
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ app.include_router(sync.router, prefix="/api/v1", tags=["sync"])
 # Login/logout/first-run-setup: deliberately unauthenticated (that's the point).
 app.include_router(parent_auth.router, tags=["parent-auth"])
 
-# Everything else requires a logged-in parent (PLAN "Parent auth") -- a JSON
+# Everything else requires a logged-in parent -- a JSON
 # 401 for the API, a redirect to /login for the HTML UI (RequireLoginRedirect
 # below).
 app.include_router(

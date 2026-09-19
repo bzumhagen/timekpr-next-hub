@@ -13,14 +13,13 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.models import EnrollRequest, EnrollResponse
 
-from timekpr_hub.db.models import Device, EnrollmentCode, User, UserAlias
+from timekpr_hub.db.models import Device, EnrollmentCode
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.policy import create_initial_policy, get_or_create_policy, policy_to_payload
+from timekpr_hub.services.enrollment import provision_user_alias
+from timekpr_hub.services.policy import policy_to_payload
 from timekpr_hub.settings import settings
 
 router = APIRouter()
@@ -87,12 +86,8 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
     if existing_device is not None:
         device = existing_device
         device.token_hash = _hash_token(raw_token)
-        device.token_prefix = raw_token[:12]
         device.name = req.hostname
-        device.hostname = req.hostname
         device.agent_version = req.agent_version
-        device.os_info = req.os
-        device.tz = req.tz
         device.status = "active"
         # enrolled_at is deliberately left untouched -- it's this device's
         # original enrollment date, not this rebind's.
@@ -100,23 +95,17 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
         device = Device(
             id=uuid.uuid4(),
             name=req.hostname,
-            hostname=req.hostname,
             machine_id=req.machine_id,
             token_hash=_hash_token(raw_token),
-            token_prefix=raw_token[:12],
             # A parent-minted enrollment code is itself the approval -- there's
             # no separate authentication on either endpoint for a second
-            # "approve" step to actually gate anything. A 'pending' default
+            # "approve" step to actually gate anything. A 'pending' status
             # would mean a brand-new device could already sync anyway
             # (auth.py only rejects 'revoked'), so this also removes a step
-            # that added friction without adding security. `approve_device`
-            # (parent.py) and the UI button are kept for any device enrolled
-            # before this change, or a future opt-in "require approval" mode.
+            # that added friction without adding security.
             status="active",
             enforcement="enforce",
             agent_version=req.agent_version,
-            os_info=req.os,
-            tz=req.tz,
             enrolled_at=now,
         )
         session.add(device)
@@ -126,73 +115,20 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
     policies: dict[str, object] = {}
 
     # Provision or merge into an existing canonical user per reported local
-    # username: a fresh username gets a new User row, a
-    # username matching one already known to the hub (e.g. this account also
-    # exists on another device) just gets a new alias pointing at it.
+    # username: a fresh username gets a new User row, a username matching
+    # one already known to the hub (e.g. this account also exists on
+    # another device) just gets a new alias pointing at it. The same
+    # provisioning a local user added to an already-enrolled device's
+    # managed list goes through later, at api/sync.py's unmapped-user branch.
     for local_username in req.local_users:
-        # Savepoint so a unique-constraint race against a concurrent enroll
-        # of the same brand-new username (two devices, first sync each)
-        # falls back to "someone else just created it" instead of aborting
-        # the whole enrollment.
-        is_new = False
-        try:
-            async with session.begin_nested():
-                user = User(id=uuid.uuid4(), canonical_username=local_username, display_name=local_username)
-                session.add(user)
-                await session.flush()
-            is_new = True
-        except IntegrityError:
-            existing = await session.execute(select(User).where(User.canonical_username == local_username))
-            user = existing.scalar_one()
-
+        user, policy, is_new = await provision_user_alias(
+            session,
+            device_id=device.id,
+            local_username=local_username,
+            local_policy_snapshot=req.local_policies.get(local_username),
+        )
         if is_new:
             new_users.append(local_username)
-            # Seed the initial policy from this device's own configured
-            # limits when it reported one, rather than always
-            # falling back to the hub's 1h/day placeholder -- a brand-new
-            # user whose only device already has, say, a 2h/day limit
-            # configured shouldn't suddenly show 1h/day in the hub UI.
-            snapshot = req.local_policies.get(local_username)
-            policy = await create_initial_policy(
-                session,
-                user.id,
-                daily_limits_s=snapshot.daily_limits_s if snapshot else None,
-                weekly_limit_s=snapshot.weekly_limit_s if snapshot else None,
-                monthly_limit_s=snapshot.monthly_limit_s if snapshot else None,
-                allowed_weekdays=snapshot.allowed_weekdays if snapshot else None,
-            )
-            user.current_policy_id = policy.id
-        else:
-            # SELECT ... FOR UPDATE-guarded against two devices enrolling
-            # the same brand-new (to the hub) existing user concurrently,
-            # each seeing current_policy_id is None before the other's
-            # create commits (services/policy.py's get_or_create_policy
-            # docstring).
-            policy = await get_or_create_policy(session, user)
-
-        # The alias insert (FK'd to user_id) must come AFTER the FOR UPDATE
-        # lock above, not before it -- this order was originally reversed
-        # and produced a genuine Postgres deadlock under exactly this
-        # concurrent-enroll scenario, caught by
-        # tests/integration/test_hub_api.py's
-        # test_concurrent_first_policy_creation_for_a_shared_user_does_not_race:
-        # each transaction's INSERT INTO user_aliases first takes a shared
-        # (FOR KEY SHARE) lock on the referenced `users` row to validate the
-        # FK, then get_or_create_policy's SELECT ... FOR UPDATE tries to
-        # upgrade that SAME row to an exclusive lock -- two transactions
-        # both holding the shared lock and both waiting on each other's to
-        # release before their own upgrade can proceed is a textbook
-        # deadlock. Acquiring the exclusive FOR UPDATE lock first means only
-        # one transaction ever holds any lock on the row at a time; the
-        # other blocks cleanly instead of deadlocking.
-        alias_stmt = pg_insert(UserAlias).values(
-            id=uuid.uuid4(), user_id=user.id, device_id=device.id, local_username=local_username
-        )
-        alias_stmt = alias_stmt.on_conflict_do_nothing(
-            index_elements=[UserAlias.device_id, UserAlias.local_username]
-        )
-        await session.execute(alias_stmt)
-
         policies[local_username] = policy_to_payload(policy)
 
     await session.execute(

@@ -4,11 +4,6 @@
     &middot; <span title="last successful contact from this device's agent">{{ d.last_seen }}</span>
     {% if d.stale %}<strong> (not checking in)</strong>{% endif %}
     {% if d.enforcement == 'observe' %}<strong title="agent computes what it would write, but never writes it"> (observe-only)</strong>{% endif %}
-    {% if d.status == 'pending' %}
-      <form style="display:inline" data-post="/ui/devices/{{ d.id }}/approve" data-target="#devices" data-swap="innerHTML">
-        <button type="submit" style="padding:0 .3rem;">approve</button>
-      </form>
-    {% endif %}
     {% if d.status != 'revoked' %}
       <form style="display:inline" data-post="/ui/devices/{{ d.id }}/revoke" data-target="#devices" data-swap="innerHTML"
             data-confirm="Revoke {{ d.name }}? Its token stops working immediately; history is kept.">

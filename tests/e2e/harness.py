@@ -205,7 +205,6 @@ def enroll_device(
     machine_id: str,
     hostname: str,
     local_users: list[str],
-    tz: str = "UTC",
 ) -> HubClient:
     """Enroll a device using the real `HubClient.enroll` over real HTTP --
     the first genuine HTTP exercise this method gets anywhere in the suite
@@ -216,8 +215,6 @@ def enroll_device(
         enrollment_code=mint_enrollment_code(base_url),
         hostname=hostname,
         machine_id=machine_id,
-        os="linux",
-        tz=tz,
         agent_version="0.1.0-e2e",
         local_users=local_users,
     )

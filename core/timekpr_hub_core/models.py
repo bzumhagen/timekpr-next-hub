@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class EnforcementMode(str, Enum):
     ENFORCE = "enforce"
-    FAIL_CLOSED = "fail_closed"
     OBSERVE = "observe"
 
 
@@ -27,12 +26,6 @@ class OfflinePolicy(str, Enum):
 class AccountingMode(str, Enum):
     WALLCLOCK = "wallclock"
     PARALLEL = "parallel"
-
-
-class GrantSource(str, Enum):
-    PARENT = "parent"
-    LOCAL_TIMEKPRA = "local_timekpra"
-    AUTO_CARRYOVER = "auto_carryover"
 
 
 # --------------------------------------------------------------------------
@@ -54,14 +47,13 @@ class LocalPolicySnapshot(BaseModel):
 
 class EnrollRequest(BaseModel):
     # max_length values mirror the column sizes in hub/timekpr_hub/db/models.py
-    # (Device.hostname/machine_id/agent_version/tz, UserAlias.local_username)
-    # -- unbounded input here would otherwise reach the DB and 500 as a raw
-    # asyncpg.StringDataRightTruncationError instead of a 422.
+    # (Device.machine_id/agent_version, UserAlias.local_username -- `name` is
+    # set from `hostname` and shares its bound) -- unbounded input here would
+    # otherwise reach the DB and 500 as a raw asyncpg.StringDataRightTruncationError
+    # instead of a 422.
     enrollment_code: str = Field(max_length=16)
     hostname: str = Field(max_length=255)
     machine_id: str = Field(max_length=64)
-    os: str = Field(max_length=255)
-    tz: str = Field(max_length=64)
     agent_version: str = Field(max_length=32)
     local_users: list[str] = Field(default_factory=list)
     local_policies: dict[str, LocalPolicySnapshot] = Field(default_factory=dict)
@@ -133,11 +125,6 @@ class SyncObserved(BaseModel):
 
 class SyncUserRequest(BaseModel):
     username: str
-    day: str
-    """The canonical day (YYYY-MM-DD) the agent believes it's reporting for —
-    echoed back so the hub can detect an agent that's fallen behind on
-    rollover."""
-
     cumulative_spent_s: int
     active_spans: list[ActiveSpan] = Field(default_factory=list)
     """Usually this tick's single span, but may carry more than one: any
@@ -147,7 +134,6 @@ class SyncUserRequest(BaseModel):
     on (device_id, window_end_ts), so replaying an already-recorded span is
     a no-op."""
     observed: SyncObserved
-    local_grant_s: int = 0
     policy_version_applied: int = 0
     policy_revision_applied: str | None = None
     """The `timekpr_hub_core.effective_policy.policy_revision` value last
@@ -164,8 +150,6 @@ class SyncUserRequest(BaseModel):
 
 class SyncRequest(BaseModel):
     agent_time: str
-    tz: str
-    ntp_synced: bool
     agent_version: str
     users: list[SyncUserRequest]
 
@@ -173,18 +157,23 @@ class SyncRequest(BaseModel):
 class SyncUserResponse(BaseModel):
     username: str
     global_spent_s: int
-    remote_spent_s: int
     effective_limit_today_s: int
     effective_week_limit_s: int
     effective_month_limit_s: int
     enforcement: EnforcementMode
-    suppressed: bool = False
     policy_version: int
     policy_revision: str = ""
     """See `SyncUserRequest.policy_revision_applied`. Defaulted so the
     unmapped-user (observe-only) branch of `/sync` needs no change: an
     unmapped user is never pushed a policy either way."""
     policy: PolicyPayload | None = None
+    offline_policy: OfflinePolicy = OfflinePolicy.CAPPED
+    """What the agent should do once `offline_grace_s` has elapsed since its
+    last successful sync -- see `User.offline_policy` and the agent's
+    `_apply_offline_policy`. Defaulted to `capped` (today's only behavior
+    before this field existed) so the unmapped-user branch needs no change."""
+    offline_grace_s: int = 900
+    offline_cap_s: int = 1800
 
 
 class SyncResponse(BaseModel):
@@ -294,31 +283,6 @@ class PolicyPayload(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# Events (fire-and-forget, batched)
-# --------------------------------------------------------------------------
-
-
-class EventKind(str, Enum):
-    LOCAL_POLICY_DRIFT = "local_policy_drift"
-    CLOCK_SKEW = "clock_skew"
-    DBUS_LOST = "dbus_lost"
-    ENFORCEMENT_FAILED = "enforcement_failed"
-    AGENT_STARTED = "agent_started"
-    CORRECTION_APPLIED = "correction_applied"
-
-
-class Event(BaseModel):
-    kind: EventKind
-    username: str | None = None
-    ts: str
-    detail: dict = Field(default_factory=dict)
-
-
-class EventBatch(BaseModel):
-    events: list[Event]
-
-
-# --------------------------------------------------------------------------
 # Parent-facing API
 # --------------------------------------------------------------------------
 
@@ -385,14 +349,17 @@ class GateReleaseCreate(BaseModel):
 
 class UserSettingsUpdate(BaseModel):
     """PUT /users/{u}/settings -- the hub-only per-user knobs that never
-    reach `PolicyPayload` or a device: which weekdays are approval-gated, and
-    the accounting mode. Deliberately NOT part of PolicyUpdate/update_policy
-    -- these have no policy version, no device push, and their own single
-    save button in the UI, rather than sharing a save action with the policy
-    editor."""
+    reach `PolicyPayload` or a device: which weekdays are approval-gated, the
+    accounting mode, and the offline-grace policy. Deliberately NOT part of
+    PolicyUpdate/update_policy -- these have no policy version, no device
+    push, and their own single save button in the UI, rather than sharing a
+    save action with the policy editor."""
 
     gated_weekdays: list[str] = Field(default_factory=list)
     accounting_mode: AccountingMode = AccountingMode.WALLCLOCK
+    offline_policy: OfflinePolicy = OfflinePolicy.CAPPED
+    offline_grace_s: int = Field(default=900, ge=0, le=7 * 86400)
+    offline_cap_s: int = Field(default=1800, ge=0, le=7 * 86400)
 
     @field_validator("gated_weekdays")
     @classmethod

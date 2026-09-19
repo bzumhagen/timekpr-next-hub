@@ -449,9 +449,9 @@ no `.deb`/`.rpm` built for it yet.
 | `run --ca-cert` / `enroll --ca-cert` | | For a hub with a self-signed certificate |
 | `enroll --code` | | One-time enrollment code from the hub; prompted if omitted |
 | `enroll --users` | | Comma-separated; prompted interactively (from timekpr's own user list) if omitted |
-| `enroll --hostname` / `--machine-id` / `--os` | | Default to the local machine's own values |
+| `enroll --hostname` / `--machine-id` | | Default to the local machine's own values |
 | `enroll --no-start` | | Don't enable/restart the service after enrolling |
-| `status` | | No flags; reports the full enrollment/connectivity chain |
+| `status` | | `--hub-url` overrides `TIMEKPR_HUB_URL` for this one check; otherwise reports the full enrollment/connectivity chain |
 
 ## Further reading
 

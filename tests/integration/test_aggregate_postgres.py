@@ -25,7 +25,6 @@ from timekpr_hub.services.aggregate import (
     global_spent_wallclock,
     global_spent_wallclock_batch,
     insert_activity_interval,
-    latest_activity_state,
     latest_activity_states_batch,
     upsert_usage_counter,
 )
@@ -67,21 +66,16 @@ async def _make_user_and_devices(session: AsyncSession, n_devices: int = 2):
         device_id = uuid.uuid4()
         device_ids.append(device_id)
         await session.execute(
-            text(
-                "INSERT INTO devices (id, name, hostname, machine_id, token_hash, token_prefix) "
-                "VALUES (:id, :name, :host, :mid, :th, :tp)"
-            ),
+            text("INSERT INTO devices (id, name, machine_id, token_hash) VALUES (:id, :name, :mid, :th)"),
             {
                 "id": device_id,
                 "name": f"dev{i}",
-                "host": f"host{i}",
-                # machine_id/token_prefix are unique-constrained across the
-                # whole devices table, and several tests now call this
-                # helper more than once -- keyed off device_id, not the
-                # loop index, so they stay unique across calls too.
+                # machine_id is unique-constrained across the whole devices
+                # table, and several tests now call this helper more than
+                # once -- keyed off device_id, not the loop index, so it
+                # stays unique across calls too.
                 "mid": f"m-{device_id.hex}",
                 "th": f"hash{device_id.hex}",
-                "tp": f"tkh_{device_id.hex[:8]}",
             },
         )
     await session.commit()
@@ -311,7 +305,7 @@ async def test_global_spent_parallel_batch_matches_single_user_calls(db_session)
 
 
 @pytest.mark.asyncio
-async def test_latest_activity_states_batch_matches_single_user_calls(db_session):
+async def test_latest_activity_states_batch_reports_each_users_most_recent_state(db_session):
     user_a, (dev_a,) = await _make_user_and_devices(db_session, n_devices=1)
     user_b, (dev_b,) = await _make_user_and_devices(db_session, n_devices=1)
     user_c, _ = await _make_user_and_devices(db_session, n_devices=1)  # never reported
@@ -325,15 +319,9 @@ async def test_latest_activity_states_batch_matches_single_user_calls(db_session
     )
     await db_session.commit()
 
-    single_a = await latest_activity_state(db_session, user_id=user_a, day=today)
-    single_b = await latest_activity_state(db_session, user_id=user_b, day=today)
-    assert single_a[0] == "draining"
-    assert single_b[0] == "idle"
-
     batched = await latest_activity_states_batch(db_session, user_ids=[user_a, user_b, user_c], day=today)
-    assert batched[user_a][0] == single_a[0]
-    assert batched[user_a][1] == single_a[1]
-    assert batched[user_b][0] == single_b[0]
+    assert batched[user_a][0] == "draining"
+    assert batched[user_b][0] == "idle"
     assert user_c not in batched  # never reported -- absent, not ("logged_out", None)
 
 

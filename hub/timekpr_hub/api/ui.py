@@ -943,18 +943,6 @@ def _relative_time(age_s: float) -> str:
     return f"{int(age_s / 86400)}d ago"
 
 
-@router.post("/ui/devices/{device_id}/approve", response_class=HTMLResponse)
-async def approve_device_ui(
-    request: Request, device_id: uuid.UUID, session: AsyncSession = Depends(get_session)
-) -> HTMLResponse:
-    result = await session.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if device is not None:
-        device.status = "active"
-        await session.commit()
-    return await devices_fragment(request, session)
-
-
 @router.post("/ui/devices/{device_id}/revoke", response_class=HTMLResponse)
 async def revoke_device_ui(
     request: Request,

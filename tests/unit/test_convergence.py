@@ -157,63 +157,6 @@ def test_plan_never_grants_more_than_global_remainder(
         assert model.balance_s >= global_spent_s - 1  # -1 slack for int rounding
 
 
-@given(
-    balance_s=reasonable_seconds,
-    spent_local_s=reasonable_seconds,
-    global_spent_s=reasonable_seconds,
-    limit_today_s=reasonable_seconds,
-)
-def test_applied_offset_bookkeeping_zeroes_unexplained_next_tick(
-    balance_s, spent_local_s, global_spent_s, limit_today_s
-):
-    """If nothing external touches the balance between two ticks, applying
-    tick N's `new_applied_offset_s` as tick N+1's `applied_offset_s` must
-    yield `local_grant_s == 0` on tick N+1 -- i.e. the agent's own writes are
-    never mistaken for a parent's local grant (no false positives)."""
-    obs = Observation(balance_s=balance_s, spent_local_s=spent_local_s, limit_today_s=limit_today_s)
-    target = HubTarget(limit_today_s=limit_today_s, global_spent_s=global_spent_s)
-
-    p1 = plan(obs, target, applied_offset_s=0, force_absolute=False, cfg=CFG)
-
-    model = TimekprBalanceModel(balance_s=balance_s, limit_s=limit_today_s)
-    model.apply(p1.op, p1.seconds)
-
-    # Second tick: nothing else changed except the balance our own write produced.
-    obs2 = Observation(balance_s=model.balance_s, spent_local_s=spent_local_s, limit_today_s=limit_today_s)
-    p2 = plan(obs2, target, applied_offset_s=p1.new_applied_offset_s, force_absolute=False, cfg=CFG)
-
-    assert p2.local_grant_s == 0
-
-
-@given(
-    balance_s=reasonable_seconds,
-    spent_local_s=reasonable_seconds,
-    limit_today_s=reasonable_seconds,
-    parent_grant_s=st.integers(min_value=61, max_value=3600),
-)
-def test_local_grant_detected_when_parent_edits_balance_out_of_band(
-    balance_s, spent_local_s, limit_today_s, parent_grant_s
-):
-    """A parent running `timekpra --settimeleft +N` moves the balance without
-    moving spent_local -- this must show up as a positive local_grant_s."""
-    target = HubTarget(limit_today_s=limit_today_s, global_spent_s=balance_s - spent_local_s)
-
-    # Establish a baseline applied_offset matching the current (pre-grant) offset.
-    baseline_offset = balance_s - spent_local_s
-
-    # Parent grants time: balance moves up by parent_grant_s (more time left),
-    # i.e. B decreases in timekpr's "spent" accounting... but the plan module
-    # works in offset space, so simulate it as the offset shrinking.
-    granted_balance = balance_s - parent_grant_s
-    obs_after_grant = Observation(
-        balance_s=granted_balance, spent_local_s=spent_local_s, limit_today_s=limit_today_s
-    )
-
-    p = plan(obs_after_grant, target, applied_offset_s=baseline_offset, force_absolute=False, cfg=CFG)
-
-    assert p.local_grant_s == parent_grant_s
-
-
 def test_force_absolute_sets_balance_to_global_spent_exactly():
     obs = Observation(balance_s=12345, spent_local_s=6000, limit_today_s=3600)
     target = HubTarget(limit_today_s=3600, global_spent_s=1800)
@@ -226,19 +169,6 @@ def test_force_absolute_sets_balance_to_global_spent_exactly():
     assert p.op is Op.SET
     assert model.balance_s == target.global_spent_s
     assert p.reason == "force_absolute_rollover"
-
-
-def test_suppressed_device_is_driven_to_the_limit():
-    obs = Observation(balance_s=100, spent_local_s=50, limit_today_s=3600)
-    target = HubTarget(limit_today_s=3600, global_spent_s=1800, suppressed=True)
-
-    p = plan(obs, target, applied_offset_s=50, force_absolute=False, cfg=CFG)
-
-    model = TimekprBalanceModel(balance_s=obs.balance_s, limit_s=obs.limit_today_s)
-    model.apply(p.op, p.seconds)
-
-    assert model.balance_s == obs.limit_today_s  # zero time left
-    assert p.reason == "suppressed_one_device_at_a_time"
 
 
 def test_overspent_balance_uses_absolute_reset_not_clamped_relative_op():

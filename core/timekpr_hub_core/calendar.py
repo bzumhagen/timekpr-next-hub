@@ -82,3 +82,16 @@ def days_in_iso_week(any_day_in_week: date) -> list[date]:
     """Return the 7 calendar dates (Mon..Sun) of the ISO week containing ``any_day_in_week``."""
     monday = any_day_in_week - timedelta(days=any_day_in_week.isoweekday() - 1)
     return [monday + timedelta(days=i) for i in range(7)]
+
+
+def month_bounds(any_day_in_month: date) -> tuple[date, date]:
+    """Return (first day, last day) of the calendar month containing
+    ``any_day_in_month`` -- the pooling window for a monthly limit, the same
+    role ``days_in_iso_week`` plays for a weekly one."""
+    first = any_day_in_month.replace(day=1)
+    if first.month == 12:
+        next_month_first = first.replace(year=first.year + 1, month=1)
+    else:
+        next_month_first = first.replace(month=first.month + 1)
+    last = next_month_first - timedelta(days=1)
+    return first, last

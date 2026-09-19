@@ -50,7 +50,6 @@ class Parent(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    totp_secret: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -92,9 +91,6 @@ class User(Base):
     )
     offline_grace_s: Mapped[int] = mapped_column(Integer, nullable=False, default=900, server_default="900")
     offline_cap_s: Mapped[int] = mapped_column(Integer, nullable=False, default=1800, server_default="1800")
-    auto_adopt_local_grants: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default="true"
-    )
 
     # The recurring half of the chore gate: which weekdays ("1".."7") withhold
     # all time until a parent releases that specific date. Hub-only, like the
@@ -136,30 +132,30 @@ class Device(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     name: Mapped[str] = mapped_column(String(128), nullable=False)
-    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
     machine_id: Mapped[str] = mapped_column(String(64), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    token_prefix: Mapped[str] = mapped_column(String(12), nullable=False)
 
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending", server_default="pending"
-    )
+    # A parent-minted enrollment code is itself the approval -- see
+    # api/enroll.py -- so every device starts "active"; there is no
+    # separate pending/approve step.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
     enforcement: Mapped[str] = mapped_column(
         String(16), nullable=False, default="enforce", server_default="enforce"
     )
 
     agent_version: Mapped[str | None] = mapped_column(String(32))
-    os_info: Mapped[str | None] = mapped_column(String(255))
-    tz: Mapped[str | None] = mapped_column(String(64))
-    clock_skew_ms: Mapped[int | None] = mapped_column(Integer)
-    ntp_synced: Mapped[bool | None] = mapped_column(Boolean)
+    # BigInteger, not Integer: a virtual/compressed-time test harness (or a
+    # genuinely wrong system clock) can put agent_time arbitrarily far from
+    # the hub's real now(), well past int32's +-24.8 day range in
+    # milliseconds.
+    clock_skew_ms: Mapped[int | None] = mapped_column(BigInteger)
 
     enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        CheckConstraint("status IN ('pending', 'active', 'revoked')", name="ck_devices_status"),
+        CheckConstraint("status IN ('active', 'revoked')", name="ck_devices_status"),
         CheckConstraint("enforcement IN ('enforce', 'observe')", name="ck_devices_enforcement"),
         # Partial: a revoked device's machine_id must not block a *new*
         # device row from later reusing that machine, but any live
@@ -257,8 +253,6 @@ class UsageCounter(Base):
     day: Mapped[date] = mapped_column(Date, primary_key=True)
 
     spent_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
-    raw_balance_s: Mapped[int | None] = mapped_column(BigInteger)
-    raw_limit_today_s: Mapped[int | None] = mapped_column(BigInteger)
     activity_state: Mapped[str | None] = mapped_column(String(16))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -304,7 +298,7 @@ class Grant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        CheckConstraint("source IN ('parent', 'local_timekpra', 'auto_carryover')", name="ck_grants_source"),
+        CheckConstraint("source IN ('parent')", name="ck_grants_source"),
         Index("ix_grants_user_day", "user_id", "day"),
     )
 
@@ -418,21 +412,8 @@ class GateRelease(Base):
 
 
 # --------------------------------------------------------------------------
-# Alerts / audit log
+# Audit log
 # --------------------------------------------------------------------------
-
-
-class Alert(Base):
-    __tablename__ = "alerts"
-
-    id: Mapped[uuid.UUID] = _uuid_pk()
-    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    device_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
-    kind: Mapped[str] = mapped_column(String(64), nullable=False)
-    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info", server_default="info")
-    message: Mapped[str] = mapped_column(String(500), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AuditLog(Base):

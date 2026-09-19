@@ -100,8 +100,6 @@ def test_enroll_success_saves_token(server, tmp_path):
         enrollment_code="CODE1",
         hostname="h",
         machine_id="m",
-        os="linux",
-        tz="UTC",
         agent_version="0.1.0",
         local_users=["alice"],
     )
@@ -126,8 +124,6 @@ def test_enroll_failure_statuses_raise_friendly_errors(server, tmp_path, status,
             enrollment_code="CODE1",
             hostname="h",
             machine_id="m",
-            os="linux",
-            tz="UTC",
             agent_version="0.1.0",
             local_users=["alice"],
         )
@@ -141,8 +137,6 @@ def test_enroll_unreachable_hub_raises_enroll_error(tmp_path):
             enrollment_code="CODE1",
             hostname="h",
             machine_id="m",
-            os="linux",
-            tz="UTC",
             agent_version="0.1.0",
             local_users=["alice"],
         )
@@ -161,8 +155,6 @@ def test_enroll_with_a_schemeless_base_url_raises_enroll_error_not_a_traceback(t
             enrollment_code="CODE1",
             hostname="h",
             machine_id="m",
-            os="linux",
-            tz="UTC",
             agent_version="0.1.0",
             local_users=["alice"],
         )

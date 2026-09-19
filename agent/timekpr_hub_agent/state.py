@@ -32,15 +32,22 @@ class UserState:
     it -- both are kept and both only advance on a successful push)."""
     last_enforcement: str = ""  # "enforce", "observe", or "revoked" -- only used to log on transition
 
-    # Cached last-known values from the hub, used while offline (PLAN
-    # "Offline / hub-unreachable behavior"). Wall-clock (epoch seconds), not
-    # time.monotonic(): monotonic's epoch is arbitrary and resets on
-    # reboot, which used to make "seconds since contact" go deeply negative
-    # after a restart -- in_grace would then read True forever and the
-    # agent would silently stay unenforced while genuinely offline.
+    # Cached last-known values from the hub, used while offline. Wall-clock
+    # (epoch seconds), not time.monotonic(): monotonic's epoch is arbitrary
+    # and resets on reboot, which used to make "seconds since contact" go
+    # deeply negative after a restart -- in_grace would then read True
+    # forever and the agent would silently stay unenforced while genuinely
+    # offline.
     last_effective_limit_today_s: int = 0
     last_global_spent_s: int = 0
     last_hub_contact_utc: float = 0.0
+    # This user's offline policy as of the last successful sync (see
+    # User.offline_policy/offline_grace_s/offline_cap_s and main.py's
+    # _apply_offline_policy) -- cached the same way as the two fields above,
+    # since an outage is exactly when there's no fresher answer to use.
+    last_offline_policy: str = "capped"
+    last_offline_grace_s: int = 900
+    last_offline_cap_s: int = 1800
     # cum_local_s at the moment of last_hub_contact_utc -- lets offline
     # enforcement credit local activity since contact without ever
     # refunding it (see main.py's _apply_offline_policy).

@@ -12,6 +12,7 @@ from timekpr_hub_core.calendar import (
     canonical_stamp,
     day_changed,
     days_in_iso_week,
+    month_bounds,
     month_changed,
     week_changed,
 )
@@ -74,3 +75,19 @@ def test_days_in_iso_week_starts_monday():
     assert days[-1].isoweekday() == 7
     assert len(days) == 7
     assert date(2026, 9, 9) in days
+
+
+def test_month_bounds_mid_month():
+    assert month_bounds(date(2026, 9, 9)) == (date(2026, 9, 1), date(2026, 9, 30))
+
+
+def test_month_bounds_december_rolls_year():
+    assert month_bounds(date(2026, 12, 25)) == (date(2026, 12, 1), date(2026, 12, 31))
+
+
+def test_month_bounds_february_non_leap_year():
+    assert month_bounds(date(2026, 2, 3)) == (date(2026, 2, 1), date(2026, 2, 28))
+
+
+def test_month_bounds_february_leap_year():
+    assert month_bounds(date(2028, 2, 3)) == (date(2028, 2, 1), date(2028, 2, 29))

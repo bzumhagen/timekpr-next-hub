@@ -22,19 +22,27 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from timekpr_hub_core.calendar import canonical_stamp
-from timekpr_hub_core.models import EnforcementMode, SyncRequest, SyncResponse, SyncUserResponse
+from timekpr_hub_core.calendar import canonical_stamp, days_in_iso_week, month_bounds
+from timekpr_hub_core.models import (
+    EnforcementMode,
+    OfflinePolicy,
+    SyncRequest,
+    SyncResponse,
+    SyncUserResponse,
+)
 
 from timekpr_hub.api.auth import get_current_device
 from timekpr_hub.db.models import Device, User, UserAlias
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.aggregate import (
-    device_spent_today,
     global_spent_parallel,
+    global_spent_parallel_window,
     global_spent_wallclock,
+    global_spent_wallclock_window,
     insert_activity_interval,
     upsert_usage_counter,
 )
+from timekpr_hub.services.enrollment import provision_user_alias
 from timekpr_hub.services.limits import effective_daily_limit
 from timekpr_hub.services.policy import effective_policy_payload, get_or_create_policy
 from timekpr_hub.settings import settings
@@ -51,11 +59,24 @@ async def sync(
     now = datetime.now(UTC)
     stamp = canonical_stamp(now, settings.tz)
 
-    device.last_seen_at = now
-    device.last_sync_at = now
-    device.agent_version = req.agent_version
-    device.tz = req.tz
-    device.ntp_synced = req.ntp_synced
+    # `timekpr-hub-agent status` probes connectivity with an empty `users`
+    # list -- treat that as a pure connectivity check, not a real check-in,
+    # so running `status` on a dead agent's machine can't make it look
+    # freshly synced.
+    if req.users:
+        device.last_seen_at = now
+        device.last_sync_at = now
+        device.agent_version = req.agent_version
+        # Both operands are the same instant, one measured by the agent's
+        # clock and one by the hub's -- their difference is how far the
+        # device's clock has drifted. This matters beyond diagnostics:
+        # activity spans are timestamped entirely from the agent's own
+        # clock (main.py) and inserted into activity_intervals verbatim, so
+        # a skewed device's spans land at the wrong wall-clock position
+        # relative to every other device's -- simultaneous use on two
+        # devices can then fail to overlap in the union query, and "burn
+        # once" silently becomes "burn twice".
+        device.clock_skew_ms = round((now - datetime.fromisoformat(req.agent_time)).total_seconds() * 1000)
 
     user_responses: list[SyncUserResponse] = []
 
@@ -67,31 +88,26 @@ async def sync(
         )
         alias = alias_result.scalar_one_or_none()
         if alias is None:
-            # Unmapped user: observe-only, per PLAN status-code table (409
-            # conceptually; we fold it into the response here as an
-            # "observe" enforcement so a single /sync call covering several
-            # users doesn't have to fail the whole request over one).
-            user_responses.append(
-                SyncUserResponse(
-                    username=user_sync.username,
-                    global_spent_s=0,
-                    remote_spent_s=0,
-                    effective_limit_today_s=0,
-                    effective_week_limit_s=0,
-                    effective_month_limit_s=0,
-                    enforcement=EnforcementMode.OBSERVE,
-                    policy_version=0,
-                )
+            # A local username this device hasn't reported before -- e.g. a
+            # second local account added to the agent's managed list after
+            # enrollment. The device's own bearer token is exactly the
+            # authorization enroll's `local_users` already relies on, so
+            # provisioning here rather than staying observe-only forever
+            # means adding a user to an enrolled machine needs no
+            # revoke/re-enroll round trip; the very same sync then falls
+            # through to full enforcement below rather than needing a
+            # second tick.
+            user, policy, _ = await provision_user_alias(
+                session, device_id=device.id, local_username=user_sync.username
             )
-            continue
+        else:
+            user_result = await session.execute(select(User).where(User.id == alias.user_id))
+            user = user_result.scalar_one()
 
-        user_result = await session.execute(select(User).where(User.id == alias.user_id))
-        user = user_result.scalar_one()
-
-        # SELECT ... FOR UPDATE-guarded against two devices reaching this
-        # user's first sync concurrently (services/policy.py's
-        # get_or_create_policy docstring).
-        policy = await get_or_create_policy(session, user)
+            # SELECT ... FOR UPDATE-guarded against two devices reaching
+            # this user's first sync concurrently (services/policy.py's
+            # get_or_create_policy docstring).
+            policy = await get_or_create_policy(session, user)
 
         # 1. record this tick's contribution (idempotent on both writes)
         await upsert_usage_counter(
@@ -100,8 +116,6 @@ async def sync(
             device_id=device.id,
             day=stamp.day,
             spent_seconds=user_sync.cumulative_spent_s,
-            raw_balance_s=user_sync.observed.balance_s,
-            raw_limit_today_s=user_sync.observed.limit_today_s,
             activity_state=user_sync.observed.activity_state.value,
         )
         for span in user_sync.active_spans:
@@ -128,23 +142,26 @@ async def sync(
             )
 
         # 2. recompute the global total per this user's accounting mode
-        if user.accounting_mode == "wallclock":
+        wallclock = user.accounting_mode == "wallclock"
+        if wallclock:
             global_spent = await global_spent_wallclock(session, user_id=user.id, day=stamp.day)
         else:
             global_spent = await global_spent_parallel(session, user_id=user.id, day=stamp.day)
 
-        this_device_spent = await device_spent_today(
-            session, user_id=user.id, device_id=device.id, day=stamp.day
-        )
-        remote_spent = max(global_spent - this_device_spent, 0)
-
-        # 3. effective limits
+        # 3. effective limits -- daily is the full policy+grants+overrides+gate
+        # combiner; week/month pool the SAME accounting mode's spend across
+        # their own window and subtract it from the policy's standing
+        # ceiling, so a device never sees a week/month limit more permissive
+        # than what's actually left in the pool.
         limit_today = await effective_daily_limit(session, policy=policy, user=user, day=stamp.day)
-        # Week/month pooling isn't built yet -- for now the agent gets the
-        # raw policy ceilings, which is a strict superset (never MORE
-        # restrictive than intended) of the eventual behavior.
-        week_limit = policy.weekly_limit_s
-        month_limit = policy.monthly_limit_s
+
+        week_start, week_end = days_in_iso_week(stamp.day)[0], days_in_iso_week(stamp.day)[-1]
+        month_start, month_end = month_bounds(stamp.day)
+        window_spend = global_spent_wallclock_window if wallclock else global_spent_parallel_window
+        week_spent = await window_spend(session, user_id=user.id, start_day=week_start, end_day=week_end)
+        month_spent = await window_spend(session, user_id=user.id, start_day=month_start, end_day=month_end)
+        week_limit = max(0, policy.weekly_limit_s - week_spent)
+        month_limit = max(0, policy.monthly_limit_s - month_spent)
 
         enforcement = EnforcementMode.OBSERVE if device.enforcement == "observe" else EnforcementMode.ENFORCE
 
@@ -175,15 +192,16 @@ async def sync(
             SyncUserResponse(
                 username=user_sync.username,
                 global_spent_s=global_spent,
-                remote_spent_s=remote_spent,
                 effective_limit_today_s=limit_today,
                 effective_week_limit_s=week_limit,
                 effective_month_limit_s=month_limit,
                 enforcement=enforcement,
-                suppressed=False,  # one-active-device-at-a-time isn't built yet
                 policy_version=policy.version,
                 policy_revision=revision,
                 policy=policy_payload,
+                offline_policy=OfflinePolicy(user.offline_policy),
+                offline_grace_s=user.offline_grace_s,
+                offline_cap_s=user.offline_cap_s,
             )
         )
 

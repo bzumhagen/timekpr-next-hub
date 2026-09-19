@@ -58,7 +58,11 @@ AGENT_VERSION = "0.1.0"
 MACHINE_ID_PATHS = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
 SERVICE_UNIT = "timekpr-hub-agent.service"
 
-# Offline / hub-unreachable defaults.
+# Offline / hub-unreachable defaults, matching UserState's own field
+# defaults (state.py) -- these are what a user who has never synced
+# successfully falls back to. Once the hub has been reached at least once,
+# _apply_offline_policy uses the per-user values it actually sent
+# (UserState.last_offline_policy/grace_s/cap_s) instead.
 DEFAULT_OFFLINE_GRACE_S = 900
 DEFAULT_OFFLINE_CAP_S = 1800
 
@@ -199,7 +203,6 @@ def run_tick(
         sync_users.append(
             {
                 "username": username,
-                "day": today_str,
                 "cumulative_spent_s": user_state.cum_local_s,
                 # Buffered spans from a previous failed sync (see the
                 # exception handlers below) go out first, oldest first, so
@@ -215,7 +218,6 @@ def run_tick(
                     "active": obs.active,
                     "activity_state": activity_state,
                 },
-                "local_grant_s": 0,  # unexplained-offset detection happens per-user below
                 "policy_version_applied": user_state.policy_version_applied,
                 "policy_revision_applied": user_state.policy_revision_applied,
             }
@@ -226,8 +228,6 @@ def run_tick(
         response = hub.sync(
             {
                 "agent_time": now.isoformat(),
-                "tz": tz_name,
-                "ntp_synced": True,  # no real NTP check yet
                 "agent_version": agent_version,
                 "users": sync_users,
             }
@@ -247,6 +247,11 @@ def run_tick(
             user_state.last_global_spent_s = resp_user["global_spent_s"]
             user_state.last_hub_contact_utc = now.timestamp()
             user_state.cum_local_at_contact_s = user_state.cum_local_s
+            user_state.last_offline_policy = resp_user.get("offline_policy", user_state.last_offline_policy)
+            user_state.last_offline_grace_s = resp_user.get(
+                "offline_grace_s", user_state.last_offline_grace_s
+            )
+            user_state.last_offline_cap_s = resp_user.get("offline_cap_s", user_state.last_offline_cap_s)
 
             # Everything buffered (plus this tick's own span) reached the
             # hub successfully -- drop the buffer, and remember where this
@@ -254,6 +259,33 @@ def run_tick(
             user_state.pending_spans = []
             if this_tick_spans.get(username):
                 user_state.last_tick_utc = now.timestamp()
+
+            target = HubTarget(
+                limit_today_s=resp_user["effective_limit_today_s"],
+                global_spent_s=resp_user["global_spent_s"],
+            )
+
+            if resp_user.get("enforcement") == "observe":
+                # A device explicitly set to observe-only: compute and log
+                # exactly the write that would have been made, but touch
+                # neither DBUS (no policy push, no setTimeLeft) nor the
+                # agent's own convergence bookkeeping -- see
+                # api/parent.py's `set_device_observe_mode` docstring for
+                # the contract this has to match.
+                if user_state.last_enforcement != "observe":
+                    log.warning("%s: hub enforcement is 'observe' -- computing but not writing", username)
+                user_state.last_enforcement = "observe"
+                _apply_convergence(
+                    enforcer=enforcer,
+                    username=username,
+                    obs=obs,
+                    target=target,
+                    user_state=user_state,
+                    force_absolute=force_absolute,
+                    dry_run=True,
+                )
+                continue
+            user_state.last_enforcement = "enforce"
 
             policy_payload = resp_user.get("policy")
             if policy_payload:
@@ -278,29 +310,11 @@ def run_tick(
                 else:
                     log.warning("%s: policy push failed, will retry next tick", username)
 
-            if resp_user.get("enforcement") == "observe":
-                # Either an unmapped local username (hub doesn't know this
-                # account) or a device explicitly set to observe-only. The
-                # hub sends effective_limit_today_s=0/global_spent_s=0 for
-                # this case, which would otherwise converge the child
-                # straight to locked out -- skip convergence entirely
-                # instead, and say so once per transition rather than every
-                # 20s tick.
-                if user_state.last_enforcement != "observe":
-                    log.warning("%s: hub enforcement is 'observe' -- not writing any local limit", username)
-                user_state.last_enforcement = "observe"
-                continue
-            user_state.last_enforcement = "enforce"
-
             _apply_convergence(
                 enforcer=enforcer,
                 username=username,
                 obs=obs,
-                target=HubTarget(
-                    limit_today_s=resp_user["effective_limit_today_s"],
-                    global_spent_s=resp_user["global_spent_s"],
-                    suppressed=resp_user.get("suppressed", False),
-                ),
+                target=target,
                 user_state=user_state,
                 force_absolute=force_absolute,
             )
@@ -343,9 +357,13 @@ def run_tick(
                 username=username,
                 obs=obs,
                 user_state=user_state,
-                offline_policy="capped",  # a per-user override would be hub-side; not wired yet
-                offline_grace_s=DEFAULT_OFFLINE_GRACE_S,
-                offline_cap_s=DEFAULT_OFFLINE_CAP_S,
+                # The per-user policy/grace/cap the hub sent on this user's
+                # last successful sync (SyncUserResponse.offline_*), cached
+                # in state.json for exactly this moment -- an outage is
+                # when there's no fresher answer to ask for.
+                offline_policy=user_state.last_offline_policy,
+                offline_grace_s=user_state.last_offline_grace_s,
+                offline_cap_s=user_state.last_offline_cap_s,
                 now=now,
             )
         next_poll_ms = min(next_poll_ms * 2, 300_000)
@@ -367,7 +385,16 @@ def _buffer_unsent_span(user_state: state_mod.UserState, span: dict | None) -> N
         user_state.pending_spans = user_state.pending_spans[-MAX_PENDING_SPANS:]
 
 
-def _apply_convergence(*, enforcer, username, obs, target, user_state, force_absolute) -> None:
+def _apply_convergence(*, enforcer, username, obs, target, user_state, force_absolute, dry_run=False) -> None:
+    """Compute this tick's convergence plan and, unless `dry_run`, apply it.
+
+    In observe mode (`dry_run=True`) the plan is computed and logged
+    exactly as it would be applied, but neither `enforcer.set_time_left`
+    nor `user_state.applied_offset_s` is touched -- observe mode must have
+    zero effect on the device (see api/parent.py's `set_device_observe_mode`
+    docstring) and zero effect on the agent's own bookkeeping, so enforcing
+    again later starts from the same convergence state as if observe mode
+    had never happened."""
     result = plan(
         Observation(balance_s=obs.balance_s, spent_local_s=obs.spent_day_s, limit_today_s=obs.limit_today_s),
         target,
@@ -376,9 +403,12 @@ def _apply_convergence(*, enforcer, username, obs, target, user_state, force_abs
         cfg=CFG,
     )
     if result.op is not Op.NOOP:
-        log.info("%s: setTimeLeft(%s, %ds) -- %s", username, result.op.value, result.seconds, result.reason)
-        enforcer.set_time_left(username, result.op.value, result.seconds)
-    user_state.applied_offset_s = result.new_applied_offset_s
+        verb = "would setTimeLeft" if dry_run else "setTimeLeft"
+        log.info("%s: %s(%s, %ds) -- %s", username, verb, result.op.value, result.seconds, result.reason)
+        if not dry_run:
+            enforcer.set_time_left(username, result.op.value, result.seconds)
+    if not dry_run:
+        user_state.applied_offset_s = result.new_applied_offset_s
 
 
 _ALL_WEEKDAYS = ["1", "2", "3", "4", "5", "6", "7"]
@@ -569,7 +599,14 @@ def _apply_offline_policy(
             force_absolute=False,
         )
     elif offline_policy == "closed":
-        target = HubTarget(limit_today_s=obs.limit_today_s, global_spent_s=obs.limit_today_s, suppressed=True)
+        # Drive the balance to the device's own configured limit -- zero
+        # time left -- by making the target agree that the limit is already
+        # fully spent. Using obs.limit_today_s for both fields (rather than
+        # a dedicated "suppressed" signal) works through the normal
+        # convergence path: target_balance collapses to obs.limit_today_s
+        # regardless of the device's own limit, same as a real hub-side
+        # zero-limit policy would produce.
+        target = HubTarget(limit_today_s=obs.limit_today_s, global_spent_s=obs.limit_today_s)
         _apply_convergence(
             enforcer=enforcer,
             username=username,
@@ -708,8 +745,6 @@ def _cmd_enroll(args: argparse.Namespace) -> None:
             enrollment_code=code,
             hostname=hostname,
             machine_id=machine_id,
-            os=args.os,
-            tz=args.tz,
             agent_version=AGENT_VERSION,
             local_users=local_users,
             local_policies=local_policies,
@@ -854,7 +889,7 @@ def _cmd_status(args: argparse.Namespace) -> None:
         )
 
     env_values = config_mod.read_env_file()
-    hub_url = config_mod.env_default("TIMEKPR_HUB_URL", env_values)
+    hub_url = args.hub_url or config_mod.env_default("TIMEKPR_HUB_URL", env_values)
     all_ok &= _check(
         "config present", bool(hub_url), f"run `timekpr-hub-agent enroll` ({config_mod.DEFAULT_ENV_PATH})"
     )
@@ -884,18 +919,27 @@ def _cmd_status(args: argparse.Namespace) -> None:
                     ca_cert=config_mod.env_default("TIMEKPR_HUB_CA_CERT", env_values),
                 )
             )
-            hub.sync(
+            probe_sent_at = datetime.now(UTC)
+            response = hub.sync(
                 {
-                    "agent_time": datetime.now(UTC).isoformat(),
-                    "tz": config_mod.env_default("TIMEKPR_HUB_TZ", env_values) or "UTC",
-                    "ntp_synced": True,
+                    "agent_time": probe_sent_at.isoformat(),
                     "agent_version": AGENT_VERSION,
                     "users": [],
                 }
             )
             all_ok &= _check("hub reachable", True)
+            hub_time = response.get("hub_time")
+            if hub_time:
+                # Comparing against `probe_sent_at` (before the round trip)
+                # rather than `datetime.now(UTC)` again keeps network
+                # latency out of the estimate -- what's being checked is
+                # this machine's own clock, not how long the request took.
+                skew_ms = round((datetime.fromisoformat(hub_time) - probe_sent_at).total_seconds() * 1000)
+                _check(f"clock within 30s of the hub ({skew_ms:+d}ms)", abs(skew_ms) < 30_000)
         except (HubUnreachableError, DeviceRevokedError) as exc:
             all_ok &= _check("hub reachable", False, str(exc))
+    else:
+        _check("hub reachable", False, "no --hub-url and no TIMEKPR_HUB_URL in agent.env")
 
     state = state_mod.load(Path(args.state_path))
     managed_users = [
@@ -957,7 +1001,6 @@ def main() -> None:
     enroll_parser.add_argument("--tz", default="UTC", help="overridden by the hub's HUB_TZ once enrolled")
     enroll_parser.add_argument("--hostname", default=None, help="default: this machine's hostname")
     enroll_parser.add_argument("--machine-id", default=None, help="default: /etc/machine-id")
-    enroll_parser.add_argument("--os", default="linux")
     enroll_parser.add_argument(
         "--no-start", action="store_true", help="don't run `systemctl enable --now` after enrolling"
     )
@@ -966,6 +1009,9 @@ def main() -> None:
     status_parser = subparsers.add_parser("status", help="check every link in the chain, one line per check")
     status_parser.add_argument("--token-path", default=str(DEFAULT_TOKEN_PATH))
     status_parser.add_argument("--state-path", default=str(state_mod.DEFAULT_STATE_PATH))
+    status_parser.add_argument(
+        "--hub-url", default=None, help="override TIMEKPR_HUB_URL from agent.env for this check"
+    )
     status_parser.set_defaults(func=_cmd_status)
 
     args = parser.parse_args()

@@ -1,5 +1,5 @@
-"""FastAPI app against a real Postgres, exercising the enroll -> approve
--> sync flow end-to-end.
+"""FastAPI app against a real Postgres, exercising the enroll -> sync flow
+end-to-end.
 
 Requires a running Postgres reachable via $TEST_DATABASE_URL with
 migrations applied (same as test_aggregate_postgres.py) -- see README.md
@@ -220,7 +220,7 @@ async def test_enroll_merges_into_an_existing_user_of_the_same_username(client):
 async def test_enrolled_device_is_immediately_active_and_can_sync(client):
     """A parent-minted enrollment code is itself the approval -- there's no
     separate un-authenticated approval step that would gate anything, and a
-    'pending' default would just add a step that could sync anyway (auth.py
+    'pending' status would just add a step that could sync anyway (auth.py
     only rejects 'revoked')."""
     code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
     enroll_resp = await client.post(
@@ -407,13 +407,13 @@ async def test_sync_rejects_revoked_device_immediately(client):
 
 
 @pytest.mark.asyncio
-async def test_full_enroll_approve_sync_flow_two_devices_wallclock_burn_once(client):
+async def test_full_enroll_sync_flow_two_devices_wallclock_burn_once(client):
     """End-to-end acceptance test: two devices, one pooled
     user, wall-clock 'burn once' accounting -- via the real HTTP API against
     real Postgres, not just the pure-Python simulation."""
     await _seed_user("alpha")
 
-    async def enroll_and_approve(hostname: str) -> tuple[str, str]:
+    async def enroll(hostname: str) -> tuple[str, str]:
         code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
         resp = await client.post(
             "/api/v1/enroll",
@@ -421,7 +421,6 @@ async def test_full_enroll_approve_sync_flow_two_devices_wallclock_burn_once(cli
                 "enrollment_code": code,
                 "hostname": hostname,
                 "machine_id": hostname,
-                "os": "linux",
                 "tz": "UTC",
                 "agent_version": "0.1.0",
                 "local_users": ["alpha"],
@@ -429,12 +428,10 @@ async def test_full_enroll_approve_sync_flow_two_devices_wallclock_burn_once(cli
         )
         assert resp.status_code == 201
         device_id, token = resp.json()["device_id"], resp.json()["device_token"]
-        approve_resp = await client.post(f"/api/v1/devices/{device_id}/approve")
-        assert approve_resp.status_code == 200
         return device_id, token
 
-    _, token_a = await enroll_and_approve("kitchen-pc")
-    _, token_b = await enroll_and_approve("loft-laptop")
+    _, token_a = await enroll("kitchen-pc")
+    _, token_b = await enroll("loft-laptop")
 
     async def sync(token: str, cumulative_s: int, start: str, end: str) -> dict:
         resp = await client.post(

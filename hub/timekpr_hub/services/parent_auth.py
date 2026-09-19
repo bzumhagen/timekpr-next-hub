@@ -1,10 +1,9 @@
 """Parent authentication: password hashing and session tokens.
 
-Password + session cookie. No TOTP yet -- `Parent.totp_secret` stays
-unused until there's demand for it. Sessions mirror the device-token
-pattern in `api/auth.py` deliberately,
-rather than inventing a second scheme: a random token handed to the client,
-only its sha256 stored server-side, revocable by deleting the row.
+Password + session cookie -- no second factor. Sessions mirror the
+device-token pattern in `api/auth.py` deliberately, rather than inventing a
+second scheme: a random token handed to the client, only its sha256 stored
+server-side, revocable by deleting the row.
 """
 
 from __future__ import annotations

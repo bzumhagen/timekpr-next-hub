@@ -18,7 +18,7 @@ Core invariant, verified against a real `timekprd`:
 
 Definitions:
 
-    L  = effective daily limit today (policy + grants + carryover)
+    L  = effective daily limit today (policy + grants)
     s  = local TIME_SPENT_DAY (measurement; the agent never writes this)
     B  = local TIME_SPENT_BALANCE (enforcement; the agent's only write)
     G  = hub's global spent-today for this user (wall-clock union or sum)
@@ -27,9 +27,7 @@ Definitions:
 
 Goal: keep O == R. Because O is invariant under normal (non-agent) activity
 (B and s advance by the same delta each tick), the agent only has to correct
-for whatever moved O since its last write — including a parent's own
-`timekpra` edit, which is detected as an "unexplained" offset change and
-reported as a grant rather than fought.
+for whatever moved O since its last write.
 
 Note on `correction`: expanding R - O = (G - s) - (B - s) = G - B. The
 correction a relative write must apply is therefore computed directly
@@ -72,10 +70,6 @@ class ConvergenceConfig:
     """|correction| beyond this is treated as "something went badly wrong"
     (daemon restart, long offline period, clock jump) — do an authoritative
     '=' reset rather than a relative nudge."""
-
-    grant_epsilon_s: int = 60
-    """Minimum |unexplained offset change| before it's reported as a
-    parent-initiated local grant rather than dismissed as noise."""
 
     regression_tolerance_s: int = 90
     """Used by `advance_cumulative`: how large a *decrease* in observed local
@@ -126,10 +120,6 @@ class HubTarget:
     global_spent_s: int
     """G: the hub's canonical total spent today for this user, across all devices."""
 
-    suppressed: bool = False
-    """One-active-device-at-a-time loser — drive this device's balance to the
-    limit regardless of the arithmetic below."""
-
 
 @dataclass(frozen=True, slots=True)
 class Plan:
@@ -139,15 +129,10 @@ class Plan:
 
     new_applied_offset_s: int
     """The offset the agent should remember as "what we last applied", for next
-    tick's unexplained-offset (local grant) detection. This is deliberately
+    tick's convergence bookkeeping. This is deliberately
     `observed_offset + actually_applied_correction`, never the target `R` —
     using the target would make the un-applied deadband residue look like a
-    phantom local grant on every subsequent tick."""
-
-    local_grant_s: int
-    """Positive: a parent appears to have granted time locally via timekpra
-    since our last write. Negative: time appears to have been taken away.
-    Zero: nothing unexplained. Report to the hub; do not act on it here."""
+    spurious divergence on every subsequent tick."""
 
     reason: str
     """Short machine-readable explanation, for logs/tests."""
@@ -172,24 +157,6 @@ def plan(
     new day.
     """
     observed_offset = observed.balance_s - observed.spent_local_s
-    unexplained = observed_offset - applied_offset_s
-    local_grant_s = -unexplained if abs(unexplained) > cfg.grant_epsilon_s else 0
-
-    if target.suppressed:
-        # One-active-device-at-a-time loser: drive balance to the limit so
-        # timekpr's own lockout machinery fires, with its normal warnings and
-        # configured LOCKOUT_TYPE. We still want a well-defined applied_offset
-        # afterwards so re-entering the pool later doesn't look like a grant.
-        # setTimeLeft(user, '=', 0) => BALANCE := DEVICE'S limit - 0 == DEVICE'S limit.
-        # (Deliberately observed.limit_today_s, not target.limit_today_s --
-        # see Observation.limit_today_s's docstring.)
-        return Plan(
-            op=Op.SET,
-            seconds=0,
-            new_applied_offset_s=observed.limit_today_s - observed.spent_local_s,
-            local_grant_s=local_grant_s,
-            reason="suppressed_one_device_at_a_time",
-        )
 
     # Target BALANCE this tick is B* = G + (L_dev - L_eff), NOT plain G.
     # Time left is always (device's limit) - BALANCE, so this makes time
@@ -232,7 +199,6 @@ def plan(
             op=Op.SET,
             seconds=seconds,
             new_applied_offset_s=target_balance - observed.spent_local_s,
-            local_grant_s=local_grant_s,
             reason=(
                 "force_absolute_rollover"
                 if force_absolute
@@ -248,7 +214,6 @@ def plan(
             op=Op.SUBTRACT,
             seconds=correction,
             new_applied_offset_s=observed_offset + correction,
-            local_grant_s=local_grant_s,
             reason="converge_consume",
         )
 
@@ -259,7 +224,6 @@ def plan(
             op=Op.ADD,
             seconds=-correction,
             new_applied_offset_s=observed_offset + correction,
-            local_grant_s=local_grant_s,
             reason="converge_refund",
         )
 
@@ -267,7 +231,6 @@ def plan(
         op=Op.NOOP,
         seconds=0,
         new_applied_offset_s=observed_offset,
-        local_grant_s=local_grant_s,
         reason="within_deadband",
     )
 

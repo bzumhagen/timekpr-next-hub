@@ -25,28 +25,21 @@ async def upsert_usage_counter(
     device_id: uuid.UUID,
     day: date,
     spent_seconds: int,
-    raw_balance_s: int | None = None,
-    raw_limit_today_s: int | None = None,
     activity_state: str | None = None,
 ) -> None:
     """Idempotent MAX-merge: replaying the same (or an older) absolute
-    counter is always safe, out-of-order arrival is harmless. See PLAN
-    "Idempotency"."""
+    counter is always safe, out-of-order arrival is harmless."""
     stmt = pg_insert(UsageCounter).values(
         user_id=user_id,
         device_id=device_id,
         day=day,
         spent_seconds=spent_seconds,
-        raw_balance_s=raw_balance_s,
-        raw_limit_today_s=raw_limit_today_s,
         activity_state=activity_state,
     )
     stmt = stmt.on_conflict_do_update(
         index_elements=[UsageCounter.user_id, UsageCounter.device_id, UsageCounter.day],
         set_={
             "spent_seconds": text("GREATEST(usage_counters.spent_seconds, EXCLUDED.spent_seconds)"),
-            "raw_balance_s": stmt.excluded.raw_balance_s,
-            "raw_limit_today_s": stmt.excluded.raw_limit_today_s,
             "activity_state": stmt.excluded.activity_state,
             "updated_at": text("now()"),
         },
@@ -188,10 +181,10 @@ async def global_spent_parallel_batch(
 async def latest_activity_states_batch(
     session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
 ) -> dict[uuid.UUID, tuple[str, datetime]]:
-    """`latest_activity_state` for every user in `user_ids` in one
-    round-trip instead of one query per user. A user with no
-    reported activity_state today is simply absent; callers should default
-    to `("logged_out", None)`, same as the single-user version."""
+    """The most recently updated device's reported activity_state for every
+    user in `user_ids`, in one round-trip. A user with no reported
+    activity_state today is simply absent; callers should default to
+    `("logged_out", None)`."""
     if not user_ids:
         return {}
     stmt = text(
@@ -204,30 +197,6 @@ async def latest_activity_states_batch(
     ).bindparams(bindparam("user_ids", expanding=True))
     result = await session.execute(stmt, {"user_ids": user_ids, "day": day})
     return {row.user_id: (str(row.activity_state), row.updated_at) for row in result}
-
-
-async def latest_activity_state(
-    session: AsyncSession, *, user_id: uuid.UUID, day: date
-) -> tuple[str, datetime | None]:
-    """The most recently updated device's reported activity_state for this
-    user today, plus that update's timestamp (so a caller can apply its own
-    staleness rule -- see hub/timekpr_hub/api/ui.py's 3x-poll-interval rule
-    -- rather than trusting a state a device stopped reporting hours ago)."""
-    result = await session.execute(
-        text(
-            """
-            SELECT activity_state, updated_at FROM usage_counters
-            WHERE user_id = :user_id AND day = :day AND activity_state IS NOT NULL
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """
-        ),
-        {"user_id": user_id, "day": day},
-    )
-    row = result.first()
-    if row is None:
-        return "logged_out", None
-    return str(row[0]), row[1]
 
 
 async def global_spent_parallel(session: AsyncSession, *, user_id: uuid.UUID, day: date) -> int:
@@ -282,6 +251,41 @@ async def global_spent_wallclock_history(
     return {row.day: int(row.global_spent_s) for row in result}
 
 
+async def global_spent_wallclock_window(
+    session: AsyncSession, *, user_id: uuid.UUID, start_day: date, end_day: date
+) -> int:
+    """Pooled wall-clock spend across every day in [start_day, end_day] --
+    the week/month pooling window used by /sync's effective_week_limit_s /
+    effective_month_limit_s. Days are disjoint in wall-clock time, so simply
+    summing each day's independently-computed union
+    (`global_spent_wallclock_history`, already GREATEST-floored per day) is
+    correct -- unlike within a single day, there's no cross-day overlap that
+    needs merging."""
+    per_day = await global_spent_wallclock_history(
+        session, user_id=user_id, start_day=start_day, end_day=end_day
+    )
+    return sum(per_day.values())
+
+
+async def global_spent_parallel_window(
+    session: AsyncSession, *, user_id: uuid.UUID, start_day: date, end_day: date
+) -> int:
+    """Pooled 'parallel' accounting spend across [start_day, end_day] -- sum
+    of every device's per-day counter, the range generalization of
+    `global_spent_parallel`."""
+    result = await session.execute(
+        text(
+            """
+            SELECT COALESCE(SUM(spent_seconds), 0) AS global_spent_s
+            FROM usage_counters
+            WHERE user_id = :user_id AND day BETWEEN :start_day AND :end_day
+            """
+        ),
+        {"user_id": user_id, "start_day": start_day, "end_day": end_day},
+    )
+    return int(result.scalar_one())
+
+
 async def device_spent_for_day_by_device(
     session: AsyncSession, *, user_id: uuid.UUID, day: date
 ) -> dict[uuid.UUID, int]:
@@ -302,8 +306,7 @@ async def device_spent_for_day_by_device(
 async def device_spent_today(
     session: AsyncSession, *, user_id: uuid.UUID, device_id: uuid.UUID, day: date
 ) -> int:
-    """This device's own MAX-merged counter -- used to compute remote_spent_s
-    = global_spent_s - device's own contribution."""
+    """This device's own MAX-merged counter for one day."""
     result = await session.execute(
         text(
             """

@@ -459,17 +459,6 @@ async def list_devices(session: AsyncSession = Depends(get_session)) -> list[dic
     ]
 
 
-@router.post("/devices/{device_id}/approve")
-async def approve_device(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
-    result = await session.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if device is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
-    device.status = "active"
-    await session.commit()
-    return {"id": str(device.id), "status": device.status}
-
-
 @router.post("/devices/{device_id}/revoke")
 async def revoke_device(
     device_id: uuid.UUID,

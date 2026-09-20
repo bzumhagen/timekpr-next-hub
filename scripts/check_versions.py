@@ -14,10 +14,11 @@ There are six of them, and they cannot be collapsed into one:
   - `pkgver` in `agent/packaging/PKGBUILD` -- makepkg needs a literal, and
     it is also what names the release tarball the PKGBUILD downloads.
 
-`tests/unit/test_agent_config.py` already pins AGENT_VERSION to
-agent/pyproject.toml; this covers the other four sites, and with
-`--expect` it is also the release workflow's gate that the git tag
-matches what the tree actually declares.
+`tests/unit/test_agent_config.py` separately pins AGENT_VERSION to
+agent/pyproject.toml as a unit-test-level sanity check; this script is
+what actually verifies all six agree with each other, and with `--expect`
+it's also the release workflow's gate that the git tag matches what the
+tree declares.
 
 Usage:
     scripts/check_versions.py              # all six agree with each other

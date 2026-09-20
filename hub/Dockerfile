@@ -1,7 +1,8 @@
 # Multi-stage build using uv (see Makefile's `image`/`build` targets and the
 # uv workspace at the repo root). Only the `timekpr-hub` package and its own
 # dependencies are installed -- not the dev group, and not the sibling
-# `timekpr-hub-agent` package's httpx/dbus footprint.
+# `timekpr-hub-agent` package (which has zero non-stdlib runtime
+# dependencies of its own anyway).
 FROM python:3.12-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /bin/uv

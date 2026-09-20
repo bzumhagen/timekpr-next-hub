@@ -91,7 +91,7 @@ test-all: .venv/.synced db-up migrate-test ## Run the full suite in one process,
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" TIMEKPR_HUB_REQUIRE_DB=1 \
 		$(UV) run pytest $(PYTEST_ARGS)
 
-check: check-version lint typecheck test ## Everything CI runs before a merge (version + lint + typecheck + non-DB tests)
+check: check-version lint typecheck test ## Fast local pre-commit gate (version + lint + typecheck + non-DB tests) -- CI also runs lint-sh and the Arch package build
 
 # --------------------------------------------------------------------- db --
 

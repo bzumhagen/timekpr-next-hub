@@ -6,13 +6,13 @@ Notable changes per release. Format follows
 core package released together under one version (see
 `docs/releasing.md`).
 
-Each released version's section here becomes that GitHub Release's notes,
-so write it for someone deciding whether to upgrade — the commit list is
-appended automatically underneath.
+Each released version's section here becomes that GitHub Release's notes
+(plus an appended compare link) — write it for someone deciding whether
+to upgrade.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-19
+## [0.1.0] - 2026-09-20
 
 First tagged release. Pools a user's daily screen-time budget across every
 machine they use, instead of `timekpr-next` tracking each one separately.

@@ -102,9 +102,8 @@ container nightly. A logical `pg_dump` on top of that is still worth having
 su -s /bin/sh postgres -c "pg_restore -d timekpr_hub --clean --if-exists /path/to/the.dump"
 ```
 
-This also works with a `-Fc` dump produced by the old `docker compose`
-stack's backup job -- Postgres 17 (what Debian trixie ships) reads the
-Postgres 16 dumps that stack produced.
+This also works with a `-Fc` dump taken from the docker-compose stack's
+Postgres 16 -- Postgres 17 (what Debian trixie ships) reads it fine.
 
 ## Sizing
 

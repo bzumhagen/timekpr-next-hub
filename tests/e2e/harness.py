@@ -1,25 +1,19 @@
 """Reusable test harness for tests/e2e: a real agent tick loop against a
 real HTTP hub (uvicorn, real Postgres), with FakeTimekprDaemon standing in
-for the local timekpr daemon.
+for the local timekpr daemon. Neither `test_multi_device_simulation.py`
+(FakeTimekprDaemon against an in-process `SimHub` stand-in) nor
+`test_hub_api.py` (the real hub via hand-written JSON) wires the real
+agent tick loop to a real hub -- two real bugs found by running the agent
+against a live daemon were invisible to every synthetic test at the time,
+precisely because of that gap.
 
-The other test layers each cover one half of this:
-`test_multi_device_simulation.py` drives FakeTimekprDaemon against an
-in-process `SimHub` stand-in, and `test_hub_api.py` drives the real hub with
-hand-written JSON -- but neither wires the real agent tick loop to a real
-hub. Both of the real bugs found by running the agent against a live daemon
-were invisible to every synthetic test that existed at the time, precisely
-because of that gap.
-
-The hub runs as a genuine `uvicorn` server on an ephemeral loopback port, in
-a background thread with its own event loop, rather than `httpx.ASGITransport`
-(the pattern in `tests/integration/test_hub_api.py`). Two things fall out of
-that choice:
-
-  1. the app's own module-level engine (`hub/timekpr_hub/db/session.py`) is
-     exercised for real, instead of overriding `get_session` per test, and
-  2. the agent's real, urllib-based `HubClient` gets its first genuine
-     HTTP round trip in this test suite -- everywhere else it's either
-     scripted (`tests/unit/test_agent_run_tick.py`) or bypassed entirely.
+The hub runs as a genuine `uvicorn` server on an ephemeral loopback port,
+in a background thread with its own event loop, rather than
+`httpx.ASGITransport` (test_hub_api.py's pattern): the app's own
+module-level engine (db/session.py) gets exercised for real instead of
+overriding `get_session`, and the agent's real urllib-based `HubClient`
+gets its first genuine HTTP round trip in this suite (everywhere else
+it's scripted or bypassed).
 """
 
 from __future__ import annotations
@@ -91,23 +85,18 @@ def _wait_until_up(base_url: str, timeout_s: float = 10.0) -> None:
 async def start_live_hub() -> AsyncIterator[str]:
     """A real uvicorn server serving the real `timekpr_hub.app`, on an
     ephemeral port, in a background thread with its own asyncio event loop.
-    An async generator rather than a fixture directly (the `live_hub`
-    fixture itself lives in tests/e2e/conftest.py, so pytest can inject it
-    into any test by parameter name with no explicit import -- importing a
-    fixture function into a module that also uses it as a parameter name is
-    a real, flagged redefinition, not just a style nit: ruff's F811 caught
-    exactly that when this was first written directly in this module).
+    An async generator rather than a fixture directly -- the `live_hub`
+    fixture itself lives in tests/e2e/conftest.py so pytest can inject it
+    by parameter name with no import (importing this function directly
+    into a module using it as a parameter name is a real ruff F811).
 
-    `hub_engine.dispose()` before AND after: SQLAlchemy's async engine binds
-    its asyncpg connection pool lazily, to whichever event loop first uses
-    it. Some other test in this session may have already done that under
-    pytest-asyncio's own (session-scoped) loop -- e.g. `test_hub_api.py`'s
-    `LifespanManager(app)` runs `app.py`'s `_lifespan`, which queries via
-    this same module-level engine directly, not via the overridden
-    `get_session`. Disposing first forces a fresh pool, bound afresh to
-    whichever loop asks next -- this fixture's own uvicorn thread. Disposing
-    again on teardown leaves the engine equally reset for whatever runs
-    after it, regardless of test collection order.
+    `hub_engine.dispose()` before AND after: SQLAlchemy's async engine
+    binds its asyncpg pool lazily to whichever event loop first uses it,
+    and some other test may already have done that under pytest-asyncio's
+    own session-scoped loop (e.g. test_hub_api.py's `LifespanManager(app)`
+    queries via this same module-level engine). Disposing first forces a
+    fresh pool bound to this fixture's own uvicorn thread; disposing again
+    on teardown leaves it equally reset for whatever runs next.
     """
     await require_db()
 
@@ -301,23 +290,15 @@ class VirtualClock:
 
 class FakeEnforcer:
     """Wraps one FakeTimekprDaemon per username -- just enough of
-    TimekprEnforcer's interface for run_tick, extended (beyond the original
-    private copy in tests/unit/test_agent_run_tick.py) with the four
-    policy-push methods `policy_push.py::_apply_policy_push` actually calls.
+    TimekprEnforcer's interface for run_tick, plus the four policy-push
+    methods `policy_push.py::_apply_policy_push` calls.
 
-    This matters for e2e: on tick 1 the agent reports
-    `policy_version_applied=0` while the hub's freshly-seeded policy is
-    version 1, so `sync.py` DOES send a payload and `_apply_policy_push`
-    DOES run -- a no-op stub here would silently leave `daemon.limit_today_s`
-    unset by the push and invalidate every downstream convergence assertion
-    (`plan()` converges to `G + (L_dev - L_eff)`, which depends on
-    `Observation.limit_today_s` reflecting whatever was actually pushed).
-
-    `clock` is only consulted once a push has actually happened (i.e.
-    `_daily_limits` has an entry for that user) -- until then this behaves
-    exactly like the original scripted-hub tests' copy, so
-    tests/unit/test_agent_run_tick.py can import this shared class in place
-    of its own without changing behavior.
+    Matters for e2e: on tick 1 the agent reports `policy_version_applied=0`
+    while the hub's freshly-seeded policy is version 1, so `_apply_policy_push`
+    DOES run -- a no-op stub here would leave `daemon.limit_today_s` unset
+    and invalidate every downstream convergence assertion (`plan()`
+    converges to `G + (L_dev - L_eff)`, which needs `Observation.limit_today_s`
+    to reflect what was actually pushed).
     """
 
     def __init__(self, daemons: dict[str, FakeTimekprDaemon], clock: VirtualClock | None = None):
@@ -397,19 +378,11 @@ class FakeEnforcer:
         self.set_allowed_hours_calls += 1
         if not hours:
             return False
-        # Real timekpr's checkAndSetAllowedHours does
-        # `for rHour in list(map(str, pHourList)): ...; pHourList[rHour][...]`
-        # -- it re-indexes the dict with a *stringified* key it derives by
-        # iterating it, so an int-keyed dict raises KeyError there, which
-        # its caller swallows into a bare DBUS failure with no visible
-        # exception (server/config/configprocessor.py::
-        # checkAndSetAllowedHours). Enforcing that same requirement here is
-        # what makes this fake actually catch the "silently never applies"
-        # class of bug instead of accepting whatever shape a caller hands
-        # it -- this exact mismatch shipped once already (an int-keyed
-        # `hours_to_dbus_payload`) and passed every test until it was
-        # caught live on a real device, precisely because this fake didn't
-        # replicate the real validation.
+        # Enforces the same string-keys-only requirement the real daemon's
+        # checkAndSetAllowedHours has (see core/allowed_hours.py::
+        # hours_to_dbus_payload's docstring) -- an int-keyed hours dict
+        # shipped once and passed every test until it was caught live,
+        # precisely because this fake didn't replicate that validation.
         if not all(isinstance(hour_key, str) for hour_key in hours):
             return False
         self._allowed_hours.setdefault(username, {})[day_number] = hours

@@ -49,31 +49,18 @@ def test_hub_outage_buffers_spans_and_replays_them_on_recovery(live_hub, tmp_pat
     union: each failed sync buffers its span (UserState.pending_spans,
     tick.py's _buffer_unsent_span), and the first successful sync afterward
     replays all of them alongside its own (insert_activity_interval is
-    idempotent, so this is always safe even on a retried delivery).
+    idempotent, so a retried delivery is always safe).
 
-    The outage starts only after several real, successful baseline ticks --
-    totaling more real elapsed time than FakeTimekprDaemon's own
-    `save_interval_s` (30s; matches the real daemon's TK_SAVE_INTERVAL), not
-    just one. Two things need that head start to have genuinely happened
-    first, not merely be "established" in the loose sense:
-
-      1. The device's very first tick ever always forces an authoritative
-         '=' write (tick.py's canonical-rollover/first-tick rule) --
-         FakeTimekprDaemon's (real-daemon-accurate) '=' semantics discard
-         any not-yet-flushed spent_day_s, so that write alone resets it to 0
-         if it lands before the first flush.
-      2. If a SECOND '=' write (e.g. from `_apply_offline_policy`'s
-         "capped" branch, before `last_effective_limit_today_s` is known)
-         also lands before the first flush, its own discard can coincide
-         *exactly* with the genuine activity ticked in between -- landing
-         `spent_day_s` right back on its pre-discard value and making
-         `advance_cumulative` see "no change", silently swallowing that
-         tick's span. This isn't a bug this test is about (it's the
-         documented "'=' regression trap", convergence.py); it's what
-         happens when a compressed-time test's writes land closer together
-         than a real device's ever would relative to its own flush cadence.
-         Ticking well past one real flush before the outage starts is what
-         keeps this test about the outage, not about that."""
+    The outage starts only after several real baseline ticks -- more
+    elapsed time than FakeTimekprDaemon's `save_interval_s` (30s, matching
+    TK_SAVE_INTERVAL), not just one. Without that head start, the first
+    tick's authoritative '=' write and a second '=' write from
+    `_apply_offline_policy`'s "capped" branch could each discard
+    not-yet-flushed `spent_day_s` before the first flush, landing it back
+    on its pre-discard value and silently swallowing a span via the
+    documented "'=' regression trap" (convergence.py) -- an artifact of
+    compressed-time writes landing closer together than a real device's
+    ever would, unrelated to the outage this test is actually about."""
     clock = VirtualClock.starting_at()
     daemon = FakeTimekprDaemon(limit_today_s=ONE_HOUR)
     real_hub = _enroll_one(live_hub, tmp_path)

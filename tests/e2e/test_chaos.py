@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from timekpr_hub_agent.main import run_tick
+from timekpr_hub_agent.tick import run_tick
 
 from tests.e2e.harness import (
     FakeEnforcer,
@@ -47,7 +47,7 @@ def _enroll_one(base_url: str, tmp_path):
 def test_hub_outage_buffers_spans_and_replays_them_on_recovery(live_hub, tmp_path):
     """A multi-tick hub outage must not lose activity from the wall-clock
     union: each failed sync buffers its span (UserState.pending_spans,
-    main.py's _buffer_unsent_span), and the first successful sync afterward
+    tick.py's _buffer_unsent_span), and the first successful sync afterward
     replays all of them alongside its own (insert_activity_interval is
     idempotent, so this is always safe even on a retried delivery).
 
@@ -58,7 +58,7 @@ def test_hub_outage_buffers_spans_and_replays_them_on_recovery(live_hub, tmp_pat
     first, not merely be "established" in the loose sense:
 
       1. The device's very first tick ever always forces an authoritative
-         '=' write (main.py's canonical-rollover/first-tick rule) --
+         '=' write (tick.py's canonical-rollover/first-tick rule) --
          FakeTimekprDaemon's (real-daemon-accurate) '=' semantics discard
          any not-yet-flushed spent_day_s, so that write alone resets it to 0
          if it lands before the first flush.
@@ -111,7 +111,7 @@ def test_clock_jump_backwards_does_not_break_the_sync(live_hub, tmp_path):
     """A clock correction (NTP step, manual date change) that moves `now`
     backwards across a tick must not crash the agent or corrupt the hub's
     union: the span this tick would naively construct starts and ends
-    before the previous tick's own emitted end, which main.py's
+    before the previous tick's own emitted end, which tick.py's
     last_tick_utc clamp and sync.py's end<=start guard exist specifically
     to keep out of activity_intervals."""
     clock = VirtualClock.starting_at()

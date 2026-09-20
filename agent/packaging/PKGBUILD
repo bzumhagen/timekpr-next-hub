@@ -52,8 +52,12 @@ check() {
     # cleanly under this Arch python" is a real check and needs no test
     # dependencies. `dbus`/`gi` are imported lazily inside enforcer.py, so
     # this passes in a clean chroot without pulling depends= in.
+    # timekpr_hub_agent.main only imports .cli lazily, inside main() (see
+    # that module's own docstring for why), so .cli/.tick/.policy_push are
+    # named explicitly here too, or a break in any of them would build fine
+    # and only surface at runtime.
     cd "$srcdir/$_srcroot"
-    PYTHONPATH="agent:core" python -c 'import timekpr_hub_agent.main, timekpr_hub_agent.config'
+    PYTHONPATH="agent:core" python -c 'import timekpr_hub_agent.main, timekpr_hub_agent.config, timekpr_hub_agent.cli, timekpr_hub_agent.tick, timekpr_hub_agent.policy_push'
 }
 
 package() {

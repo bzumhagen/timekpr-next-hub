@@ -1,12 +1,12 @@
 """Unit tests for `_prompt_or_die`, the interactive-input helper `enroll`
-uses for --hub-url and --code (main.py) -- isolated from the rest of
+uses for --hub-url and --code (cli.py) -- isolated from the rest of
 `_cmd_enroll`, which needs a real/mocked timekpr install to exercise
 end-to-end."""
 
 from __future__ import annotations
 
 import pytest
-from timekpr_hub_agent.main import _prompt_or_die
+from timekpr_hub_agent.cli import _prompt_or_die
 
 
 def test_prompt_or_die_returns_the_value_unprompted_when_given():

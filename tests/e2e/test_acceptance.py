@@ -1,7 +1,7 @@
 """The three acceptance scenarios, driven against real components -- see
 tests/e2e/harness.py's module docstring for why that matters. Each drives
 the real agent
-tick loop (`timekpr_hub_agent.main.run_tick`), the real convergence math
+tick loop (`timekpr_hub_agent.tick.run_tick`), the real convergence math
 (`timekpr_hub_core.convergence.plan`), a real hub over real HTTP (uvicorn),
 and real Postgres, with FakeTimekprDaemon standing in only for the local
 timekpr daemon itself (already validated against the real one -- see its

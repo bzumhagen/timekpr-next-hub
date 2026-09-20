@@ -48,7 +48,7 @@ from timekpr_hub.db.session import engine as hub_engine
 from timekpr_hub_agent import state as state_mod
 from timekpr_hub_agent.enforcer import UserObservation
 from timekpr_hub_agent.hubclient import HubClient, HubClientConfig, HubUnreachableError
-from timekpr_hub_agent.main import run_tick
+from timekpr_hub_agent.tick import run_tick
 
 from tests.dbutil import TEST_DATABASE_URL, all_table_names, require_db
 from tests.fakes.fake_timekpr import FakeTimekprDaemon
@@ -303,7 +303,7 @@ class FakeEnforcer:
     """Wraps one FakeTimekprDaemon per username -- just enough of
     TimekprEnforcer's interface for run_tick, extended (beyond the original
     private copy in tests/unit/test_agent_run_tick.py) with the four
-    policy-push methods `main.py::_apply_policy_push` actually calls.
+    policy-push methods `policy_push.py::_apply_policy_push` actually calls.
 
     This matters for e2e: on tick 1 the agent reports
     `policy_version_applied=0` while the hub's freshly-seeded policy is
@@ -375,7 +375,7 @@ class FakeEnforcer:
 
     def set_time_limit_for_days(self, username: str, daily_limits_s: list[int]) -> bool:
         # `daily_limits_s` here is already projected to the allowed-weekdays
-        # subset (agent/timekpr_hub_agent/main.py::
+        # subset (agent/timekpr_hub_agent/policy_push.py::
         # _project_daily_limits_to_allowed_days), matching the real DBUS
         # call's positional semantics -- see get_user_observation above.
         self._daily_limits[username] = list(daily_limits_s)

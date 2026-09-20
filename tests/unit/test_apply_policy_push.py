@@ -1,5 +1,5 @@
-"""Unit coverage for agent/timekpr_hub_agent/main.py::_apply_policy_push and
-its helpers -- the agent-side half of pushing a policy to a device.
+"""Unit coverage for agent/timekpr_hub_agent/policy_push.py::_apply_policy_push
+and its helpers -- the agent-side half of pushing a policy to a device.
 Exercises every field `PolicyPayload` can carry,
 plus the two correctness issues the advanced editor would otherwise expose
 silently: the ALLOWED_WEEKDAYS/LIMITS_PER_WEEKDAYS positional-index bug, and
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from timekpr_hub_agent.main import _apply_policy_push, _project_daily_limits_to_allowed_days
+from timekpr_hub_agent.policy_push import _apply_policy_push, _project_daily_limits_to_allowed_days
 
 from tests.e2e.harness import FakeEnforcer
 from tests.fakes.fake_timekpr import FakeTimekprDaemon

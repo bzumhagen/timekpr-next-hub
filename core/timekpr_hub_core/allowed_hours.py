@@ -73,7 +73,7 @@ def unrestricted() -> list[TimeInterval]:
     "forbidden", not "allowed", so an empty interval list must never be
     pushed to timekpr as though it meant "no restriction" (see
     `PolicyPayload.allowed_hours`'s docstring, and
-    `agent/timekpr_hub_agent/main.py::_apply_policy_push`)."""
+    `agent/timekpr_hub_agent/policy_push.py::_apply_policy_push`)."""
     return [TimeInterval(0, HOURS_IN_DAY * 60, unaccounted=False)]
 
 

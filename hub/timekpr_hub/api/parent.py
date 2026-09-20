@@ -61,7 +61,7 @@ def _day_hour_override_intervals(body: DayHourOverrideCreate) -> list[AllowedHou
     the identical one-clock-hour-per-interval error message either way."""
     if body.mode == "unrestricted":
         return _wire_intervals(intervals_to_hours(unrestricted()))
-    interval = TimeInterval(body.from_min, body.to_min, unaccounted=False)
+    interval = TimeInterval(body.from_min, body.to_min, unaccounted=body.unaccounted)
     try:
         _validate_intervals([interval])
     except IntervalConflictError as exc:

@@ -329,6 +329,10 @@ class DayHourOverrideCreate(BaseModel):
     mode: Literal["unrestricted", "window"]
     from_min: int = Field(default=0, ge=0, le=24 * 60)
     to_min: int = Field(default=24 * 60, ge=0, le=24 * 60)
+    unaccounted: bool = False
+    """Only meaningful with mode="window": timekpr's "!" unaccounted hours
+    -- allowed, but not counted against the daily limit. Ignored for
+    "unrestricted", which always writes the plain all-24-hours form."""
     reason: str = Field(default="", max_length=255)
 
     @model_validator(mode="after")

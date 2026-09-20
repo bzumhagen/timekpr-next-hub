@@ -137,6 +137,35 @@ async def test_override_for_today_changes_the_synced_hours_but_not_the_int_versi
 
 
 @pytest.mark.asyncio
+async def test_day_hours_override_can_mark_the_window_unaccounted(client):
+    """DayHourOverrideCreate.unaccounted must reach the pushed
+    AllowedHourInterval -- timekpr's '!' semantics, allowed but not
+    counted against the daily limit."""
+    await _seed_user("hours_unaccounted")
+    token = await _enroll_device(client, "hours_unaccounted", "m-hours-unaccounted")
+    await _set_policy_daily_limits(client, "hours_unaccounted", 120)
+
+    today = _today_str()
+    resp = await client.put(
+        "/api/v1/users/hours_unaccounted/day-hours",
+        json={
+            "day": today,
+            "mode": "window",
+            "from_min": 15 * 60,
+            "to_min": 16 * 60,
+            "unaccounted": True,
+            "reason": "homework",
+        },
+    )
+    assert resp.status_code == 200
+
+    result = await _sync(client, token, "hours_unaccounted", revision_applied="")
+    weekday = _todays_weekday_token()
+    hours = result["policy"]["allowed_hours"][weekday]
+    assert all(h["unaccounted"] for h in hours)
+
+
+@pytest.mark.asyncio
 async def test_future_dated_override_pushes_nothing_today(client):
     await _seed_user("hours_future")
     token = await _enroll_device(client, "hours_future", "m-hours-future")

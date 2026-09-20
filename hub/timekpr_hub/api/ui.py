@@ -553,36 +553,60 @@ def _classify_day_hours(intervals: list[AllowedHourInterval] | None) -> dict:
     fields, so it gets minute precision the old whole-hour checkbox grid
     could not express). Anything else (zero intervals, or more than one --
     i.e. a genuinely split day) is "custom", rendered as the paint track at
-    whole-hour granularity, same as this editor's first version."""
+    whole-hour granularity, same as this editor's first version.
+
+    `unaccounted` (custom mode only) is True when every checked hour that
+    day is timekpr's "!" unaccounted -- allowed, but not counted against
+    the daily limit (e.g. a standing homework hour). It's a single
+    day-level toggle rather than a per-hour one: real per-hour granularity
+    would need a second paint track, and a day that mixes accounted and
+    unaccounted hours is rare enough not to justify that UI cost yet."""
     if intervals is None:
         return {
             "mode": "all",
             "from_min": _BETWEEN_SEED[0],
             "to_min": _BETWEEN_SEED[1],
             "hours": set(range(24)),
+            "unaccounted": False,
         }
 
     records = [HourRecord(iv.hour, iv.start_min, iv.end_min, iv.unaccounted) for iv in intervals]
     merged = hours_to_intervals(records)
     hours = {iv.hour for iv in intervals}
+    unaccounted = bool(intervals) and all(iv.unaccounted for iv in intervals)
 
     if not merged:
-        return {"mode": "custom", "from_min": _BETWEEN_SEED[0], "to_min": _BETWEEN_SEED[1], "hours": hours}
+        return {
+            "mode": "custom",
+            "from_min": _BETWEEN_SEED[0],
+            "to_min": _BETWEEN_SEED[1],
+            "hours": hours,
+            "unaccounted": unaccounted,
+        }
     if len(merged) == 1 and (merged[0].start_min, merged[0].end_min) == _FULL_DAY:
         return {
             "mode": "all",
             "from_min": _BETWEEN_SEED[0],
             "to_min": _BETWEEN_SEED[1],
             "hours": set(range(24)),
+            "unaccounted": False,
         }
-    if len(merged) == 1:
+    # A single merged interval is normally "between" (minute precision, no
+    # unaccounted checkbox in that mode's UI) -- but if it's unaccounted,
+    # showing it as "between" would silently lose that flag on the next
+    # save, since "between" mode has nowhere to display or resubmit it.
+    # Two adjacent unaccounted hours in custom mode merge into exactly one
+    # interval here, so this is a real, reachable case, not a theoretical
+    # one.
+    if len(merged) == 1 and not merged[0].unaccounted:
         return {
             "mode": "between",
             "from_min": merged[0].start_min,
             "to_min": merged[0].end_min,
             "hours": hours,
+            "unaccounted": False,
         }
-    return {"mode": "custom", "from_min": 0, "to_min": 0, "hours": hours}
+    return {"mode": "custom", "from_min": 0, "to_min": 0, "hours": hours, "unaccounted": unaccounted}
 
 
 def _fmt_hm(total_min: int) -> str:
@@ -745,7 +769,10 @@ def _parse_day_hours(form, day: str) -> list[AllowedHourInterval]:
             "'Days allowed to log in' in Advanced settings instead -- an empty hour list can't be "
             "applied on the device.",
         )
-    return [AllowedHourInterval(hour=h, start_min=0, end_min=60, unaccounted=False) for h in checked_hours]
+    unaccounted = _checkbox(form, f"unaccounted_{day}")
+    return [
+        AllowedHourInterval(hour=h, start_min=0, end_min=60, unaccounted=unaccounted) for h in checked_hours
+    ]
 
 
 async def _parse_policy_form(form) -> PolicyUpdate:

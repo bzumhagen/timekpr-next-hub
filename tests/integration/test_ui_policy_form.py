@@ -116,6 +116,30 @@ async def test_custom_mode_rejects_a_day_with_no_hours_checked(client):
 
 
 @pytest.mark.asyncio
+async def test_custom_mode_unaccounted_checkbox_marks_every_checked_hour(client):
+    """The day-level "these hours don't count against the daily limit"
+    checkbox in custom mode must mark every checked hour unaccounted, and
+    reloading the editor must show it checked again."""
+    await _seed_user("unaccounteduser")
+    form = _base_form("unaccounteduser")
+    form["hours_mode_3"] = "custom"
+    form["hh_3_15"] = "on"
+    form["hh_3_16"] = "on"
+    form["unaccounted_3"] = "on"
+    resp = await client.post("/users/unaccounteduser/policy", data=form, follow_redirects=False)
+    assert resp.status_code == 303
+
+    policy = await _get_policy("unaccounteduser")
+    day3 = policy.allowed_hours_json["3"]
+    assert len(day3) == 2
+    assert all(iv["unaccounted"] for iv in day3)
+
+    page = await client.get("/users/unaccounteduser")
+    assert page.status_code == 200
+    assert 'name="unaccounted_3" checked' in page.text
+
+
+@pytest.mark.asyncio
 async def test_unchecked_weekly_cap_writes_the_uncapped_maximum(client):
     """Unchecking "also cap per week" must mean uncapped (timekpr's own
     default), not an accidental 0-second cap."""

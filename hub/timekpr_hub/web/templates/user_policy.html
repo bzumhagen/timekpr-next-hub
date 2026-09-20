@@ -111,6 +111,10 @@
               </div>
             </div>
             <div class="track-summary" data-track-summary="{{ day }}"></div>
+            <label style="display:flex;align-items:center;gap:.25rem;font-size:.85rem;">
+              <input type="checkbox" name="unaccounted_{{ day }}" {% if d.unaccounted %}checked{% endif %}>
+              These hours don't count against the daily limit (e.g. homework)
+            </label>
           </div>
         </div>
       {% endfor %}

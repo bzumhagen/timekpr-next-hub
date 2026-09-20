@@ -54,34 +54,27 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
-# FastAPI's own DI pattern is `param: T = Depends(...)` -- the "function
-# call in a default argument" is how FastAPI recognizes a dependency at all,
-# not a mutable-default footgun (each request gets a fresh call). These
-# should eventually move to `Annotated[T, Depends(...)]`.
+# FastAPI's DI pattern (`param: T = Depends(...)`) is how it recognizes a
+# dependency at all, not a mutable-default footgun -- each request gets a
+# fresh call. Should eventually move to `Annotated[T, Depends(...)]`.
 "hub/timekpr_hub/api/*.py" = ["B008"]
 # Same false positive: ConvergenceConfig() as a default is an immutable,
 # cheap-to-construct dataclass used as a shared-default sentinel.
 "core/timekpr_hub_core/convergence.py" = ["B008", "UP042"]
-# `class Foo(str, Enum)` -> `enum.StrEnum` is otherwise a safe, cosmetic
-# modernization, but str(member)/f"{member}" formatting for the two forms
-# differs across Python versions (changed in 3.12) -- these are wire-format
-# enums serialized straight into the hub<->agent JSON contract (models.py)
-# or into the DBUS `setTimeLeft` op argument (convergence.py's `Op`), so
-# this is left as a deliberate app-behavior decision rather than an
-# automatic tooling fix.
+# `class Foo(str, Enum)` -> `enum.StrEnum` is a safe modernization in
+# general, but str()/f"{}" formatting differs across Python versions for
+# the two forms -- these are wire-format enums in the hub<->agent JSON
+# contract, so this stays a deliberate decision, not an automatic fix.
 "core/timekpr_hub_core/models.py" = ["UP042"]
 
 [tool.mypy]
 python_version = "3.11"
 plugins = ["pydantic.mypy"]
-# Non-strict baseline -- ignore_missing_imports covers third-party libs
-# without stubs in general, and specifically timekpr/dbus (system-provided,
-# no stubs anywhere) and the workspace packages under their own dirs.
+# Non-strict baseline: covers third-party libs with no stubs in general,
+# and specifically timekpr/dbus (system-provided, no stubs anywhere).
 ignore_missing_imports = true
 mypy_path = ["core", "hub", "agent"]
-# `mypy agent` walks the whole tree, including makepkg's own build staging
-# directories (agent/packaging/pkg/, src/) if one happens to be left on
-# disk from a manual `makepkg -f` run -- those contain a second copy of
-# timekpr_hub_core, which mypy then reports as a duplicate module. Both are
-# gitignored but not mypy-ignored by default.
+# Excludes makepkg's own build staging dirs, left behind by a manual
+# `makepkg -f` -- they hold a second copy of timekpr_hub_core, which mypy
+# then reports as a duplicate module. Gitignored but not mypy-ignored.
 exclude = ["^agent/packaging/(pkg|src)/"]

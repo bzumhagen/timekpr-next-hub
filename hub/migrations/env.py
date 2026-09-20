@@ -8,12 +8,10 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from timekpr_hub.db.models import Base
 
-# `timekpr_hub` is importable directly: this repo is a uv workspace and
-# `timekpr_hub` is an installed (editable) package in the workspace venv,
-# not something reached via a path hack. Alembic must therefore be invoked
-# through that venv, e.g. `uv run --package timekpr-hub alembic ...` (see
-# the Makefile's migrate/migrate-test targets) rather than a bare `alembic`
-# on some other interpreter's PATH.
+# `timekpr_hub` is importable directly: it's an installed (editable)
+# package in the uv workspace venv, so alembic must be invoked through
+# that venv (`uv run --package timekpr-hub alembic ...`, see the
+# Makefile's migrate/migrate-test targets), not a bare `alembic`.
 
 config = context.config
 
@@ -30,17 +28,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
-    """
+    """Emit SQL to stdout instead of running it -- `alembic upgrade --sql`."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -61,11 +49,6 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    """In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
-
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

@@ -1,0 +1,42 @@
+{% extends "_base.html" %}
+{% block title %}Audit log -- timekpr-next-hub{% endblock %}
+{% block content %}
+  <div class="topbar">
+    <h1>Audit log</h1>
+    <a class="button-link" href="/">&larr; Back</a>
+  </div>
+
+  <div class="card">
+    <p class="card-title">Every parent action</p>
+    {% if not events %}
+      <p class="card-subtitle">Nothing recorded yet.</p>
+    {% endif %}
+    {% for e in events %}
+      <div style="border-top: 1px solid var(--tk-line); padding: .5rem 0; font-size: .85rem;">
+        <div>
+          <strong>{{ e.action }}</strong>
+          {% if e.target %}on <code>{{ e.target }}</code>{% endif %}
+          <span style="opacity:.7;">&middot; {{ e.actor }}{% if e.ip %} from {{ e.ip }}{% endif %}</span>
+        </div>
+        <div style="opacity:.6;">{{ e.ts }}</div>
+        {% if e.before or e.after %}
+          <details style="margin-top:.25rem;">
+            <summary style="cursor:pointer;">before / after</summary>
+            {% if e.before %}<pre style="white-space:pre-wrap; font-size:.8rem;">before: {{ e.before }}</pre>{% endif %}
+            {% if e.after %}<pre style="white-space:pre-wrap; font-size:.8rem;">after: {{ e.after }}</pre>{% endif %}
+          </details>
+        {% endif %}
+      </div>
+    {% endfor %}
+    <div style="margin-top: 1rem; display:flex; justify-content:space-between;">
+      {% if offset > 0 %}
+        <a href="/audit?offset={{ prev_offset }}">&larr; Newer</a>
+      {% else %}
+        <span></span>
+      {% endif %}
+      {% if has_more %}
+        <a href="/audit?offset={{ offset + page_size }}">Older &rarr;</a>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

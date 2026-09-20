@@ -6,9 +6,17 @@
     <a class="button-link" href="/">&larr; Back</a>
   </div>
   <p class="lede">
-    Hub-only settings -- unlike the <a href="/users/{{ username }}/policy">policy editor</a>,
+    Hub-only settings -- unlike the <a href="/users/{{ username }}">policy editor</a>,
     nothing here is pushed to a device or creates a new policy version.
   </p>
+
+  <div class="card">
+    <p class="card-title">Rename</p>
+    <form method="post" action="/users/{{ username }}/rename" class="policy-form">
+      <input type="text" name="display_name" value="{{ display_name }}" required style="flex:1;">
+      <button type="submit">Rename</button>
+    </form>
+  </div>
 
   <form method="post" action="/users/{{ username }}/settings">
     <div class="card">
@@ -43,8 +51,41 @@
       </span>
     </div>
 
+    <div class="card">
+      <p class="card-title">While the hub can't be reached</p>
+      <p class="hint">
+        What a device managing {{ display_name }} should do once it's gone
+        {{ offline_grace_min }} minutes without successfully syncing.
+      </p>
+      <span class="seg">
+        <input type="radio" name="offline_policy" id="op-open" value="open" {% if offline_policy == 'open' %}checked{% endif %}>
+        <label for="op-open">Keep enforcing the last-known limit</label>
+        <input type="radio" name="offline_policy" id="op-capped" value="capped" {% if offline_policy == 'capped' %}checked{% endif %}>
+        <label for="op-capped">Allow a bit more, then cap</label>
+        <input type="radio" name="offline_policy" id="op-closed" value="closed" {% if offline_policy == 'closed' %}checked{% endif %}>
+        <label for="op-closed">Lock out immediately</label>
+      </span>
+      <label>Grace period before this kicks in (minutes)</label>
+      <input type="number" name="offline_grace_min" min="0" max="10080" value="{{ offline_grace_min }}">
+      <label>Extra time allowed under "Allow a bit more" (minutes)</label>
+      <input type="number" name="offline_cap_min" min="0" max="10080" value="{{ offline_cap_min }}">
+    </div>
+
     <div class="save-bar">
       <button type="submit">Save settings</button>
     </div>
   </form>
+
+  <div class="card">
+    <p class="card-title">Delete this user</p>
+    <p class="hint">
+      Permanently removes {{ display_name }} and all of their history (usage, policies, grants,
+      overrides) from the hub. Any device still reporting this local username starts observing
+      it again, same as before it was ever provisioned. This cannot be undone.
+    </p>
+    <form method="post" action="/users/{{ username }}/delete"
+          onsubmit="return confirm('Permanently delete {{ display_name }} and all of their history? This cannot be undone.');">
+      <button type="submit" style="border-color: var(--tk-danger); color: var(--tk-danger);">Delete user</button>
+    </form>
+  </div>
 {% endblock %}

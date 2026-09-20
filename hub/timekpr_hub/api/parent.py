@@ -36,7 +36,7 @@ from timekpr_hub_core.models import (
 from timekpr_hub.api.parent_auth import get_current_parent_api
 from timekpr_hub.db.models import Device, EnrollmentCode, Parent, User
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.audit import record_audit_event
+from timekpr_hub.services.audit import list_audit_events, record_audit_event
 from timekpr_hub.services.day_hours import clear_day_hour_override, set_day_hour_override
 from timekpr_hub.services.limits import clear_day_override, release_gate, set_day_override, unrelease_gate
 from timekpr_hub.services.policy import get_current_policy, policy_to_payload, update_policy
@@ -405,9 +405,9 @@ async def update_user_settings(
     parent: Parent = Depends(get_current_parent_api),
 ) -> dict:
     """The hub-only per-user knobs (which weekdays are approval-gated, the
-    accounting mode) -- deliberately NOT part of PolicyUpdate/update_policy:
-    no policy version bump, no device push, its own save action. See
-    core/timekpr_hub_core/models.py::UserSettingsUpdate."""
+    accounting mode, the offline-grace policy) -- deliberately NOT part of
+    PolicyUpdate/update_policy: no policy version bump, no device push, its
+    own save action. See core/timekpr_hub_core/models.py::UserSettingsUpdate."""
     result = await session.execute(select(User).where(User.canonical_username == username))
     user = result.scalar_one_or_none()
     if user is None:
@@ -416,9 +416,22 @@ async def update_user_settings(
     before = {
         "gated_weekdays": user.gated_weekdays_json,
         "accounting_mode": user.accounting_mode,
+        "offline_policy": user.offline_policy,
+        "offline_grace_s": user.offline_grace_s,
+        "offline_cap_s": user.offline_cap_s,
     }
     user.gated_weekdays_json = body.gated_weekdays
     user.accounting_mode = body.accounting_mode.value
+    user.offline_policy = body.offline_policy.value
+    user.offline_grace_s = body.offline_grace_s
+    user.offline_cap_s = body.offline_cap_s
+    after = {
+        "gated_weekdays": body.gated_weekdays,
+        "accounting_mode": body.accounting_mode.value,
+        "offline_policy": body.offline_policy.value,
+        "offline_grace_s": body.offline_grace_s,
+        "offline_cap_s": body.offline_cap_s,
+    }
     await record_audit_event(
         session,
         actor_type="parent",
@@ -427,11 +440,11 @@ async def update_user_settings(
         target_type="user",
         target_id=username,
         before=before,
-        after={"gated_weekdays": body.gated_weekdays, "accounting_mode": body.accounting_mode.value},
+        after=after,
         ip=_client_ip(request),
     )
     await session.commit()
-    return {"gated_weekdays": user.gated_weekdays_json, "accounting_mode": user.accounting_mode}
+    return after
 
 
 @router.post("/enrollment-codes", status_code=status.HTTP_201_CREATED)
@@ -442,6 +455,46 @@ async def create_enrollment_code(session: AsyncSession = Depends(get_session)) -
     session.add(row)
     await session.commit()
     return {"code": code, "expires_at": row.expires_at.isoformat()}
+
+
+@router.get("/audit")
+async def list_audit(
+    limit: int = 50,
+    offset: int = 0,
+    actor_id: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """Every parent action, newest first -- see services/audit.py's
+    `record_audit_event`, which every mutating endpoint in this file and
+    api/ui.py already calls. `before`/`after` are the full JSON diffs those
+    call sites recorded (e.g. a policy edit's whole payload before and
+    after), not a summary."""
+    limit = min(max(limit, 1), 200)
+    events = await list_audit_events(
+        session,
+        limit=limit,
+        offset=max(offset, 0),
+        actor_id=actor_id,
+        target_type=target_type,
+        target_id=target_id,
+    )
+    return [
+        {
+            "id": str(e.id),
+            "ts": e.ts.isoformat(),
+            "actor_type": e.actor_type,
+            "actor_id": e.actor_id,
+            "action": e.action,
+            "target_type": e.target_type,
+            "target_id": e.target_id,
+            "before": e.before_json,
+            "after": e.after_json,
+            "ip": e.ip,
+        }
+        for e in events
+    ]
 
 
 @router.get("/devices")

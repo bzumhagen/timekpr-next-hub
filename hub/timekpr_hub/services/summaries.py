@@ -15,7 +15,7 @@ actual enforcement before this collapse.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -27,6 +27,7 @@ from timekpr_hub_core.models import AllowedHourInterval, UserSummary
 from timekpr_hub.db.models import Device, Policy, User
 from timekpr_hub.services.aggregate import (
     device_spent_for_day_by_device,
+    devices_active_today_batch,
     global_spent_parallel_batch,
     global_spent_wallclock_batch,
     global_spent_wallclock_history,
@@ -62,6 +63,7 @@ class UserSummaryRow:
     as_of: str | None
     gated_today: bool = False
     gate_released_today: bool = False
+    devices_active_today: list[str] = field(default_factory=list)
 
     def to_user_summary(self) -> UserSummary:
         return UserSummary(
@@ -74,6 +76,7 @@ class UserSummaryRow:
             as_of=self.as_of,
             gated_today=self.gated_today,
             gate_released_today=self.gate_released_today,
+            devices_active_today=self.devices_active_today,
         )
 
 
@@ -125,6 +128,7 @@ async def compute_user_summaries(
     grants_by_user = await grants_totals_batch(session, user_ids=user_ids, day=stamp.day)
     overrides_by_user = await day_overrides_batch(session, user_ids=user_ids, day=stamp.day)
     released_users = await gate_releases_batch(session, user_ids=user_ids, day=stamp.day)
+    devices_by_user = await devices_active_today_batch(session, user_ids=user_ids, day=stamp.day)
 
     rows = []
     for user in users:
@@ -148,6 +152,7 @@ async def compute_user_summaries(
                     as_of=as_of_str,
                     gated_today=gated and not released,
                     gate_released_today=released,
+                    devices_active_today=devices_by_user.get(user.id, []),
                 )
             )
             continue
@@ -168,6 +173,7 @@ async def compute_user_summaries(
                 as_of=as_of_str,
                 gated_today=gated and not released,
                 gate_released_today=released,
+                devices_active_today=devices_by_user.get(user.id, []),
             )
         )
     return rows

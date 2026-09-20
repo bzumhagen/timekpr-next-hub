@@ -303,6 +303,31 @@ async def device_spent_for_day_by_device(
     return {row.device_id: int(row.spent_seconds) for row in result}
 
 
+async def devices_active_today_batch(
+    session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
+) -> dict[uuid.UUID, list[str]]:
+    """Each user's device *names* with any reported spend for `day`, in one
+    round-trip -- `UserSummary.devices_active_today`. A user with no
+    positive-spend device that day is simply absent from the result;
+    callers should default to []."""
+    if not user_ids:
+        return {}
+    stmt = text(
+        """
+        SELECT uc.user_id, d.name
+        FROM usage_counters uc
+        JOIN devices d ON d.id = uc.device_id
+        WHERE uc.user_id IN :user_ids AND uc.day = :day AND uc.spent_seconds > 0
+        ORDER BY uc.user_id, d.name
+        """
+    ).bindparams(bindparam("user_ids", expanding=True))
+    result = await session.execute(stmt, {"user_ids": user_ids, "day": day})
+    by_user: dict[uuid.UUID, list[str]] = {}
+    for row in result:
+        by_user.setdefault(row.user_id, []).append(row.name)
+    return by_user
+
+
 async def device_spent_today(
     session: AsyncSession, *, user_id: uuid.UUID, device_id: uuid.UUID, day: date
 ) -> int:

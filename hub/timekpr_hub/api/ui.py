@@ -15,6 +15,7 @@ authenticated parent session -- see `get_current_parent_ui` in
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -46,7 +47,7 @@ from timekpr_hub_core.models import (
 from timekpr_hub.api.parent_auth import get_current_parent_ui
 from timekpr_hub.db.models import Device, Grant, Parent, User
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.audit import record_audit_event
+from timekpr_hub.services.audit import list_audit_events, record_audit_event
 from timekpr_hub.services.day_hours import (
     clear_day_hour_override,
     day_hour_override,
@@ -102,6 +103,47 @@ async def devices_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "devices.html", {"poll_ms": settings.default_next_poll_ms})
 
 
+_AUDIT_PAGE_SIZE = 50
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_page(
+    request: Request, offset: int = 0, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """Every parent action, newest first -- the read side of
+    services/audit.py's `record_audit_event`, which every mutating route in
+    this file and api/parent.py already calls. Rendered once per request
+    (no live poll, unlike the dashboard/devices pages): audit history
+    doesn't change out from under the page the way live usage does, and
+    `?offset=` pages back through it with plain links."""
+    events = await list_audit_events(session, limit=_AUDIT_PAGE_SIZE + 1, offset=offset)
+    has_more = len(events) > _AUDIT_PAGE_SIZE
+    events = events[:_AUDIT_PAGE_SIZE]
+    rows = [
+        {
+            "ts": e.ts.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "actor": f"{e.actor_type} {e.actor_id}" if e.actor_id else e.actor_type,
+            "action": e.action,
+            "target": f"{e.target_type} {e.target_id}" if e.target_type else None,
+            "before": json.dumps(e.before_json, indent=2, sort_keys=True) if e.before_json else None,
+            "after": json.dumps(e.after_json, indent=2, sort_keys=True) if e.after_json else None,
+            "ip": e.ip,
+        }
+        for e in events
+    ]
+    return templates.TemplateResponse(
+        request,
+        "audit.html",
+        {
+            "events": rows,
+            "offset": offset,
+            "page_size": _AUDIT_PAGE_SIZE,
+            "has_more": has_more,
+            "prev_offset": max(0, offset - _AUDIT_PAGE_SIZE),
+        },
+    )
+
+
 async def _user_summaries(session: AsyncSession, *, usernames: list[str] | None = None) -> list[dict]:
     """Template-shaped view of `compute_user_summaries` (services/
     summaries.py, shared with the JSON parent API), plus two UI-only
@@ -132,6 +174,7 @@ async def _user_summaries(session: AsyncSession, *, usernames: list[str] | None 
             "as_of": row.as_of,
             "gated_today": row.gated_today,
             "gate_released_today": row.gate_released_today,
+            "devices_active_today": row.devices_active_today,
             "today": today.isoformat(),
             "tomorrow": tomorrow.isoformat(),
             "tomorrow_override_s": tomorrow_overrides.get(row.user.id),
@@ -162,21 +205,29 @@ async def grant_from_ui(
     request: Request,
     username: str,
     seconds: int = Form(..., ge=-86400, le=86400),
+    day: str = Form(""),
     session: AsyncSession = Depends(get_session),
     parent: Parent = Depends(get_current_parent_ui),
 ) -> HTMLResponse:
+    """`day` defaults to today (unchanged behavior for the +/-30min quick
+    actions); passing a future date is the "you lose 30 minutes tomorrow"
+    flow GrantCreate.day's docstring describes -- see the dashboard's own
+    "-30 min tomorrow" button."""
     result = await session.execute(select(User).where(User.canonical_username == username))
     user = result.scalar_one_or_none()
     if user is not None:
         now = datetime.now(UTC)
         stamp = canonical_stamp(now, settings.tz)
+        grant_day = date.fromisoformat(day) if day else stamp.day
         minutes = seconds / 60
         grant = Grant(
             id=uuid.uuid4(),
             user_id=user.id,
-            day=stamp.day,
+            day=grant_day,
             seconds=seconds,
-            reason=f"{minutes:+g} min (UI)",
+            reason=f"{minutes:+g} min ({grant_day.isoformat()}, UI)"
+            if grant_day != stamp.day
+            else f"{minutes:+g} min (UI)",
             source="parent",
             granted_by="ui",
         )
@@ -188,7 +239,7 @@ async def grant_from_ui(
             action="grant.create",
             target_type="user",
             target_id=username,
-            after={"seconds": grant.seconds, "day": stamp.day_str, "reason": grant.reason},
+            after={"seconds": grant.seconds, "day": grant_day.isoformat(), "reason": grant.reason},
             ip=_client_ip(request),
         )
         await session.commit()
@@ -828,6 +879,9 @@ async def user_settings_page(
             "weekday_tokens": _WEEKDAY_TOKENS,
             "gated_weekdays": set(user.gated_weekdays_json or []),
             "accounting_mode": user.accounting_mode,
+            "offline_policy": user.offline_policy,
+            "offline_grace_min": user.offline_grace_s // 60,
+            "offline_cap_min": user.offline_cap_s // 60,
         },
     )
 
@@ -837,6 +891,9 @@ async def update_user_settings_ui(
     request: Request,
     username: str,
     accounting_mode: str = Form("wallclock"),
+    offline_policy: str = Form("capped"),
+    offline_grace_min: int = Form(15, ge=0, le=10080),
+    offline_cap_min: int = Form(30, ge=0, le=10080),
     session: AsyncSession = Depends(get_session),
     parent: Parent = Depends(get_current_parent_ui),
 ):
@@ -844,9 +901,25 @@ async def update_user_settings_ui(
     form = await request.form()
     gated_weekdays = [d for d in _WEEKDAY_TOKENS if _checkbox(form, f"gated_weekday_{d}")]
 
-    before = {"gated_weekdays": user.gated_weekdays_json, "accounting_mode": user.accounting_mode}
+    before = {
+        "gated_weekdays": user.gated_weekdays_json,
+        "accounting_mode": user.accounting_mode,
+        "offline_policy": user.offline_policy,
+        "offline_grace_s": user.offline_grace_s,
+        "offline_cap_s": user.offline_cap_s,
+    }
     user.gated_weekdays_json = gated_weekdays
     user.accounting_mode = accounting_mode
+    user.offline_policy = offline_policy
+    user.offline_grace_s = offline_grace_min * 60
+    user.offline_cap_s = offline_cap_min * 60
+    after = {
+        "gated_weekdays": gated_weekdays,
+        "accounting_mode": accounting_mode,
+        "offline_policy": offline_policy,
+        "offline_grace_s": user.offline_grace_s,
+        "offline_cap_s": user.offline_cap_s,
+    }
     await record_audit_event(
         session,
         actor_type="parent",
@@ -855,11 +928,71 @@ async def update_user_settings_ui(
         target_type="user",
         target_id=username,
         before=before,
-        after={"gated_weekdays": gated_weekdays, "accounting_mode": accounting_mode},
+        after=after,
         ip=_client_ip(request),
     )
     await session.commit()
     return RedirectResponse(f"/users/{username}/settings", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/users/{username}/rename")
+async def rename_user_ui(
+    request: Request,
+    username: str,
+    display_name: str = Form(..., min_length=1, max_length=128),
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_ui),
+):
+    """Changes only the display name shown in the hub UI -- `username`
+    (`User.canonical_username`, the local unix account it's matched
+    against) is never editable here."""
+    user = await _get_user_or_404(session, username)
+    before = user.display_name
+    user.display_name = display_name
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="user.rename",
+        target_type="user",
+        target_id=username,
+        before={"display_name": before},
+        after={"display_name": display_name},
+        ip=_client_ip(request),
+    )
+    await session.commit()
+    return RedirectResponse(f"/users/{username}/settings", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/users/{username}/delete")
+async def delete_user_ui(
+    request: Request,
+    username: str,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_ui),
+):
+    """Permanently removes the user and everything FK'd to it (aliases,
+    usage counters, activity intervals, grants, overrides, policies) via
+    ON DELETE CASCADE -- there is no revoke-only middle ground for a user
+    the way there is for a device, since (unlike a device) a user has no
+    ongoing artifact (a token) to revoke independently of its history.
+    Devices that go on reporting this local username are unaffected: the
+    next /sync for it re-provisions a fresh user via
+    services/enrollment.py, exactly as if it had never been added."""
+    user = await _get_user_or_404(session, username)
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="user.delete",
+        target_type="user",
+        target_id=username,
+        before={"display_name": user.display_name},
+        ip=_client_ip(request),
+    )
+    await session.delete(user)
+    await session.commit()
+    return RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
 
 
 # --------------------------------------------------------------------------

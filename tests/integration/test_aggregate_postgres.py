@@ -20,6 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from timekpr_hub.services.aggregate import (
     device_spent_today,
+    devices_active_today_batch,
     global_spent_parallel,
     global_spent_parallel_batch,
     global_spent_wallclock,
@@ -302,6 +303,25 @@ async def test_global_spent_parallel_batch_matches_single_user_calls(db_session)
 
     batched = await global_spent_parallel_batch(db_session, user_ids=[user_a, user_b, user_c], day=today)
     assert batched == expected
+
+
+@pytest.mark.asyncio
+async def test_devices_active_today_batch_lists_only_devices_with_positive_spend(db_session):
+    user_a, (dev_a1, dev_a2) = await _make_user_and_devices(db_session, n_devices=2)
+    user_b, (dev_b1,) = await _make_user_and_devices(db_session, n_devices=1)
+    user_c, _ = await _make_user_and_devices(db_session, n_devices=1)  # never synced
+    today = date(2026, 9, 9)
+
+    await upsert_usage_counter(db_session, user_id=user_a, device_id=dev_a1, day=today, spent_seconds=100)
+    # dev_a2 synced but with zero spend -- must not appear.
+    await upsert_usage_counter(db_session, user_id=user_a, device_id=dev_a2, day=today, spent_seconds=0)
+    await upsert_usage_counter(db_session, user_id=user_b, device_id=dev_b1, day=today, spent_seconds=50)
+    await db_session.commit()
+
+    result = await devices_active_today_batch(db_session, user_ids=[user_a, user_b, user_c], day=today)
+    assert result[user_a] == ["dev0"]
+    assert result[user_b] == ["dev0"]
+    assert user_c not in result
 
 
 @pytest.mark.asyncio

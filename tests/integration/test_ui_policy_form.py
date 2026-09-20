@@ -153,3 +153,138 @@ async def test_get_policy_page_renders_for_a_brand_new_user(client):
     resp = await client.get("/users/freshuser")
     assert resp.status_code == 200
     assert "freshuser" in resp.text.lower() or "Freshuser" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_audit_page_renders_and_pages_with_offset(client):
+    """The audit page is a plain GET (no live poll, unlike the dashboard/
+    devices pages) and must render even with zero events, plus page
+    forward via ?offset= once there's at least one."""
+    resp = await client.get("/audit")
+    assert resp.status_code == 200
+
+    await _seed_user("audituser")
+    await client.post("/api/v1/users/audituser/grants", json={"seconds": 60, "reason": "t"})
+
+    resp = await client.get("/audit")
+    assert resp.status_code == 200
+    assert "grant.create" in resp.text
+
+    resp = await client.get("/audit", params={"offset": 0})
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_dashboard_shows_undo_button_after_gate_release(client):
+    """The dashboard's gate-released notice must offer a way back (Undo),
+    not just a dead-end confirmation -- api/ui.py's gate-unrelease route
+    already existed; this is the button that was missing."""
+    await _seed_user("undobutton")
+    from tests.integration.test_gates_and_overrides import _todays_weekday_token
+
+    today_weekday = _todays_weekday_token()
+    await client.put(
+        "/api/v1/users/undobutton/settings",
+        json={"gated_weekdays": [today_weekday], "accounting_mode": "wallclock"},
+    )
+    await client.post("/ui/users/undobutton/gate-release")
+
+    resp = await client.get("/ui/users-fragment")
+    assert resp.status_code == 200
+    assert "/ui/users/undobutton/gate-unrelease" in resp.text
+    assert "Undo" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_grant_from_ui_with_day_lands_on_that_date_not_today(client):
+    """The dashboard's '-30 min tomorrow' button (and any dated grant form
+    field) must post to the target date's Grant, not today's."""
+    from datetime import date, timedelta
+
+    await _seed_user("dategrant")
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    resp = await client.post(
+        "/ui/users/dategrant/grants", data={"seconds": "-1800", "day": tomorrow}
+    )
+    assert resp.status_code == 200
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        from sqlalchemy import text
+
+        row = (
+            await session.execute(
+                text("SELECT day, seconds FROM grants g JOIN users u ON u.id = g.user_id "
+                     "WHERE u.canonical_username = :u"),
+                {"u": "dategrant"},
+            )
+        ).one()
+    assert row.day.isoformat() == tomorrow
+    assert row.seconds == -1800
+
+
+@pytest.mark.asyncio
+async def test_rename_user_changes_display_name_only(client):
+    await _seed_user("renameuser")
+    resp = await client.post("/users/renameuser/rename", data={"display_name": "Renamed Kid"})
+    assert resp.status_code == 303
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        from sqlalchemy import select
+        from timekpr_hub.db.models import User
+
+        user = (
+            await session.execute(select(User).where(User.canonical_username == "renameuser"))
+        ).scalar_one()
+    assert user.display_name == "Renamed Kid"
+    assert user.canonical_username == "renameuser"
+
+
+@pytest.mark.asyncio
+async def test_delete_user_removes_the_row_and_its_history(client):
+    await _seed_user("deleteuser")
+    await client.post("/ui/users/deleteuser/grants", data={"seconds": "600"})
+
+    resp = await client.post("/users/deleteuser/delete")
+    assert resp.status_code == 303
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        from sqlalchemy import select
+        from timekpr_hub.db.models import Grant, User
+
+        user = (
+            await session.execute(select(User).where(User.canonical_username == "deleteuser"))
+        ).scalar_one_or_none()
+        assert user is None
+        remaining_grants = (await session.execute(select(Grant))).scalars().all()
+    assert remaining_grants == []  # the grant was FK-cascaded away with the user
+
+
+@pytest.mark.asyncio
+async def test_offline_policy_settings_round_trip(client):
+    await _seed_user("offlinesettings")
+    resp = await client.post(
+        "/users/offlinesettings/settings",
+        data={
+            "accounting_mode": "wallclock",
+            "offline_policy": "closed",
+            "offline_grace_min": "5",
+            "offline_cap_min": "10",
+        },
+    )
+    assert resp.status_code == 303
+
+    session_factory = _get_test_sessionmaker()
+    async with session_factory() as session:
+        from sqlalchemy import select
+        from timekpr_hub.db.models import User
+
+        user = (
+            await session.execute(select(User).where(User.canonical_username == "offlinesettings"))
+        ).scalar_one()
+    assert user.offline_policy == "closed"
+    assert user.offline_grace_s == 300
+    assert user.offline_cap_s == 600

@@ -657,6 +657,18 @@ async def test_grant_policy_update_and_device_revoke_are_all_audit_logged(client
     assert revoke_row.before_json["status"] == "active"
     assert revoke_row.after_json["status"] == "revoked"
 
+    audit_resp = await client.get("/api/v1/audit")
+    assert audit_resp.status_code == 200
+    audit_actions = [e["action"] for e in audit_resp.json()]
+    assert "grant.create" in audit_actions
+    assert "policy.update" in audit_actions
+    assert "device.revoke" in audit_actions
+
+    scoped_resp = await client.get(
+        "/api/v1/audit", params={"target_type": "device", "target_id": device_id}
+    )
+    assert [e["action"] for e in scoped_resp.json()] == ["device.revoke"]
+
 
 @pytest.mark.asyncio
 async def test_login_is_audit_logged(unauthenticated_client):
@@ -946,3 +958,62 @@ async def test_login_with_wrong_password_is_rejected(unauthenticated_client):
     assert resp.status_code == 303
     assert resp.headers["location"] == "/login?error=1"
     assert (await c.get("/api/v1/users")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_sync_reports_this_users_offline_policy_settings(client):
+    """SyncUserResponse.offline_policy/offline_grace_s/offline_cap_s must
+    reflect PUT .../settings, not the hardcoded 'capped'/900/1800 defaults
+    -- see agent/main.py's _apply_offline_policy, which now reads these
+    off the response instead of a literal."""
+    await _seed_user("offlinesync")
+    await client.put(
+        "/api/v1/users/offlinesync/settings",
+        json={
+            "gated_weekdays": [],
+            "accounting_mode": "wallclock",
+            "offline_policy": "closed",
+            "offline_grace_s": 120,
+            "offline_cap_s": 240,
+        },
+    )
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    enroll_resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h",
+            "machine_id": "m-offline-sync",
+            "agent_version": "0.1.0",
+            "local_users": ["offlinesync"],
+        },
+    )
+    token = enroll_resp.json()["device_token"]
+
+    sync_resp = await client.post(
+        "/api/v1/sync",
+        json={
+            "agent_time": "2026-09-09T00:00:00+00:00",
+            "agent_version": "0.1.0",
+            "users": [
+                {
+                    "username": "offlinesync",
+                    "cumulative_spent_s": 0,
+                    "observed": {
+                        "balance_s": 0,
+                        "spent_day_s": 0,
+                        "limit_today_s": 3600,
+                        "logged_in": False,
+                        "active": False,
+                    },
+                    "policy_version_applied": 0,
+                }
+            ],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert sync_resp.status_code == 200
+    resp_user = sync_resp.json()["users"][0]
+    assert resp_user["offline_policy"] == "closed"
+    assert resp_user["offline_grace_s"] == 120
+    assert resp_user["offline_cap_s"] == 240

@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import APIKeyCookie
 from fastapi.templating import Jinja2Templates
@@ -96,7 +97,8 @@ async def setup_submit(
     if await any_admin_exists(session):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
-    admin = Admin(email=email, password_hash=hash_password(password))
+    password_hash = await run_in_threadpool(hash_password, password)
+    admin = Admin(email=email, password_hash=password_hash)
     session.add(admin)
     await session.flush()
     token = await create_session(
@@ -130,7 +132,7 @@ async def login_submit(
 ):
     result = await session.execute(select(Admin).where(Admin.email == email))
     admin = result.scalar_one_or_none()
-    if admin is None or not verify_password(password, admin.password_hash):
+    if admin is None or not await run_in_threadpool(verify_password, password, admin.password_hash):
         return RedirectResponse("/login?error=1", status_code=status.HTTP_303_SEE_OTHER)
 
     ip = request.client.host if request.client else None
@@ -191,7 +193,8 @@ async def invite_submit(
             request, "invite.html", {"token": token, "error": str(exc)}, status_code=status.HTTP_410_GONE
         )
 
-    admin = Admin(email=email, password_hash=hash_password(password))
+    password_hash = await run_in_threadpool(hash_password, password)
+    admin = Admin(email=email, password_hash=password_hash)
     session.add(admin)
     try:
         await session.flush()

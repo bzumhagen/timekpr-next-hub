@@ -47,9 +47,8 @@ def non_conflicting_interval_lists(draw, max_intervals=4):
     disjoint minute ranges that never share a clock hour, each tagged with
     its own unaccounted flag."""
     n = draw(st.integers(min_value=0, max_value=max_intervals))
-    # candidate hour-aligned slots, shuffled, so intervals never touch the same hour
+    # unique=True is what keeps intervals from sharing a clock hour
     hour_starts = list(range(0, 24))
-    draw(st.permutations(hour_starts))
     chosen_hours = sorted(draw(st.lists(st.sampled_from(hour_starts), min_size=0, max_size=n, unique=True)))
     intervals = []
     for hour in chosen_hours:

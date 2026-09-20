@@ -362,7 +362,7 @@ async def set_day_hour_override_ui(
         (await get_or_create_policy(session, user)).allowed_weekdays_json or _WEEKDAY_TOKENS
     ):
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"{day} isn't one of {user.display_name}'s allowed login days, so an hours window "
             "would have no effect -- change 'Days allowed to log in' in the policy first",
         )
@@ -379,7 +379,7 @@ async def set_day_hour_override_ui(
             interval = TimeInterval(from_min, to_min)
             validate_intervals([interval])
         except (ValueError, IntervalConflictError) as exc:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
         records = intervals_to_hours([interval])
         intervals = [
             AllowedHourInterval(hour=r.hour, start_min=r.start_min, end_min=r.end_min) for r in records
@@ -726,10 +726,10 @@ def _parse_time_str(value: str, field: str) -> int:
         total = int(hh) * 60 + int(mm)
     except (ValueError, AttributeError) as exc:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, f"invalid time for {field}: {value!r}"
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"invalid time for {field}: {value!r}"
         ) from exc
     if not (0 <= total <= 24 * 60):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"invalid time for {field}: {value!r}")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"invalid time for {field}: {value!r}")
     return total
 
 
@@ -756,7 +756,7 @@ def _parse_day_hours(form, day: str) -> list[AllowedHourInterval]:
             interval = TimeInterval(from_min, to_min)
             validate_intervals([interval])
         except (ValueError, IntervalConflictError) as exc:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"{day_name}: {exc}") from exc
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{day_name}: {exc}") from exc
         records = intervals_to_hours([interval])
         return [AllowedHourInterval(hour=r.hour, start_min=r.start_min, end_min=r.end_min) for r in records]
 
@@ -764,7 +764,7 @@ def _parse_day_hours(form, day: str) -> list[AllowedHourInterval]:
     checked_hours = sorted(h for h in range(24) if _checkbox(form, f"hh_{day}_{h}"))
     if not checked_hours:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"No allowed hours are set for {day_name}. To block a whole day, uncheck it under "
             "'Days allowed to log in' in Advanced settings instead -- an empty hour list can't be "
             "applied on the device.",
@@ -792,7 +792,7 @@ async def _parse_policy_form(form) -> PolicyUpdate:
     allowed_weekdays = [d for d in _WEEKDAY_TOKENS if _checkbox(form, f"allowed_weekday_{d}")]
     if not allowed_weekdays:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "At least one day must be allowed to log in at all."
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "At least one day must be allowed to log in at all."
         )
 
     lockout_type_raw = form.get("lockout_type", "lock")
@@ -800,7 +800,7 @@ async def _parse_policy_form(form) -> PolicyUpdate:
         lockout_type = LockoutType(lockout_type_raw)
     except ValueError as exc:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, f"unknown lockout type {lockout_type_raw!r}"
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown lockout type {lockout_type_raw!r}"
         ) from exc
 
     # An unchecked cap writes timekpr's own "no cap" maximum (7/31 days'
@@ -848,7 +848,7 @@ async def _parse_policy_form(form) -> PolicyUpdate:
             note=(form.get("note") or ""),
         )
     except ValidationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
 
 @router.post("/users/{username}/policy")

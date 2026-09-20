@@ -2,8 +2,9 @@
 """Set the project version in all six places at once.
 
 The counterpart to scripts/check_versions.py -- see that file for why the
-version lives in six places rather than one. Rewrites them, then re-runs
-the check so a botched substitution fails here rather than in CI.
+version lives in six places rather than one. Rewrites them, re-locks (so
+uv.lock's own version fields don't drift), then re-runs the check so a
+botched substitution fails here rather than in CI.
 
 Deliberately does not touch git: it leaves a dirty tree for you to review,
 commit, and tag yourself (see docs/releasing.md).
@@ -27,12 +28,12 @@ from check_versions import AGENT_MAIN, PKGBUILD, PYPROJECTS, ROOT, VERSION_RE
 PROJECT_VERSION_RE = re.compile(r'^version = "[^"]+"$', re.MULTILINE)
 
 
-def _sub_once(path: Path, pattern: re.Pattern[str], replacement: str) -> None:
+def _substituted(path: Path, pattern: re.Pattern[str], replacement: str) -> str:
     text = path.read_text()
     new_text, count = pattern.subn(replacement, text, count=1)
     if count != 1:
         raise SystemExit(f"{path}: no version line matched -- has its format changed?")
-    path.write_text(new_text)
+    return new_text
 
 
 def main() -> int:
@@ -49,20 +50,33 @@ def main() -> int:
         )
         return 1
 
-    for rel in PYPROJECTS:
-        _sub_once(ROOT / rel, PROJECT_VERSION_RE, f'version = "{version}"')
-
-    _sub_once(
+    # Compute every replacement before writing any of them, so a pattern
+    # that fails to match (e.g. a file whose format changed) leaves the
+    # tree untouched instead of half-bumped.
+    pkgbuild = ROOT / PKGBUILD
+    writes = {
+        ROOT / rel: _substituted(ROOT / rel, PROJECT_VERSION_RE, f'version = "{version}"')
+        for rel in PYPROJECTS
+    }
+    writes[ROOT / AGENT_MAIN] = _substituted(
         ROOT / AGENT_MAIN, re.compile(r'^AGENT_VERSION = "[^"]+"$', re.M), f'AGENT_VERSION = "{version}"'
     )
-
     # `pkgrel` counts packaging-only rebuilds of the *same* upstream
     # version, so a new pkgver always resets it to 1.
-    pkgbuild = ROOT / PKGBUILD
-    _sub_once(pkgbuild, re.compile(r"^pkgver=.+$", re.M), f"pkgver={version}")
-    _sub_once(pkgbuild, re.compile(r"^pkgrel=.+$", re.M), "pkgrel=1")
+    pkgbuild_text = _substituted(pkgbuild, re.compile(r"^pkgver=.+$", re.M), f"pkgver={version}")
+    pkgbuild_text, count = re.compile(r"^pkgrel=.+$", re.M).subn("pkgrel=1", pkgbuild_text, count=1)
+    if count != 1:
+        raise SystemExit(f"{pkgbuild}: no pkgrel line matched -- has its format changed?")
+    writes[pkgbuild] = pkgbuild_text
 
-    print(f"bumped to {version}:\n", flush=True)
+    for path, new_text in writes.items():
+        path.write_text(new_text)
+
+    print(f"bumped to {version}, re-locking:\n", flush=True)
+    lock = subprocess.call(["uv", "lock"], cwd=ROOT)
+    if lock != 0:
+        return lock
+
     return subprocess.call([sys.executable, str(ROOT / "scripts" / "check_versions.py")])
 
 

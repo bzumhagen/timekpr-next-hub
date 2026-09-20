@@ -57,6 +57,11 @@ CFG = ConvergenceConfig()
 AGENT_VERSION = "0.1.0"
 MACHINE_ID_PATHS = (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id"))
 SERVICE_UNIT = "timekpr-hub-agent.service"
+DEFAULT_POLL_MS = 20000
+# Below timekpr-hub-agent.service's WatchdogSec=120: neither the hub's
+# next_poll_ms nor the unreachable-hub backoff (below) may ever sleep past
+# this, or systemd kills the unit for missing its watchdog ping.
+MAX_POLL_MS = 90000
 
 # Offline / hub-unreachable defaults, matching UserState's own field
 # defaults (state.py) -- these are what a user who has never synced
@@ -104,10 +109,13 @@ def run_tick(
     tz_name: str,
     debug_clock: bool = False,
     now: datetime | None = None,
+    previous_poll_ms: int = DEFAULT_POLL_MS,
 ) -> int:
     """One full tick across every managed user. Returns the next poll delay
-    in milliseconds (hub-provided when reachable, a local fallback
-    otherwise).
+    in milliseconds (hub-provided when reachable, exponential backoff off
+    `previous_poll_ms` otherwise -- the caller must feed each tick's return
+    value back in as the next tick's `previous_poll_ms` for that backoff to
+    actually compound). Always clamped to `MAX_POLL_MS`.
 
     `now`/`debug_clock` exist only for tests/e2e's compressed-time simulation
     (tests/e2e/harness.py) -- `now` is honored ONLY when `debug_clock=True`,
@@ -223,7 +231,7 @@ def run_tick(
             }
         )
 
-    next_poll_ms = 20000
+    next_poll_ms = previous_poll_ms
     try:
         response = hub.sync(
             {
@@ -346,7 +354,7 @@ def run_tick(
                     username,
                 )
             user_state.last_enforcement = "revoked"
-        next_poll_ms = min(next_poll_ms * 2, 300_000)
+        next_poll_ms = min(next_poll_ms * 2, MAX_POLL_MS)
     except HubUnreachableError as exc:
         log.warning("hub unreachable: %s -- applying offline policy", exc)
         for username, (obs, _force) in observations.items():
@@ -366,9 +374,9 @@ def run_tick(
                 offline_cap_s=user_state.last_offline_cap_s,
                 now=now,
             )
-        next_poll_ms = min(next_poll_ms * 2, 300_000)
+        next_poll_ms = min(next_poll_ms * 2, MAX_POLL_MS)
 
-    return next_poll_ms
+    return min(next_poll_ms, MAX_POLL_MS)
 
 
 def _buffer_unsent_span(user_state: state_mod.UserState, span: dict | None) -> None:
@@ -824,13 +832,12 @@ def _cmd_run(args: argparse.Namespace) -> None:
     state = state_mod.load(state_path)
     managed_users = [u.strip() for u in args.users.split(",") if u.strip()]
 
-    # Never exit on a transient condition -- timekprd not up yet, the hub
-    # unreachable, or (before the first successful enroll+config) missing
-    # settings altogether. Restart=always would bring the process back
-    # anyway, but that's a 10s outage window on every blip for no reason;
-    # looping here means the *next* tick just works once the transient
-    # condition clears. Only a genuinely unrecoverable setup problem
-    # (nothing here currently raises one after argparse) should exit.
+    # Retry (never exit) on a transient condition: timekprd not up yet, or
+    # the hub unreachable once the tick loop starts below. Restart=always
+    # would bring the process back anyway, but that's a 10s outage window
+    # on every blip for no reason. Missing --hub-url/TIMEKPR_HUB_URL is
+    # *not* transient -- argparse already rejected it before this function
+    # ran (_add_hub_connection_args, prompt_if_missing=False).
     enforcer: TimekprEnforcer | None = None
     ready_sent = False
     while enforcer is None:
@@ -840,6 +847,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
             log.error("%s -- retrying in 30s", exc)
             time.sleep(30)
 
+    next_poll_ms = DEFAULT_POLL_MS
     while True:
         next_poll_ms = run_tick(
             enforcer=enforcer,
@@ -848,6 +856,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
             managed_users=managed_users,
             agent_version=AGENT_VERSION,
             tz_name=args.tz,
+            previous_poll_ms=next_poll_ms,
         )
         state_mod.save(state, state_path)
         if not ready_sent:
@@ -876,7 +885,7 @@ def _cmd_status(args: argparse.Namespace) -> None:
 
     try:
         enforcer = TimekprEnforcer()
-        all_ok &= _check("timekpr-next installed", True)
+        _check("timekpr-next installed", True)
     except TimekprNotFoundError as exc:
         _check("timekpr-next installed", False, str(exc))
         enforcer = None
@@ -908,7 +917,7 @@ def _cmd_status(args: argparse.Namespace) -> None:
         all_ok &= _check(f"service enabled ({enabled or 'unknown'})", enabled == "enabled")
         all_ok &= _check(f"service active ({active or 'unknown'})", active == "active")
     except OSError:
-        _check("service enabled/active", False, "systemctl not available")
+        all_ok &= _check("service enabled/active", False, "systemctl not available")
 
     if hub_url:
         try:
@@ -935,11 +944,11 @@ def _cmd_status(args: argparse.Namespace) -> None:
                 # latency out of the estimate -- what's being checked is
                 # this machine's own clock, not how long the request took.
                 skew_ms = round((datetime.fromisoformat(hub_time) - probe_sent_at).total_seconds() * 1000)
-                _check(f"clock within 30s of the hub ({skew_ms:+d}ms)", abs(skew_ms) < 30_000)
+                all_ok &= _check(f"clock within 30s of the hub ({skew_ms:+d}ms)", abs(skew_ms) < 30_000)
         except (HubUnreachableError, DeviceRevokedError) as exc:
             all_ok &= _check("hub reachable", False, str(exc))
     else:
-        _check("hub reachable", False, "no --hub-url and no TIMEKPR_HUB_URL in agent.env")
+        all_ok &= _check("hub reachable", False, "no --hub-url and no TIMEKPR_HUB_URL in agent.env")
 
     state = state_mod.load(Path(args.state_path))
     managed_users = [

@@ -1,6 +1,6 @@
 [Unit]
 Description=timekpr-next-hub agent
-Documentation=https://github.com/YOUR_ORG/timekpr-next-hub
+Documentation=https://github.com/bzumhagen/timekpr-next-hub
 # Deliberately no ordering against timekpr.service: it's After=multi-user.target
 # and we're WantedBy=multi-user.target, so After=timekpr.service here would
 # form a boot ordering cycle (systemd drops a start job -- possibly

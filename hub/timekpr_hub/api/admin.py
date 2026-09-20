@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,7 +74,7 @@ def _day_hour_override_intervals(body: DayHourOverrideCreate) -> list[AllowedHou
     try:
         _validate_intervals([interval])
     except IntervalConflictError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     return _wire_intervals(intervals_to_hours([interval]))
 
 
@@ -282,7 +283,7 @@ async def set_user_day_hour_override(
     ]
     if str(day.isoweekday()) not in allowed_weekdays:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"{body.day} isn't one of this user's allowed login days, so an hours window "
             "would have no effect -- change 'Days allowed to log in' in the policy first",
         )
@@ -698,9 +699,9 @@ async def change_own_password(
     session: AsyncSession = Depends(get_session),
     admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
-    if not verify_password(body.current_password, admin.password_hash):
+    if not await run_in_threadpool(verify_password, body.current_password, admin.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "current password is incorrect")
-    change_password(admin=admin, new_password=body.new_password)
+    await run_in_threadpool(change_password, admin=admin, new_password=body.new_password)
     token = request.cookies.get("tkh_session", "")
     await delete_other_sessions(session, admin_id=admin.id, keep_token=token)
     await record_audit_event(

@@ -78,10 +78,10 @@ package() {
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
     # Comments only -- `enroll` writes the real values here itself
-    # (agent/timekpr_hub_agent/config.py). Shipping a fake hub.example.com
-    # here used to mean an un-enrolled `run` would crash-loop trying to
-    # reach it; `run` now recognizes an empty TIMEKPR_HUB_URL and waits
-    # instead (main.py "never exit on a transient condition").
+    # (agent/timekpr_hub_agent/config.py). An un-enrolled `run` exits 2
+    # (argparse rejects a missing --hub-url/TIMEKPR_HUB_URL up front) and
+    # Restart=always brings it back every RestartSec=10 until `enroll` is
+    # run -- a visibly failing unit rather than a silent no-op.
     install -dm755 "$pkgdir/etc/timekpr-hub-agent"
     install -m640 /dev/null "$pkgdir/etc/timekpr-hub-agent/agent.env"
     cat > "$pkgdir/etc/timekpr-hub-agent/agent.env" <<'EOF'

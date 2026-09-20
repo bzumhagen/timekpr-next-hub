@@ -95,19 +95,15 @@ class TimekprEnforcer:
             balance = int(info["TIME_SPENT_BALANCE"])
             spent_day = int(info["TIME_SPENT_DAY"])
 
-        # `limit_today_s` MUST be the static configured LIMITS_PER_WEEKDAYS
-        # entry for today, NOT `TIME_LEFT_DAY + balance`. TIME_LEFT_DAY is a
-        # dynamically recomputed value (recalculateTimeLeft() -- it also
-        # folds in ALLOWED_HOURS restrictions and the week/month min()), so
-        # deriving a "limit" from it silently disagrees with what
+        # `limit_today_s` MUST be the static LIMITS_PER_WEEKDAYS entry for
+        # today, NOT `TIME_LEFT_DAY + balance` -- TIME_LEFT_DAY is a
+        # dynamically recomputed value that also folds in ALLOWED_HOURS and
+        # the week/month min(), so it silently disagrees with what
         # `setTimeLeft(user, '=', secs)` actually uses internally
-        # (configprocessor.py:718: `getUserLimitsPerWeekdays()[isoweekday-1]`).
-        # This was a second, more fundamental bug found only by running the
-        # agent against a real account with hour restrictions configured:
-        # TIME_LEFT_DAY + balance landed short of the true 86400 static limit
-        # by exactly the hour-restricted minutes, which fed the wrong number
-        # into every '=' write's `seconds` argument -- no synthetic model of
-        # timekpr reproduced it.
+        # (getUserLimitsPerWeekdays()[isoweekday-1]). Found only by running
+        # against a real account with hour restrictions: the wrong value
+        # fed a short `seconds` into every '=' write, and no synthetic
+        # model reproduced it.
         today_idx = _datetime.now().isoweekday() - 1  # 0=Mon..6=Sun, matches LIMITS_PER_WEEKDAYS order
         limits_per_weekday = [int(x) for x in info["LIMITS_PER_WEEKDAYS"]]
         limit_today = limits_per_weekday[today_idx]
@@ -149,19 +145,12 @@ class TimekprEnforcer:
         self, username: str, day_number: str, hours: dict[str, dict[str, int | bool]]
     ) -> bool:
         """`day_number` is '1'..'7' (matching setAllowedDays); `hours` is
-        already in `setAllowedHours`'s own per-hour dict shape
-        (`{"<hour>": {"STARTMIN": ..., "ENDMIN": ..., "UACC": ...}}` --
-        see `core/timekpr_hub_core/allowed_hours.py::hours_to_dbus_payload`).
-        The hour key MUST be a string ("8", not 8): timekpr's own
-        `checkAndSetAllowedHours` re-indexes the dict with a stringified
-        key it derives from iterating it, so an int-keyed dict raises a
-        KeyError there that its caller swallows into a bare `result=-1` --
-        no exception surfaces here, the DBUS call just silently "fails"
-        every single tick forever (see hours_to_dbus_payload's docstring
-        for the full story -- this was a real, previously-shipped bug).
-        Caller MUST also never pass an empty `hours` dict: an absent hour
-        means "forbidden" to timekpr, so an empty dict would lock the user
-        out of every hour of `day_number`, not leave it unrestricted."""
+        already in `setAllowedHours`'s per-hour dict shape, string-keyed --
+        see `core/timekpr_hub_core/allowed_hours.py::hours_to_dbus_payload`
+        for why that key type is load-bearing. Caller MUST also never pass
+        an empty `hours` dict: an absent hour means "forbidden" to timekpr,
+        so an empty dict would lock the user out of every hour of
+        `day_number`, not leave it unrestricted."""
         if not hours:
             log.error("%s: refusing to push an empty allowed_hours for day %s", username, day_number)
             return False

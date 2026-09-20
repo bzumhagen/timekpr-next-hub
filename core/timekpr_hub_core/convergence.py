@@ -1,11 +1,10 @@
 """The convergence controller.
 
-This module is pure and IO-free by design: it takes a snapshot of what the
-agent observed and what the hub reported, and returns a `Plan` describing
-the single DBUS write (if any) the agent should make. Nothing here touches
-DBUS, the network, or the clock — the caller supplies every value, which is
-what makes this testable with Hypothesis in milliseconds and unambiguous to
-reason about.
+Pure and IO-free by design: takes a snapshot of what the agent observed
+and what the hub reported, and returns a `Plan` for the single DBUS write
+(if any) the agent should make. The caller supplies every value (nothing
+here touches DBUS, the network, or the clock), which is what makes this
+testable with Hypothesis in milliseconds.
 
 Core invariant, verified against a real `timekprd`:
 
@@ -18,31 +17,20 @@ Core invariant, verified against a real `timekprd`:
 
 Definitions:
 
-    L  = effective daily limit today (policy + grants)
     s  = local TIME_SPENT_DAY (measurement; the agent never writes this)
     B  = local TIME_SPENT_BALANCE (enforcement; the agent's only write)
     G  = hub's global spent-today for this user (wall-clock union or sum)
     R  = G - s                      ("time burned on this user elsewhere")
     O  = B - s                      (the "offset" the agent maintains)
 
-Goal: keep O == R. Because O is invariant under normal (non-agent) activity
-(B and s advance by the same delta each tick), the agent only has to correct
-for whatever moved O since its last write.
-
-Note on `correction`: expanding R - O = (G - s) - (B - s) = G - B. The
-correction a relative write must apply is therefore computed directly
-against the *observed balance*, not against the offset -- there is no `s`
-term in it at all. Computing it as `G - O` instead (an offset that still
-contains `+s`) is a tempting-looking but wrong simplification; it was caught
-by `tests/integration/test_multi_device_simulation.py`, whose multi-day
-simulation immediately diverged under it. Both a relative op and an absolute
-'=' converge BALANCE itself to exactly G *when the device's own configured
-limit already equals the hub's effective limit*; see `HubTarget.limit_today_s`
-and `plan()`'s `target_balance` for the general case (mismatched limits,
-hub-side grants) where BALANCE converges to `G + L_dev - L_eff` instead so
-that time left still comes out to `L_eff - G` regardless of `L_dev`. The
-only difference between a relative op and an absolute '=' is whether `s`
-(the measurement) survives the write intact.
+Goal: keep O == R. O is invariant under normal (non-agent) activity (B and
+s advance by the same delta each tick), so the agent only has to correct
+for whatever moved O since its last write. The correction is computed as
+`G - B` directly (expanding R - O), not `G - O` -- the latter still
+contains `s` and is wrong; regressing to it immediately diverges
+`tests/integration/test_multi_device_simulation.py`'s multi-day
+simulation. See `HubTarget`/`plan()` below for the general case where the
+device's own configured limit doesn't yet match the hub's effective one.
 """
 
 from __future__ import annotations
@@ -90,18 +78,14 @@ class Observation:
 
     limit_today_s: int
     """The DEVICE's own currently-configured daily limit (TIME_LEFT_DAY +
-    balance, or equivalently whatever LIMITS_PER_WEEKDAYS resolves to
-    locally today). This is NOT necessarily the same value as the hub's
-    intended policy limit (`HubTarget.limit_today_s`) -- they only agree
-    once the hub's policy has actually been pushed down via
-    setTimeLimitForDays. Using the wrong one here is a real bug, and one no
-    synthetic test catches, because the fake daemon and the real one only
-    diverge on it when the two limits differ:
-    the real `setTimeLeft(user, '=', secs)` computes
+    balance). Not necessarily equal to the hub's intended limit
+    (`HubTarget.limit_today_s`) until a policy push has landed via
+    setTimeLimitForDays. The real `setTimeLeft(user, '=', secs)` computes
     `BALANCE := DEVICE'S OWN configured limit - secs`, so any '=' write's
-    `secs` argument, and any clamp-avoidance check gating a '=', must be
-    computed against *this* value, never against what the hub believes the
-    limit to be -- see `plan()`'s use below."""
+    `secs` and any clamp check gating one must use *this* value, never the
+    hub's -- a real, previously-shipped bug no synthetic test caught,
+    since the fake and real daemons only diverge on it when the two limits
+    differ. See `plan()`'s use below."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,13 +93,11 @@ class HubTarget:
     """What the hub told the agent this tick."""
 
     limit_today_s: int
-    """L_eff: the hub's effective daily limit for this user (policy + grants).
-    Not necessarily equal to `Observation.limit_today_s` (the device's own
-    currently-configured limit, L_dev) -- they only agree once a policy push
-    has landed on this device via setTimeLimitForDays. Before that, or after
-    a hub-side grant (which never gets pushed as a limit change), L_eff and
-    L_dev can differ, and the target below is built to converge correctly
-    either way -- see `plan()`."""
+    """L_eff: the hub's effective daily limit for this user (policy +
+    grants). Can differ from `Observation.limit_today_s` (L_dev, the
+    device's own configured limit) until a policy push lands, or after a
+    hub-side grant (never pushed as a limit change) -- `plan()` converges
+    correctly either way."""
 
     global_spent_s: int
     """G: the hub's canonical total spent today for this user, across all devices."""
@@ -158,42 +140,28 @@ def plan(
     """
     observed_offset = observed.balance_s - observed.spent_local_s
 
-    # Target BALANCE this tick is B* = G + (L_dev - L_eff), NOT plain G.
-    # Time left is always (device's limit) - BALANCE, so this makes time
-    # left come out to L_dev - B* = L_eff - G regardless of L_dev -- i.e.
-    # correct whether or not a policy push has landed on this device yet,
-    # and correct after a hub-side grant changes L_eff without ever being
-    # pushed down as a local limit change. When L_dev == L_eff (the
-    # steady-state case, once policy push has landed and there's no grant)
-    # this is exactly B* = G, the original behavior.
-    #
-    # correction = B* - B, expanded so it's computed directly against
-    # observed.balance_s (no spent_local_s term at all): a relative op
-    # moves B by exactly `correction`, landing it on B* independent of s.
+    # Target BALANCE this tick is B* = G + (L_dev - L_eff), not plain G:
+    # time left is always (device's limit) - BALANCE, so this makes time
+    # left come out to L_eff - G regardless of L_dev -- correct whether or
+    # not a policy push has landed yet, and correct after a hub-side grant
+    # changes L_eff without being pushed down as a limit change. Reduces to
+    # B* = G, the original behavior, once L_dev == L_eff.
     target_balance = target.global_spent_s + observed.limit_today_s - target.limit_today_s
     correction = target_balance - observed.balance_s
 
     needs_absolute = (
         force_absolute
-        # The clamp this guards against -- min(BALANCE, limit) in '+'/'-'
-        # -- is applied by the REAL daemon against the
-        # DEVICE's own configured limit, not the hub's target, so that's
-        # what this comparison must use too.
+        # The real daemon's min(BALANCE, limit) clamp in '+'/'-' is against
+        # the DEVICE's own configured limit, not the hub's target.
         or observed.balance_s > observed.limit_today_s
         or abs(correction) > cfg.hard_reset_threshold_s
     )
 
     if needs_absolute:
         # setTimeLeft(user, '=', secs) => BALANCE := DEVICE'S limit - secs.
-        # We want BALANCE == target_balance == G + L_dev - L_eff, so
-        #   secs := L_dev - target_balance = L_eff - G.
-        # Note this is independent of L_dev, and looks identical to a real
-        # bug this once had (using target.limit_today_s where
-        # observed.limit_today_s was needed) -- it isn't the same bug,
-        # because the *target* changed to compensate
-        # (see target_balance above): BALANCE still lands on
-        # G + L_dev - L_eff exactly, so time left is still L_eff - G. When
-        # L_dev == L_eff this reduces to the original `L_dev - G` formula.
+        # secs := L_dev - target_balance = L_eff - G, independent of L_dev
+        # (target_balance already absorbed it), so BALANCE still lands on
+        # G + L_dev - L_eff exactly and time left is still L_eff - G.
         seconds = target.limit_today_s - target.global_spent_s
         return Plan(
             op=Op.SET,
@@ -255,15 +223,13 @@ def advance_cumulative(
 ) -> CumulativeState:
     """Advance the cumulative counter by the genuine local delta this tick.
 
-    Handles the '=' regression trap, confirmed empirically against a real
-    daemon: a `'='` write can make the observed local-spent value jump
-    *backwards* by up to ~30s as an
-    artifact of the daemon reloading unflushed state from disk. A naive
-    "went backwards => day rolled over => credit everything" rule would then
-    double-count the whole day. Disambiguate by magnitude: a genuine local
-    rollover drops the value by (limit-scale) thousands of seconds; a flush
-    artifact drops it by at most ~30s. The two are never ambiguous in
-    practice, so a fixed tolerance well above the save interval is safe.
+    Handles the '=' regression trap, confirmed empirically: a `'='` write
+    can make the observed local-spent value jump *backwards* by up to ~30s
+    (the daemon reloading unflushed state from disk), which a naive "went
+    backwards => day rolled over => credit everything" rule would
+    double-count. Disambiguated by magnitude: a genuine rollover drops the
+    value by thousands of seconds; a flush artifact drops it by at most
+    ~30s, well under `cfg.regression_tolerance_s`.
     """
     prev = state.raw_prev_s
     curr = observed_spent_local_s

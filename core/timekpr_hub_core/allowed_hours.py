@@ -16,14 +16,11 @@ independently of any HTTP/DBUS/DB code (`core` has no IO dependency) via
 Hypothesis property tests against a brute-force per-minute oracle -- see
 `tests/unit/test_allowed_hours.py`.
 
-Constraint inherited from the on-disk format (README.md's "PlayTime" /
-"Time restrictions" sections): **one clock hour cannot hold two intervals**.
-`7:15-9:00` + `9:45-14:30` is representable (hour 9 belongs entirely to the
-first interval, hour 9's own record ends at :00); `7:15-9:15` + `9:45-14:30`
-is not (hour 9 would need two disjoint sub-ranges). An interval also breaks
-wherever the `unaccounted` flag changes. `validate_intervals` rejects the
-first case with a specific message instead of timekpr's admin GUI's six
-silent error classes highlighted in a treeview.
+Constraint inherited from the on-disk format: **one clock hour cannot hold
+two intervals**. `7:15-9:00` + `9:45-14:30` is representable (hour 9
+belongs entirely to the first interval); `7:15-9:15` + `9:45-14:30` is not
+(hour 9 would need two disjoint sub-ranges). An interval also breaks
+wherever the `unaccounted` flag changes.
 """
 
 from __future__ import annotations
@@ -154,25 +151,16 @@ def hours_to_intervals(records: list[HourRecord]) -> list[TimeInterval]:
 
 
 def hours_to_dbus_payload(records: list[HourRecord]) -> dict[str, dict[str, int | bool]]:
-    """The exact shape `setAllowedHours(user, dayNumber, hourList)` expects
-    for its third argument: `{"<hour>": {"STARTMIN": ..., "ENDMIN": ...,
-    "UACC": ...}}` (`server/interface/dbus/daemon.py:654`, DBUS in_signature
-    `"ssa{sa{si}}"` -- the outer dict's keys are strings, inner values ints).
+    """The exact shape `setAllowedHours(user, dayNumber, hourList)` expects:
+    `{"<hour>": {"STARTMIN": ..., "ENDMIN": ..., "UACC": ...}}`
+    (`server/interface/dbus/daemon.py:654`).
 
-    The hour key MUST be a string, not an int, even though it names an hour
-    number. timekpr's own `checkAndSetAllowedHours`
-    (`server/config/configprocessor.py:370-379`) does
-    `for rHour in list(map(str, pHourList)): ...; pHourList[rHour][...]` --
-    it iterates the *stringified* keys but then indexes back into the
-    original dict with that string. Handing it a dict with integer keys
-    makes every one of those lookups raise `KeyError`, which its
-    surrounding `except Exception:` swallows into a plain `result=-1` --
-    the DBUS call reports failure with no readable error, which
-    `TimekprEnforcer.set_allowed_hours` correctly treats as "push failed,
-    retry next tick", so the symptom on a real box is allowed-hours changes
-    that simply never take effect: weekday limits (a different, correctly
-    string-keyed call) keep reapplying harmlessly forever while hours
-    silently never do."""
+    The hour key MUST be a string, not an int: timekpr's own
+    `checkAndSetAllowedHours` iterates stringified keys but indexes back
+    into the original dict with that string, so an int-keyed dict raises
+    `KeyError` there -- swallowed into a bare `result=-1` with no readable
+    error, previously shipped as allowed-hours changes that silently never
+    took effect while weekday limits kept reapplying harmlessly forever."""
     return {
         str(r.hour): {"STARTMIN": r.start_min, "ENDMIN": r.end_min, "UACC": r.unaccounted} for r in records
     }

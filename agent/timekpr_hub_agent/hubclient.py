@@ -89,15 +89,14 @@ class HubClient:
                 body = resp.read()
                 return resp.status, (json.loads(body) if body else {})
         except ValueError as exc:
-            # A scheme-less or otherwise malformed base_url (e.g.
-            # "192.168.1.5:8000") makes urllib.request.Request itself raise
-            # "ValueError: unknown url type" -- neither URLError nor
-            # OSError, so it used to escape every handler below (and every
-            # caller's) as a raw traceback instead of a friendly
-            # HubUnreachableError/EnrollError. config.normalize_hub_url
-            # prevents this at the CLI layer already; this is the defensive
-            # second line in case base_url reaches here some other way (a
-            # hand-edited agent.env, a future caller).
+            # A scheme-less or malformed base_url (e.g. "192.168.1.5:8000")
+            # makes urllib.request.Request raise "ValueError: unknown url
+            # type" -- neither URLError nor OSError, so it would otherwise
+            # escape every handler here as a raw traceback instead of a
+            # friendly HubUnreachableError/EnrollError.
+            # config.normalize_hub_url prevents this at the CLI layer
+            # already; this is the defensive second line (a hand-edited
+            # agent.env, a future caller).
             raise urllib.error.URLError(str(exc)) from exc
         except urllib.error.HTTPError as exc:
             # Still a completed HTTP exchange (the hub responded, just with
@@ -165,25 +164,19 @@ class HubClient:
             raise HubUnreachableError(str(exc)) from exc
 
         if status in (401, 403):
-            # Before concluding the device is genuinely revoked: `self._token`
-            # was loaded once, at __init__, and this HubClient can live for
-            # the lifetime of a long-running systemd service (days/weeks). A
-            # re-enroll on this same machine rewrites the token file on disk
-            # (hubclient.py's enroll()/_save_token) and rotates it hub-side,
-            # but an *already-running* `run` process has no way to notice --
-            # `enroll`'s own `systemctl restart` is supposed to replace it
-            # with a fresh process, but if that restart didn't happen (a
-            # `--no-start` enroll, a failed/skipped systemctl call, or any
-            # other gap), the running process is left permanently sending a
-            # now-stale token that no longer matches any device row, which
-            # looks identical to an actual revoke (both are 401/403) and
-            # locks the user out until someone thinks to restart the
-            # service by hand. Seen live: `status` (a fresh process,
-            # freshly re-reading the token file) succeeded while the
+            # Before concluding the device is genuinely revoked: self._token
+            # was loaded once, at __init__, and this process can outlive a
+            # re-enroll on the same machine, which rewrites the token file
+            # on disk and rotates it hub-side but can't reach an
+            # already-running `run` process directly (its own `systemctl
+            # restart` is supposed to replace that process, but a
+            # `--no-start` enroll or a failed restart leaves it sending a
+            # now-stale token that looks identical to a real revoke).
+            # Seen live: a fresh `status` invocation succeeded while the
             # long-running `run` service kept 403ing on the same tick.
             # Reload from disk and retry ONCE; a genuine revoke leaves the
-            # file untouched, so `fresh_token == self._token` and this is a
-            # no-op -- the fail-closed behavior below still applies.
+            # file untouched, so this is a no-op and the fail-closed
+            # behavior below still applies.
             fresh_token = self._load_token()
             if fresh_token and fresh_token != self._token:
                 self._token = fresh_token

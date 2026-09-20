@@ -115,7 +115,7 @@ def run_tick(
     than silently overriding the agent's notion of "today", which drives
     canonical-day rollover, offline grace, and every emitted activity span.
     `_cmd_run` (the systemd/production path) never sets either, and neither
-    is exposed as a `run` CLI flag -- nothing a parent or a unit file can
+    is exposed as a `run` CLI flag -- nothing an admin or a unit file can
     type should be able to move this clock.
     """
     if debug_clock and now is not None:
@@ -270,7 +270,7 @@ def run_tick(
                 # exactly the write that would have been made, but touch
                 # neither DBUS (no policy push, no setTimeLeft) nor the
                 # agent's own convergence bookkeeping -- see
-                # api/parent.py's `set_device_observe_mode` docstring for
+                # api/admin.py's `set_device_observe_mode` docstring for
                 # the contract this has to match.
                 if user_state.last_enforcement != "observe":
                     log.warning("%s: hub enforcement is 'observe' -- computing but not writing", username)
@@ -331,7 +331,7 @@ def run_tick(
         # machine" action as if it were an error condition. Instead: touch
         # nothing. Whatever limit/balance timekpr already has stays exactly
         # as it is, so the machine reverts to local self-management -- a
-        # parent can reconfigure it directly via timekpra/the timekpr GUI
+        # admin can reconfigure it directly via timekpra/the timekpr GUI
         # again, same as before this device was ever enrolled. Re-enrolling
         # (which hubclient.py's own retry picks up without even needing a
         # restart) resumes hub management on the very next successful sync.
@@ -391,7 +391,7 @@ def _apply_convergence(*, enforcer, username, obs, target, user_state, force_abs
     In observe mode (`dry_run=True`) the plan is computed and logged
     exactly as it would be applied, but neither `enforcer.set_time_left`
     nor `user_state.applied_offset_s` is touched -- observe mode must have
-    zero effect on the device (see api/parent.py's `set_device_observe_mode`
+    zero effect on the device (see api/admin.py's `set_device_observe_mode`
     docstring) and zero effect on the agent's own bookkeeping, so enforcing
     again later starts from the same convergence state as if observe mode
     had never happened."""
@@ -637,7 +637,7 @@ def _add_hub_connection_args(
         # systemd launches non-interactively and a clear "the following
         # arguments are required" beats a confusing failure three calls
         # later. `enroll` (prompt_if_missing=True) never argparse-requires
-        # it -- a parent running it bare gets prompted instead (see
+        # it -- an admin running it bare gets prompted instead (see
         # _prompt_or_die in _cmd_enroll), and a non-interactive caller still
         # gets a clean, equivalent error from that same helper.
         required=(not prompt_if_missing) and config_mod.env_default("TIMEKPR_HUB_URL", env_values) is None,
@@ -758,7 +758,7 @@ def _cmd_enroll(args: argparse.Namespace) -> None:
         # rotated that device's token and reused its row instead of forking
         # a second history for the same machine (e.g. after `pacman -R` +
         # `pacman -U` and a re-enroll). Say so explicitly: silently doing
-        # this without telling the parent looks identical to a fresh
+        # this without telling the admin looks identical to a fresh
         # enrollment, and they may reasonably expect a new device to appear.
         since = data.get("previously_enrolled_at", "")
         print(
@@ -801,7 +801,7 @@ def _cmd_enroll(args: argparse.Namespace) -> None:
             # memory (HubClient loads it once, at __init__) while the DB
             # now expects the new one, and every subsequent /sync 401'd --
             # which the agent treats as DeviceRevokedError and enters
-            # `closed` enforcement immediately, i.e. the child looks locked
+            # `closed` enforcement immediately, i.e. the user looks locked
             # out for no reason even though the hub thinks everything is
             # fine. `enable` (idempotent, no restart) followed by an
             # unconditional `restart` (starts a stopped unit, restarts a
@@ -869,7 +869,7 @@ def _check(label: str, ok: bool, detail: str = "") -> bool:
 
 
 def _cmd_status(args: argparse.Namespace) -> None:
-    """`timekpr-hub-agent status`: one line per check, so a parent (or this
+    """`timekpr-hub-agent status`: one line per check, so an admin (or this
     agent's own `run` at startup) can see exactly which link in the chain
     is broken instead of a bare "it's not working"."""
     all_ok = True

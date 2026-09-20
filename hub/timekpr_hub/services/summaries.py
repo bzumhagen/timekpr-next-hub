@@ -1,5 +1,5 @@
-"""Per-user usage summary computation, shared by the parent JSON API
-(`api/parent.py`'s `GET /users`) and the HTML UI (`api/ui.py`'s users
+"""Per-user usage summary computation, shared by the admin JSON API
+(`api/admin.py`'s `GET /users`) and the HTML UI (`api/ui.py`'s users
 fragment). Computed once here, batched into a handful of queries total
 regardless of how many users are shown (via the `*_batch` aggregate/limits
 helpers), rather than the ~3 queries per user a per-user loop in each
@@ -93,7 +93,7 @@ async def compute_user_summaries(
     the wallclock/parallel accounting-mode groups' global spend, one for
     activity state, one for today's grants, one for today's day overrides,
     and one for today's gate releases -- versus the ~3-4 queries *per user*
-    that `api/parent.py::list_users` and `api/ui.py::_user_summaries` would
+    that `api/admin.py::list_users` and `api/ui.py::_user_summaries` would
     each cost if they computed this themselves."""
     now = datetime.now(UTC)
     stamp = canonical_stamp(now, settings.tz)

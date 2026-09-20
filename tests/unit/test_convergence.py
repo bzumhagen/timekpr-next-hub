@@ -196,7 +196,7 @@ def test_absolute_write_uses_device_limit_not_hub_target_limit():
 
     The invariant is stated in terms of time left rather than balance, so
     that it also covers a mismatched limit correctly: TIME LEFT (the only thing that actually matters -- what
-    timekpr enforces and what the child sees) must land on
+    timekpr enforces and what the user sees) must land on
     `target.limit_today_s - target.global_spent_s`, the hub's *effective*
     limit minus its global spent total, regardless of what the device's own
     limit happens to be configured to. See `plan()`'s `target_balance`.

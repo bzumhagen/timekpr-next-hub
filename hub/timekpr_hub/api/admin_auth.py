@@ -1,11 +1,11 @@
-"""Parent-facing login/logout/first-run-setup, and the two dependencies that
-gate every other parent/UI route.
+"""Admin-facing login/logout/first-run-setup, and the two dependencies that
+gate every other admin/UI route.
 
-Without this, every route in `api/parent.py` and `api/ui.py` would be
+Without this, every route in `api/admin.py` and `api/ui.py` would be
 reachable by anyone who could reach the hub at all. The first account is
 created via a first-run `/setup` page rather than a CLI command or an env
-var: `/setup` 404s once a parent exists, so the window during which an
-unclaimed hub is reachable is exactly "before the first parent visits it and
+var: `/setup` 404s once an admin exists, so the window during which an
+unclaimed hub is reachable is exactly "before the first admin visits it and
 claims it" -- log a warning at startup naming that state.
 """
 
@@ -21,20 +21,20 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from timekpr_hub.db.models import Parent
+from timekpr_hub.db.models import Admin
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.audit import record_audit_event
-from timekpr_hub.services.parent_auth import (
+from timekpr_hub.services.admin_auth import (
     SESSION_COOKIE_NAME,
     InviteError,
-    any_parent_exists,
+    any_admin_exists,
     create_session,
     delete_session,
-    get_parent_by_session_token,
+    get_admin_by_session_token,
     hash_password,
     redeem_invite,
     verify_password,
 )
+from timekpr_hub.services.audit import record_audit_event
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "web" / "templates"))
@@ -43,7 +43,7 @@ _cookie_scheme = APIKeyCookie(name=SESSION_COOKIE_NAME, auto_error=False)
 
 
 class RequireLoginRedirect(Exception):
-    """Raised by `get_current_parent_ui` for an HTML request with no valid
+    """Raised by `get_current_admin_ui` for an HTML request with no valid
     session -- caught by an app-level exception handler (app.py) that
     redirects to /login, since a raw 401 is the wrong UX for a browser tab."""
 
@@ -59,29 +59,29 @@ def _set_session_cookie(response, request: Request, token: str) -> None:
     )
 
 
-async def get_current_parent_api(
+async def get_current_admin_api(
     token: str | None = Depends(_cookie_scheme), session: AsyncSession = Depends(get_session)
-) -> Parent:
+) -> Admin:
     if token:
-        parent = await get_parent_by_session_token(session, token)
-        if parent is not None:
-            return parent
+        admin = await get_admin_by_session_token(session, token)
+        if admin is not None:
+            return admin
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated -- log in at /login")
 
 
-async def get_current_parent_ui(
+async def get_current_admin_ui(
     token: str | None = Depends(_cookie_scheme), session: AsyncSession = Depends(get_session)
-) -> Parent:
+) -> Admin:
     if token:
-        parent = await get_parent_by_session_token(session, token)
-        if parent is not None:
-            return parent
+        admin = await get_admin_by_session_token(session, token)
+        if admin is not None:
+            return admin
     raise RequireLoginRedirect()
 
 
 @router.get("/setup", response_class=HTMLResponse)
 async def setup_form(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    if await any_parent_exists(session):
+    if await any_admin_exists(session):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return templates.TemplateResponse(request, "setup.html", {})
 
@@ -93,15 +93,15 @@ async def setup_submit(
     password: str = Form(..., min_length=8),
     session: AsyncSession = Depends(get_session),
 ):
-    if await any_parent_exists(session):
+    if await any_admin_exists(session):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
-    parent = Parent(email=email, password_hash=hash_password(password))
-    session.add(parent)
+    admin = Admin(email=email, password_hash=hash_password(password))
+    session.add(admin)
     await session.flush()
     token = await create_session(
         session,
-        parent_id=parent.id,
+        admin_id=admin.id,
         ip=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
     )
@@ -116,7 +116,7 @@ async def setup_submit(
 async def login_form(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse | RedirectResponse:
-    if not await any_parent_exists(session):
+    if not await any_admin_exists(session):
         return RedirectResponse("/setup", status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse(request, "login.html", {"error": request.query_params.get("error")})
 
@@ -128,22 +128,22 @@ async def login_submit(
     password: str = Form(...),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(select(Parent).where(Parent.email == email))
-    parent = result.scalar_one_or_none()
-    if parent is None or not verify_password(password, parent.password_hash):
+    result = await session.execute(select(Admin).where(Admin.email == email))
+    admin = result.scalar_one_or_none()
+    if admin is None or not verify_password(password, admin.password_hash):
         return RedirectResponse("/login?error=1", status_code=status.HTTP_303_SEE_OTHER)
 
     ip = request.client.host if request.client else None
     token = await create_session(
-        session, parent_id=parent.id, ip=ip, user_agent=request.headers.get("user-agent")
+        session, admin_id=admin.id, ip=ip, user_agent=request.headers.get("user-agent")
     )
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
-        action="parent.login",
-        target_type="parent",
-        target_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
+        action="admin.login",
+        target_type="admin",
+        target_id=str(admin.id),
         ip=ip,
     )
     await session.commit()
@@ -191,12 +191,12 @@ async def invite_submit(
             request, "invite.html", {"token": token, "error": str(exc)}, status_code=status.HTTP_410_GONE
         )
 
-    parent = Parent(email=email, password_hash=hash_password(password))
-    session.add(parent)
+    admin = Admin(email=email, password_hash=hash_password(password))
+    session.add(admin)
     try:
         await session.flush()
     except IntegrityError:
-        # A second parent claiming this same invite with a duplicate email
+        # A second admin claiming this same invite with a duplicate email
         # (racing the check below, or just reusing an existing address) --
         # the invite is already burned by redeem_invite above, so this is a
         # clean failure rather than a half-created account.
@@ -209,16 +209,16 @@ async def invite_submit(
         )
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
-        action="parent.created",
-        target_type="parent",
-        target_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
+        action="admin.created",
+        target_type="admin",
+        target_id=str(admin.id),
         ip=request.client.host if request.client else None,
     )
     session_token = await create_session(
         session,
-        parent_id=parent.id,
+        admin_id=admin.id,
         ip=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
     )

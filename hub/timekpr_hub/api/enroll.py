@@ -72,7 +72,7 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
     # `pacman -U` over an existing install) re-enrolled as a brand-new
     # device every time, silently orphaning that machine's past
     # usage_counters/activity_intervals under the old device row. Only a
-    # non-revoked device counts as "the same live machine"; a parent who
+    # non-revoked device counts as "the same live machine"; an admin who
     # explicitly revoked a device gets a genuinely new row on the next
     # enroll (the partial unique index on devices.machine_id only covers
     # status <> 'revoked', so this SELECT and that index agree).
@@ -97,7 +97,7 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
             name=req.hostname,
             machine_id=req.machine_id,
             token_hash=_hash_token(raw_token),
-            # A parent-minted enrollment code is itself the approval -- there's
+            # An admin-minted enrollment code is itself the approval -- there's
             # no separate authentication on either endpoint for a second
             # "approve" step to actually gate anything. A 'pending' status
             # would mean a brand-new device could already sync anyway

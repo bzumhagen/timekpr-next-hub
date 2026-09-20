@@ -4,7 +4,7 @@ timekpr stores allowed time-of-day windows *per clock hour*
 (`common/utils/misc.py:findHourStartEndMinutes`, `common/utils/config.py:
 setUserAllowedHours`): each hour of the day is either absent (forbidden) or
 present with an optional `[startMin-endMin]` sub-range and an optional `!`
-("unaccounted") flag. A parent thinks in *intervals* ("4pm to 8pm"), not
+("unaccounted") flag. An admin thinks in *intervals* ("4pm to 8pm"), not
 per-hour records, and the day's real allowed time is the union of those
 per-hour records reassembled into intervals -- both timekpr's own daemon
 (`server/user/userdata.py:getTimeLimits`) and its GTK admin GUI

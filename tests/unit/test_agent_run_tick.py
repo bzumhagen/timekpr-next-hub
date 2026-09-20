@@ -103,7 +103,7 @@ def test_observe_enforcement_never_writes_a_local_limit():
 
 def test_offline_capped_policy_never_refunds_local_activity():
     """Converging every offline-past-grace tick to the stale
-    last_global_spent_s would refund whatever the child used
+    last_global_spent_s would refund whatever the user used
     locally since the last hub contact -- an offline device would stop
     counting time at all. The estimate must only ever grow while offline.
 
@@ -182,7 +182,7 @@ def test_revoked_device_relinquishes_control_instead_of_locking_out():
     """An admin removing a device (revoke or delete -- either 403s or 401s
     /sync, both raised as DeviceRevokedError) is a deliberate, authoritative
     "stop managing this machine" action, not an error condition like the
-    hub being unreachable. It must not lock the child to zero time (the
+    hub being unreachable. It must not lock the user to zero time (the
     previous behavior, reusing the offline "closed" policy) -- it must
     touch nothing at all, so the machine reverts to local self-management
     at exactly whatever limit/balance it already had."""

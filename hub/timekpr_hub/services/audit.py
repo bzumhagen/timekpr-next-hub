@@ -1,5 +1,5 @@
-"""Audit log: an append-only record of every parent action, written here
-and read back by api/parent.py's GET /audit (the hub UI's Audit page)."""
+"""Audit log: an append-only record of every admin action, written here
+and read back by api/admin.py's GET /audit (the hub UI's Audit page)."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """Read/write /etc/timekpr-hub-agent/agent.env.
 
 Enrollment is a single command: `enroll` writes this file itself instead
-of printing it for a parent to paste by hand, and `run`'s argparse defaults
+of printing it for an admin to paste by hand, and `run`'s argparse defaults
 come from it (falling back further to the environment, e.g. when
 `EnvironmentFile=` has already loaded it into the process for the systemd
 unit) -- so the unit's ExecStart never has to change to match what a
@@ -49,7 +49,7 @@ def read_env_file(path: Path = DEFAULT_ENV_PATH) -> dict[str, str]:
 
 def env_default(key: str, env_values: dict[str, str]) -> str | None:
     """Precedence: real process environment (e.g. under systemd's
-    EnvironmentFile=, or a parent's own `export`), then the config file
+    EnvironmentFile=, or an admin's own `export`), then the config file
     directly (so `sudo timekpr-hub-agent status` works even when invoked
     outside systemd), then None (argparse's own default/required kicks in)."""
     return os.environ.get(key) or env_values.get(key) or None

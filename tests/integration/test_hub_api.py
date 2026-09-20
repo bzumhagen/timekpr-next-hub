@@ -218,7 +218,7 @@ async def test_enroll_merges_into_an_existing_user_of_the_same_username(client):
 
 @pytest.mark.asyncio
 async def test_enrolled_device_is_immediately_active_and_can_sync(client):
-    """A parent-minted enrollment code is itself the approval -- there's no
+    """An admin-minted enrollment code is itself the approval -- there's no
     separate un-authenticated approval step that would gate anything, and a
     'pending' status would just add a step that could sync anyway (auth.py
     only rejects 'revoked')."""
@@ -551,7 +551,7 @@ async def test_reenroll_with_known_machine_id_rebinds_instead_of_duplicating(cli
 
 @pytest.mark.asyncio
 async def test_revoked_device_can_be_reenrolled_as_a_genuinely_new_row(client):
-    """A parent who explicitly revokes a device (rather than it just being
+    """An admin who explicitly revokes a device (rather than it just being
     reinstalled) should get a fresh device row on the next enroll with that
     machine_id -- the partial unique index only covers non-revoked rows."""
     await _seed_user("hank")
@@ -664,16 +664,14 @@ async def test_grant_policy_update_and_device_revoke_are_all_audit_logged(client
     assert "policy.update" in audit_actions
     assert "device.revoke" in audit_actions
 
-    scoped_resp = await client.get(
-        "/api/v1/audit", params={"target_type": "device", "target_id": device_id}
-    )
+    scoped_resp = await client.get("/api/v1/audit", params={"target_type": "device", "target_id": device_id})
     assert [e["action"] for e in scoped_resp.json()] == ["device.revoke"]
 
 
 @pytest.mark.asyncio
 async def test_login_is_audit_logged(unauthenticated_client):
     setup_resp = await unauthenticated_client.post(
-        "/setup", data={"email": "parent@example.com", "password": "hunter2hunter"}, follow_redirects=False
+        "/setup", data={"email": "admin@example.com", "password": "hunter2hunter"}, follow_redirects=False
     )
     assert setup_resp.status_code == 303
 
@@ -681,21 +679,21 @@ async def test_login_is_audit_logged(unauthenticated_client):
     assert logout_resp.status_code == 303
 
     login_resp = await unauthenticated_client.post(
-        "/login", data={"email": "parent@example.com", "password": "hunter2hunter"}, follow_redirects=False
+        "/login", data={"email": "admin@example.com", "password": "hunter2hunter"}, follow_redirects=False
     )
     assert login_resp.status_code == 303
 
     session_factory = _get_test_sessionmaker()
     async with session_factory() as session:
         count = (
-            await session.execute(text("SELECT count(*) FROM audit_log WHERE action = 'parent.login'"))
+            await session.execute(text("SELECT count(*) FROM audit_log WHERE action = 'admin.login'"))
         ).scalar_one()
     assert count == 1  # only login_submit records this -- setup_submit does not
 
 
 @pytest.mark.asyncio
 async def test_device_observe_toggle_flips_enforcement_reported_by_sync(client):
-    """A parent switching a device to observe-only should be reflected
+    """An admin switching a device to observe-only should be reflected
     both in `GET /devices`
     and in the very next `/sync`'s `enforcement` field -- the agent reads
     that to decide whether to actually write to DBUS."""
@@ -894,8 +892,8 @@ async def test_policy_update_rejects_out_of_range_daily_limit(client):
 
 
 @pytest.mark.asyncio
-async def test_parent_and_ui_routes_require_login(unauthenticated_client):
-    """Every parent/UI route 401s (JSON) or redirects to /login (HTML)
+async def test_admin_and_ui_routes_require_login(unauthenticated_client):
+    """Every admin/UI route 401s (JSON) or redirects to /login (HTML)
     without a valid session -- the fix for the "everything is open on the
     LAN" finding."""
     c = unauthenticated_client
@@ -911,13 +909,13 @@ async def test_parent_and_ui_routes_require_login(unauthenticated_client):
 async def test_login_flow_setup_then_login_then_logout(unauthenticated_client):
     c = unauthenticated_client
 
-    # No parent exists yet -- /setup is reachable, /login bounces to it.
+    # No admin exists yet -- /setup is reachable, /login bounces to it.
     login_before_setup = await c.get("/login", follow_redirects=False)
     assert login_before_setup.status_code == 303
     assert login_before_setup.headers["location"] == "/setup"
 
     setup_resp = await c.post(
-        "/setup", data={"email": "parent@example.com", "password": "correcthorsebattery"}
+        "/setup", data={"email": "admin@example.com", "password": "correcthorsebattery"}
     )
     assert setup_resp.status_code == 303
     assert setup_resp.headers["location"] == "/"
@@ -941,7 +939,7 @@ async def test_login_flow_setup_then_login_then_logout(unauthenticated_client):
 
     # And logging back in with the right password works.
     login_resp = await c.post(
-        "/login", data={"email": "parent@example.com", "password": "correcthorsebattery"}
+        "/login", data={"email": "admin@example.com", "password": "correcthorsebattery"}
     )
     assert login_resp.status_code == 303
     assert login_resp.headers["location"] == "/"
@@ -951,10 +949,10 @@ async def test_login_flow_setup_then_login_then_logout(unauthenticated_client):
 @pytest.mark.asyncio
 async def test_login_with_wrong_password_is_rejected(unauthenticated_client):
     c = unauthenticated_client
-    await c.post("/setup", data={"email": "parent2@example.com", "password": "correcthorsebattery"})
+    await c.post("/setup", data={"email": "admin2@example.com", "password": "correcthorsebattery"})
     await c.post("/logout")
 
-    resp = await c.post("/login", data={"email": "parent2@example.com", "password": "wrong-password"})
+    resp = await c.post("/login", data={"email": "admin2@example.com", "password": "wrong-password"})
     assert resp.status_code == 303
     assert resp.headers["location"] == "/login?error=1"
     assert (await c.get("/api/v1/users")).status_code == 401

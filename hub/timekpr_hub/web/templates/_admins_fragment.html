@@ -1,0 +1,11 @@
+{% for a in admins %}
+  <div class="row" style="padding:.35rem 0; border-top: 1px solid var(--tk-line);">
+    <span>{{ a.email }}{% if a.you %} <span style="opacity:.6;">(you)</span>{% endif %}</span>
+    {% if can_delete and not a.you %}
+      <form data-post="/ui/admins/{{ a.id }}/delete" data-target="#admins-list" data-swap="innerHTML"
+            data-confirm="Remove {{ a.email }}'s account? This can't be undone.">
+        <button type="submit">Remove</button>
+      </form>
+    {% endif %}
+  </div>
+{% endfor %}

@@ -228,9 +228,7 @@ async def test_grant_from_ui_with_day_lands_on_that_date_not_today(client):
     await _seed_user("dategrant")
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
 
-    resp = await client.post(
-        "/ui/users/dategrant/grants", data={"seconds": "-1800", "day": tomorrow}
-    )
+    resp = await client.post("/ui/users/dategrant/grants", data={"seconds": "-1800", "day": tomorrow})
     assert resp.status_code == 200
 
     session_factory = _get_test_sessionmaker()
@@ -239,8 +237,10 @@ async def test_grant_from_ui_with_day_lands_on_that_date_not_today(client):
 
         row = (
             await session.execute(
-                text("SELECT day, seconds FROM grants g JOIN users u ON u.id = g.user_id "
-                     "WHERE u.canonical_username = :u"),
+                text(
+                    "SELECT day, seconds FROM grants g JOIN users u ON u.id = g.user_id "
+                    "WHERE u.canonical_username = :u"
+                ),
                 {"u": "dategrant"},
             )
         ).one()
@@ -251,7 +251,7 @@ async def test_grant_from_ui_with_day_lands_on_that_date_not_today(client):
 @pytest.mark.asyncio
 async def test_rename_user_changes_display_name_only(client):
     await _seed_user("renameuser")
-    resp = await client.post("/users/renameuser/rename", data={"display_name": "Renamed Kid"})
+    resp = await client.post("/users/renameuser/rename", data={"display_name": "Renamed User"})
     assert resp.status_code == 303
 
     session_factory = _get_test_sessionmaker()
@@ -262,7 +262,7 @@ async def test_rename_user_changes_display_name_only(client):
         user = (
             await session.execute(select(User).where(User.canonical_username == "renameuser"))
         ).scalar_one()
-    assert user.display_name == "Renamed Kid"
+    assert user.display_name == "Renamed User"
     assert user.canonical_username == "renameuser"
 
 

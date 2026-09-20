@@ -43,9 +43,9 @@ import pytest_asyncio  # noqa: E402
 from asgi_lifespan import LifespanManager  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
-from timekpr_hub.api.parent_auth import get_current_parent_api, get_current_parent_ui  # noqa: E402
+from timekpr_hub.api.admin_auth import get_current_admin_api, get_current_admin_ui  # noqa: E402
 from timekpr_hub.app import app  # noqa: E402
-from timekpr_hub.db.models import Parent  # noqa: E402
+from timekpr_hub.db.models import Admin  # noqa: E402
 from timekpr_hub.db.session import get_session  # noqa: E402
 
 # One engine per test *session* (not per app import), created lazily inside
@@ -75,17 +75,17 @@ async def _override_get_session():
         yield session
 
 
-# A stand-in parent for every test that isn't specifically exercising the
+# A stand-in admin for every test that isn't specifically exercising the
 # login flow itself -- most DB-backed tests are exercising enroll/sync/
-# device/grant/policy behavior that has nothing to do with parent auth, so
-# `client` bypasses the two get_current_parent_* dependencies the same way
+# device/grant/policy behavior that has nothing to do with admin auth, so
+# `client` bypasses the two get_current_admin_* dependencies the same way
 # it overrides get_session. Tests of the login flow itself use
 # `unauthenticated_client` instead, which does NOT install this override.
-_FAKE_PARENT = Parent(id=uuid.uuid4(), email="test-parent@example.com", password_hash="unused-in-tests")
+_FAKE_ADMIN = Admin(id=uuid.uuid4(), email="test-admin@example.com", password_hash="unused-in-tests")
 
 
-async def _override_get_current_parent():
-    return _FAKE_PARENT
+async def _override_get_current_admin():
+    return _FAKE_ADMIN
 
 
 async def _truncate_all(session_factory) -> None:
@@ -93,7 +93,7 @@ async def _truncate_all(session_factory) -> None:
         await session.execute(
             text(
                 "TRUNCATE users, devices, activity_intervals, usage_counters, "
-                "policies, enrollment_codes, grants, parents, parent_sessions, audit_log CASCADE"
+                "policies, enrollment_codes, grants, admins, admin_sessions, audit_log CASCADE"
             )
         )
         await session.commit()
@@ -107,8 +107,8 @@ async def client():
     await _truncate_all(get_test_sessionmaker())
 
     app.dependency_overrides[get_session] = _override_get_session
-    app.dependency_overrides[get_current_parent_api] = _override_get_current_parent
-    app.dependency_overrides[get_current_parent_ui] = _override_get_current_parent
+    app.dependency_overrides[get_current_admin_api] = _override_get_current_admin
+    app.dependency_overrides[get_current_admin_ui] = _override_get_current_admin
     try:
         async with LifespanManager(app):
             transport = httpx.ASGITransport(app=app)
@@ -116,13 +116,13 @@ async def client():
                 yield ac
     finally:
         app.dependency_overrides.pop(get_session, None)
-        app.dependency_overrides.pop(get_current_parent_api, None)
-        app.dependency_overrides.pop(get_current_parent_ui, None)
+        app.dependency_overrides.pop(get_current_admin_api, None)
+        app.dependency_overrides.pop(get_current_admin_ui, None)
 
 
 @pytest_asyncio.fixture
 async def unauthenticated_client():
-    """Like `client`, but leaves the real parent-auth dependencies in place
+    """Like `client`, but leaves the real admin-auth dependencies in place
     -- for tests of the auth gate and the login/setup flow themselves."""
     from tests.dbutil import require_db
 

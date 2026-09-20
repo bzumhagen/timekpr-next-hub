@@ -1,5 +1,5 @@
 """Policy lookup/versioning helpers: fetch the current policy version and
-payload for a user, and append a new version when a parent edits it.
+payload for a user, and append a new version when an admin edits it.
 """
 
 from __future__ import annotations
@@ -79,12 +79,12 @@ async def create_initial_policy(
     """Every newly-registered user needs a policy row before /sync can serve
     them a limit. Default: 1h/day, every day, no PlayTime, no week/month cap
     (large placeholder), simple lock on expiry -- used when no snapshot is
-    given (e.g. a user created by hand, or the parent API).
+    given (e.g. a user created by hand, or the admin API).
 
     `enroll` passes the enrolling device's own currently-configured limits
     here instead, when it has them, so a brand-new hub user's policy
     starts from what's actually running on that device rather than always
-    resetting a possibly-already-configured child to the placeholder."""
+    resetting a possibly-already-configured user to the placeholder."""
     limits = daily_limits_s if daily_limits_s is not None else DEFAULT_DAILY_LIMITS_S
     policy = Policy(
         user_id=user_id,
@@ -143,7 +143,7 @@ async def get_or_create_policy(
 async def update_policy(
     session: AsyncSession, *, user: User, update: PolicyUpdate, created_by: str
 ) -> Policy:
-    """A parent-initiated change: PUT /users/{u}/policy (api/parent.py) and
+    """An admin-initiated change: PUT /users/{u}/policy (api/admin.py) and
     the UI's basic/advanced policy forms both funnel through here. Policies
     are append-only -- this always inserts version + 1 and repoints
     `current_policy_id` rather than mutating a row in place, so `sync.py`'s

@@ -1,16 +1,16 @@
 """Hub-UI routes: the dashboard, the per-user policy editor, and the
 usage-statistics view.
 
-Deliberately thin: reuses the same service functions as the JSON parent API
-(`api/parent.py`) rather than duplicating logic, and renders server-side
+Deliberately thin: reuses the same service functions as the JSON admin API
+(`api/admin.py`) rather than duplicating logic, and renders server-side
 HTML fragments/pages -- no client-side JS beyond `_base.html`'s small
 form/poll helper, the dashboard's inline ticker, and the policy editor's
 own "check/clear a whole day"
 convenience buttons.
 
-Every route here (and every /api/v1/* parent route) requires an
-authenticated parent session -- see `get_current_parent_ui` in
-`api/parent_auth.py`, applied router-level in `app.py`.
+Every route here (and every /api/v1/* admin route) requires an
+authenticated admin session -- see `get_current_admin_ui` in
+`api/admin_auth.py`, applied router-level in `app.py`.
 """
 
 from __future__ import annotations
@@ -44,8 +44,8 @@ from timekpr_hub_core.models import (
     PolicyUpdate,
 )
 
-from timekpr_hub.api.parent_auth import get_current_parent_ui
-from timekpr_hub.db.models import Device, Grant, Parent, User
+from timekpr_hub.api.admin_auth import get_current_admin_ui
+from timekpr_hub.db.models import Admin, Device, Grant, User
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.audit import list_audit_events, record_audit_event
 from timekpr_hub.services.day_hours import (
@@ -97,7 +97,7 @@ async def index(request: Request) -> HTMLResponse:
 async def devices_page(request: Request) -> HTMLResponse:
     """Device sync status and enrollment-code generation, split out from
     the dashboard onto its own page -- device state is hub-wide (not
-    per-kid), so unlike the per-user policy/stats/settings pages it doesn't
+    per-user), so unlike the per-user policy/stats/settings pages it doesn't
     belong nested under a user card; it's just noise on the dashboard most
     of the time and only wanted when actually managing a device."""
     return templates.TemplateResponse(request, "devices.html", {"poll_ms": settings.default_next_poll_ms})
@@ -110,9 +110,9 @@ _AUDIT_PAGE_SIZE = 50
 async def audit_page(
     request: Request, offset: int = 0, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    """Every parent action, newest first -- the read side of
+    """Every admin action, newest first -- the read side of
     services/audit.py's `record_audit_event`, which every mutating route in
-    this file and api/parent.py already calls. Rendered once per request
+    this file and api/admin.py already calls. Rendered once per request
     (no live poll, unlike the dashboard/devices pages): audit history
     doesn't change out from under the page the way live usage does, and
     `?offset=` pages back through it with plain links."""
@@ -146,9 +146,9 @@ async def audit_page(
 
 async def _user_summaries(session: AsyncSession, *, usernames: list[str] | None = None) -> list[dict]:
     """Template-shaped view of `compute_user_summaries` (services/
-    summaries.py, shared with the JSON parent API), plus two UI-only
+    summaries.py, shared with the JSON admin API), plus two UI-only
     additions: today's gate state (for the dashboard badge/Release button)
-    and whether *tomorrow* already carries a `DayOverride` (so a parent who
+    and whether *tomorrow* already carries a `DayOverride` (so a admin who
     cancelled tomorrow sees a heads-up today rather than being surprised)."""
     rows = await compute_user_summaries(session, usernames=usernames)
     if not rows:
@@ -207,7 +207,7 @@ async def grant_from_ui(
     seconds: int = Form(..., ge=-86400, le=86400),
     day: str = Form(""),
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
     """`day` defaults to today (unchanged behavior for the +/-30min quick
     actions); passing a future date is the "you lose 30 minutes tomorrow"
@@ -228,14 +228,14 @@ async def grant_from_ui(
             reason=f"{minutes:+g} min ({grant_day.isoformat()}, UI)"
             if grant_day != stamp.day
             else f"{minutes:+g} min (UI)",
-            source="parent",
+            source="admin",
             granted_by="ui",
         )
         session.add(grant)
         await record_audit_event(
             session,
-            actor_type="parent",
-            actor_id=str(parent.id),
+            actor_type="admin",
+            actor_id=str(admin.id),
             action="grant.create",
             target_type="user",
             target_id=username,
@@ -266,7 +266,7 @@ async def set_day_override_ui(
     limit_m: int = Form(0, ge=0, le=59),
     reason: str = Form(""),
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
     """`mode="none"` is a full moratorium (limit_seconds=0); `mode="limit"`
     sets the h/m pair instead. Either way this REPLACES that date's base
@@ -286,8 +286,8 @@ async def set_day_override_ui(
     )
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="override.set",
         target_type="user",
         target_id=username,
@@ -306,15 +306,15 @@ async def clear_day_override_ui(
     username: str,
     day: str = Form(...),
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
     user = await _get_user_or_404(session, username)
     cleared = await clear_day_override(session, user_id=user.id, day=date.fromisoformat(day))
     if cleared:
         await record_audit_event(
             session,
-            actor_type="parent",
-            actor_id=str(parent.id),
+            actor_type="admin",
+            actor_id=str(admin.id),
             action="override.clear",
             target_type="user",
             target_id=username,
@@ -347,7 +347,7 @@ async def set_day_hour_override_ui(
     to_midnight: str | None = Form(None),
     reason: str = Form(""),
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
     """`mode="any"` writes the explicit unrestricted map (never `[]` -- see
     `timekpr_hub_core.allowed_hours.unrestricted`'s docstring); `mode="window"`
@@ -395,8 +395,8 @@ async def set_day_hour_override_ui(
     )
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="day_hours.set",
         target_type="user",
         target_id=username,
@@ -416,7 +416,7 @@ async def clear_day_hour_override_ui(
     day: str = Form(...),
     redirect_to: str = Form(""),
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse | RedirectResponse:
     """`redirect_to` is set only by the policy editor's banner (see
     user_policy.html) -- a full page, not a dashboard `.user-card` fragment,
@@ -431,8 +431,8 @@ async def clear_day_hour_override_ui(
     if cleared:
         await record_audit_event(
             session,
-            actor_type="parent",
-            actor_id=str(parent.id),
+            actor_type="admin",
+            actor_id=str(admin.id),
             action="day_hours.clear",
             target_type="user",
             target_id=username,
@@ -453,7 +453,7 @@ async def release_gate_ui(
     request: Request,
     username: str,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
     """Releases *today* specifically -- the dashboard badge only ever shows
     for the current day, so there's no date to pick here (see
@@ -463,8 +463,8 @@ async def release_gate_ui(
     await release_gate(session, user_id=user.id, day=today, released_by="ui")
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="gate.release",
         target_type="user",
         target_id=username,
@@ -482,7 +482,7 @@ async def unrelease_gate_ui(
     request: Request,
     username: str,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
     """Reverses `release_gate_ui` for today -- re-gates the day (absence of
     a release row IS the gate)."""
@@ -492,8 +492,8 @@ async def unrelease_gate_ui(
     if unreleased:
         await record_audit_event(
             session,
-            actor_type="parent",
-            actor_id=str(parent.id),
+            actor_type="admin",
+            actor_id=str(admin.id),
             action="gate.unrelease",
             target_type="user",
             target_id=username,
@@ -528,7 +528,7 @@ _FULL_DAY = (0, 24 * 60)
 
 # Seed value for the "Between" mode's two <input type=time> fields when the
 # day is actually in "All day" mode (i.e. these are never the *stored*
-# from/to -- only what appears if a parent switches that day to "Between").
+# from/to -- only what appears if a admin switches that day to "Between").
 # NOT (0, 24*60): an <input type=time> only accepts 00:00-23:59, so "24:00"
 # (this module's own internal end-exclusive representation of midnight) is
 # an invalid attribute value a browser silently rejects, leaving the field
@@ -539,7 +539,7 @@ _BETWEEN_SEED = (9 * 60, 17 * 60)
 
 def _classify_day_hours(intervals: list[AllowedHourInterval] | None) -> dict:
     """Turns one day's stored `AllowedHourInterval`s into what the editor
-    actually shows: an "all day / between / custom" mode, so a parent almost
+    actually shows: an "all day / between / custom" mode, so a admin almost
     never has to meet the raw per-hour checkbox grid.
 
     `intervals` absent entirely (day never set, e.g. a brand-new user) is
@@ -856,7 +856,7 @@ async def update_policy_ui(
     request: Request,
     username: str,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ):
     user = await _get_user_or_404(session, username)
     form = await request.form()
@@ -868,8 +868,8 @@ async def update_policy_ui(
     policy = await update_policy(session, user=user, update=update, created_by="ui")
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="policy.update",
         target_type="user",
         target_id=username,
@@ -922,7 +922,7 @@ async def update_user_settings_ui(
     offline_grace_min: int = Form(15, ge=0, le=10080),
     offline_cap_min: int = Form(30, ge=0, le=10080),
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ):
     user = await _get_user_or_404(session, username)
     form = await request.form()
@@ -949,8 +949,8 @@ async def update_user_settings_ui(
     }
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="user_settings.update",
         target_type="user",
         target_id=username,
@@ -968,7 +968,7 @@ async def rename_user_ui(
     username: str,
     display_name: str = Form(..., min_length=1, max_length=128),
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ):
     """Changes only the display name shown in the hub UI -- `username`
     (`User.canonical_username`, the local unix account it's matched
@@ -978,8 +978,8 @@ async def rename_user_ui(
     user.display_name = display_name
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="user.rename",
         target_type="user",
         target_id=username,
@@ -996,7 +996,7 @@ async def delete_user_ui(
     request: Request,
     username: str,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ):
     """Permanently removes the user and everything FK'd to it (aliases,
     usage counters, activity intervals, grants, overrides, policies) via
@@ -1009,8 +1009,8 @@ async def delete_user_ui(
     user = await _get_user_or_404(session, username)
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="user.delete",
         target_type="user",
         target_id=username,
@@ -1108,7 +1108,7 @@ async def revoke_device_ui(
     request: Request,
     device_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
     """Kills the device's token immediately (get_current_device 403s a
     revoked device on its very next sync) without touching any history it
@@ -1121,8 +1121,8 @@ async def revoke_device_ui(
         device.status = "revoked"
         await record_audit_event(
             session,
-            actor_type="parent",
-            actor_id=str(parent.id),
+            actor_type="admin",
+            actor_id=str(admin.id),
             action="device.revoke",
             target_type="device",
             target_id=str(device.id),
@@ -1139,7 +1139,7 @@ async def set_device_observe_mode_ui(
     request: Request, device_id: uuid.UUID, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
     """Dry-run mode: the agent keeps syncing but never writes to DBUS --
-    see api/parent.py's
+    see api/admin.py's
     `set_device_observe_mode` for the JSON-API twin this wraps."""
     result = await session.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
@@ -1167,7 +1167,7 @@ async def delete_device_ui(
     request: Request,
     device_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
     """Hard delete -- FK cascades drop this device's usage_counters,
     activity_intervals and user_aliases too, which *rewrites* that user's
@@ -1181,8 +1181,8 @@ async def delete_device_ui(
         before = {"name": device.name, "status": device.status}
         await record_audit_event(
             session,
-            actor_type="parent",
-            actor_id=str(parent.id),
+            actor_type="admin",
+            actor_id=str(admin.id),
             action="device.delete",
             target_type="device",
             target_id=str(device_id),
@@ -1198,7 +1198,7 @@ async def delete_device_ui(
 async def create_enrollment_code_ui(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    from timekpr_hub.api.parent import create_enrollment_code
+    from timekpr_hub.api.admin import create_enrollment_code
 
     result = await create_enrollment_code(session)
     # The real flag is --hub-url (not --hub), so this line can be
@@ -1215,74 +1215,74 @@ async def create_enrollment_code_ui(
 
 
 # --------------------------------------------------------------------------
-# Parent accounts
+# Admin accounts
 # --------------------------------------------------------------------------
 
 
-async def _parents_fragment_context(session: AsyncSession, parent: Parent) -> dict:
-    result = await session.execute(select(Parent))
-    parents = [{"id": str(p.id), "email": p.email, "you": p.id == parent.id} for p in result.scalars().all()]
-    return {"parents": parents, "can_delete": len(parents) > 1}
+async def _admins_fragment_context(session: AsyncSession, admin: Admin) -> dict:
+    result = await session.execute(select(Admin))
+    admins = [{"id": str(a.id), "email": a.email, "you": a.id == admin.id} for a in result.scalars().all()]
+    return {"admins": admins, "can_delete": len(admins) > 1}
 
 
-@router.get("/parents", response_class=HTMLResponse)
-async def parents_page(
+@router.get("/admins", response_class=HTMLResponse)
+async def admins_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
-    context = await _parents_fragment_context(session, parent)
-    return templates.TemplateResponse(request, "parents.html", context)
+    context = await _admins_fragment_context(session, admin)
+    return templates.TemplateResponse(request, "admins.html", context)
 
 
-@router.post("/ui/parent-invites", response_class=HTMLResponse)
-async def create_parent_invite_ui(
+@router.post("/ui/admin-invites", response_class=HTMLResponse)
+async def create_admin_invite_ui(
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
-    from timekpr_hub.api.parent import create_parent_invite
+    from timekpr_hub.api.admin import create_admin_invite
 
-    result = await create_parent_invite(request, session=session, parent=parent)
+    result = await create_admin_invite(request, session=session, admin=admin)
     return HTMLResponse(
         f"<p>Invite link (expires in 24h, single-use):</p><pre>{result['url']}</pre>"
         "<p>Send it to the person you're inviting -- they'll set their own password.</p>"
     )
 
 
-@router.post("/ui/parents/{parent_id}/delete", response_class=HTMLResponse)
-async def delete_parent_ui(
+@router.post("/ui/admins/{target_admin_id}/delete", response_class=HTMLResponse)
+async def delete_admin_ui(
     request: Request,
-    parent_id: uuid.UUID,
+    target_admin_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
-    from timekpr_hub.api.parent import delete_parent
+    from timekpr_hub.api.admin import delete_admin
 
     try:
-        await delete_parent(parent_id, request, session=session, parent=parent)
+        await delete_admin(target_admin_id, request, session=session, admin=admin)
     except HTTPException:
-        pass  # last-remaining-parent guard -- the fragment re-render below just shows them all still present
-    context = await _parents_fragment_context(session, parent)
-    return templates.TemplateResponse(request, "_parents_fragment.html", context)
+        pass  # last-remaining-admin guard -- the fragment re-render below just shows them all still present
+    context = await _admins_fragment_context(session, admin)
+    return templates.TemplateResponse(request, "_admins_fragment.html", context)
 
 
-@router.post("/ui/parent/password", response_class=HTMLResponse)
+@router.post("/ui/admin/password", response_class=HTMLResponse)
 async def change_own_password_ui(
     request: Request,
     current_password: str = Form(...),
     new_password: str = Form(..., min_length=8),
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_ui),
+    admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
-    from timekpr_hub.api.parent import PasswordChange, change_own_password
+    from timekpr_hub.api.admin import PasswordChange, change_own_password
 
     try:
         await change_own_password(
             request,
             PasswordChange(current_password=current_password, new_password=new_password),
             session=session,
-            parent=parent,
+            admin=admin,
         )
     except HTTPException as exc:
         return HTMLResponse(f'<p style="color: var(--tk-danger);">{exc.detail}</p>')

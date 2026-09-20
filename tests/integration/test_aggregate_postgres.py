@@ -356,9 +356,9 @@ async def test_grants_totals_batch_matches_single_user_calls(db_session):
 
     db_session.add_all(
         [
-            Grant(id=uuid.uuid4(), user_id=user_a, day=today, seconds=600, reason="a1", source="parent"),
-            Grant(id=uuid.uuid4(), user_id=user_a, day=today, seconds=300, reason="a2", source="parent"),
-            Grant(id=uuid.uuid4(), user_id=user_b, day=today, seconds=-120, reason="b1", source="parent"),
+            Grant(id=uuid.uuid4(), user_id=user_a, day=today, seconds=600, reason="a1", source="admin"),
+            Grant(id=uuid.uuid4(), user_id=user_a, day=today, seconds=300, reason="a2", source="admin"),
+            Grant(id=uuid.uuid4(), user_id=user_b, day=today, seconds=-120, reason="b1", source="admin"),
         ]
     )
     await db_session.commit()

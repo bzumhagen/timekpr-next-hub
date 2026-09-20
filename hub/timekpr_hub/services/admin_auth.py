@@ -1,4 +1,4 @@
-"""Parent authentication: password hashing and session tokens.
+"""Admin authentication: password hashing and session tokens.
 
 Password + session cookie -- no second factor. Sessions mirror the
 device-token pattern in `api/auth.py` deliberately, rather than inventing a
@@ -18,7 +18,7 @@ from argon2.exceptions import VerifyMismatchError
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from timekpr_hub.db.models import Parent, ParentInvite, ParentSession
+from timekpr_hub.db.models import Admin, AdminInvite, AdminSession
 
 SESSION_COOKIE_NAME = "tkh_session"
 SESSION_TTL = timedelta(days=30)
@@ -43,16 +43,16 @@ def _hash_token(token: str) -> str:
 
 
 async def create_session(
-    session: AsyncSession, *, parent_id: uuid.UUID, ip: str | None, user_agent: str | None
+    session: AsyncSession, *, admin_id: uuid.UUID, ip: str | None, user_agent: str | None
 ) -> str:
     """Returns the raw cookie value -- only its hash is ever persisted, same
     as a device's bearer token (api/auth.py)."""
     raw_token = secrets.token_urlsafe(32)
     now = datetime.now(UTC)
     session.add(
-        ParentSession(
+        AdminSession(
             id=uuid.uuid4(),
-            parent_id=parent_id,
+            admin_id=admin_id,
             token_hash=_hash_token(raw_token),
             expires_at=now + SESSION_TTL,
             ip=ip,
@@ -62,47 +62,47 @@ async def create_session(
     return raw_token
 
 
-async def get_parent_by_session_token(session: AsyncSession, raw_token: str) -> Parent | None:
+async def get_admin_by_session_token(session: AsyncSession, raw_token: str) -> Admin | None:
     token_hash = _hash_token(raw_token)
-    result = await session.execute(select(ParentSession).where(ParentSession.token_hash == token_hash))
-    parent_session = result.scalar_one_or_none()
-    if parent_session is None:
+    result = await session.execute(select(AdminSession).where(AdminSession.token_hash == token_hash))
+    admin_session = result.scalar_one_or_none()
+    if admin_session is None:
         return None
-    if parent_session.expires_at < datetime.now(UTC):
+    if admin_session.expires_at < datetime.now(UTC):
         return None
-    parent_result = await session.execute(select(Parent).where(Parent.id == parent_session.parent_id))
-    return parent_result.scalar_one_or_none()
+    admin_result = await session.execute(select(Admin).where(Admin.id == admin_session.admin_id))
+    return admin_result.scalar_one_or_none()
 
 
 async def delete_session(session: AsyncSession, raw_token: str) -> None:
     token_hash = _hash_token(raw_token)
-    result = await session.execute(select(ParentSession).where(ParentSession.token_hash == token_hash))
-    parent_session = result.scalar_one_or_none()
-    if parent_session is not None:
-        await session.delete(parent_session)
+    result = await session.execute(select(AdminSession).where(AdminSession.token_hash == token_hash))
+    admin_session = result.scalar_one_or_none()
+    if admin_session is not None:
+        await session.delete(admin_session)
 
 
-async def any_parent_exists(session: AsyncSession) -> bool:
-    result = await session.execute(select(Parent.id).limit(1))
+async def any_admin_exists(session: AsyncSession) -> bool:
+    result = await session.execute(select(Admin.id).limit(1))
     return result.first() is not None
 
 
-async def count_parents(session: AsyncSession) -> int:
-    result = await session.execute(select(func.count()).select_from(Parent))
+async def count_admins(session: AsyncSession) -> int:
+    result = await session.execute(select(func.count()).select_from(Admin))
     return int(result.scalar_one())
 
 
-async def create_invite(session: AsyncSession, *, created_by_parent_id: uuid.UUID) -> str:
+async def create_invite(session: AsyncSession, *, created_by_admin_id: uuid.UUID) -> str:
     """Returns the raw invite token for the URL -- mirrors
     api/enroll.py's enrollment codes: single-use, expiring, and minted by
-    someone already authenticated (here, any existing parent)."""
+    someone already authenticated (here, any existing admin)."""
     raw_token = secrets.token_urlsafe(24)
     now = datetime.now(UTC)
     session.add(
-        ParentInvite(
+        AdminInvite(
             token=raw_token,
             expires_at=now + INVITE_TTL,
-            created_by_parent_id=created_by_parent_id,
+            created_by_admin_id=created_by_admin_id,
         )
     )
     return raw_token
@@ -120,18 +120,18 @@ async def redeem_invite(session: AsyncSession, *, token: str) -> None:
     concurrent submissions of the same invite link can't both succeed."""
     now = datetime.now(UTC)
     claim = await session.execute(
-        update(ParentInvite)
+        update(AdminInvite)
         .where(
-            ParentInvite.token == token,
-            ParentInvite.used_at.is_(None),
-            ParentInvite.expires_at >= now,
+            AdminInvite.token == token,
+            AdminInvite.used_at.is_(None),
+            AdminInvite.expires_at >= now,
         )
         .values(used_at=now)
-        .returning(ParentInvite.token)
+        .returning(AdminInvite.token)
     )
     if claim.scalar_one_or_none() is not None:
         return
-    existing = await session.execute(select(ParentInvite).where(ParentInvite.token == token))
+    existing = await session.execute(select(AdminInvite).where(AdminInvite.token == token))
     row = existing.scalar_one_or_none()
     if row is None:
         raise InviteError("unknown or already-used invite link")
@@ -140,18 +140,16 @@ async def redeem_invite(session: AsyncSession, *, token: str) -> None:
     raise InviteError("this invite link has expired")
 
 
-def change_password(*, parent: Parent, new_password: str) -> None:
+def change_password(*, admin: Admin, new_password: str) -> None:
     """Re-hashes in place; call `delete_other_sessions` alongside this so a
     stolen or forgotten-open session elsewhere doesn't survive the change."""
-    parent.password_hash = hash_password(new_password)
+    admin.password_hash = hash_password(new_password)
 
 
-async def delete_other_sessions(session: AsyncSession, *, parent_id: uuid.UUID, keep_token: str) -> None:
+async def delete_other_sessions(session: AsyncSession, *, admin_id: uuid.UUID, keep_token: str) -> None:
     keep_hash = _hash_token(keep_token)
     result = await session.execute(
-        select(ParentSession).where(
-            ParentSession.parent_id == parent_id, ParentSession.token_hash != keep_hash
-        )
+        select(AdminSession).where(AdminSession.admin_id == admin_id, AdminSession.token_hash != keep_hash)
     )
     for row in result.scalars().all():
         await session.delete(row)

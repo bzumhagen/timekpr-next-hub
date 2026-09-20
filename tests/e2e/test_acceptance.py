@@ -20,8 +20,8 @@ from tests.e2e.harness import (
     FakeEnforcer,
     SimulatedDevice,
     VirtualClock,
+    admin_api_request,
     enroll_device,
-    parent_api_request,
     query_global_spent,
     set_accounting_mode,
     tick_device,
@@ -173,7 +173,7 @@ def test_wallclock_accounting_counts_overlapping_use_once(live_hub, tmp_path):
 
 def test_day_hour_override_is_pushed_and_reverted(live_hub, tmp_path):
     """A real one-day allowed-hours override, driven through the real
-    parent API, the real /sync push gate, and the real agent tick loop:
+    admin API, the real /sync push gate, and the real agent tick loop:
     PUT an override for today -> a tick applies it; DELETE it -> the next
     tick reverts weekday W back to the standing hours -- and, just as
     important, once the revision has settled, FURTHER ticks push nothing
@@ -209,7 +209,7 @@ def test_day_hour_override_is_pushed_and_reverted(live_hub, tmp_path):
     # time" wouldn't be visible against an already-unrestricted default,
     # so this narrows it instead -- the opposite direction, but the same
     # push/revert mechanism).
-    parent_api_request(
+    admin_api_request(
         live_hub,
         "PUT",
         f"/users/{USERNAME}/day-hours",
@@ -227,7 +227,7 @@ def test_day_hour_override_is_pushed_and_reverted(live_hub, tmp_path):
 
     # DELETE the override: the next tick must revert weekday W back to
     # unrestricted.
-    parent_api_request(live_hub, "DELETE", f"/users/{USERNAME}/day-hours/{today.isoformat()}")
+    admin_api_request(live_hub, "DELETE", f"/users/{USERNAME}/day-hours/{today.isoformat()}")
     tick_device(device, clock, managed_users=[USERNAME])
     assert len(enforcer._allowed_hours[USERNAME][weekday]) == 24
     calls_after_revert = enforcer.set_allowed_hours_calls

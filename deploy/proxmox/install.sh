@@ -4,7 +4,7 @@
 # Run as root, inside the container (see create-lxc.sh for the host side).
 #
 # Idempotent: re-running this script on an existing install upgrades the
-# code and reruns migrations without touching the parent account, the
+# code and reruns migrations without touching the admin account, the
 # enrolled devices, or the DB password. Safe defaults, explicit flags for
 # the rest -- see --help.
 set -euo pipefail
@@ -312,6 +312,6 @@ fi
 echo
 log "done. Hub listening on $BIND:$PORT"
 if [[ $UPGRADE -eq 0 ]]; then
-  log "CLAIM IT NOW: open http://<this box>:$PORT/setup and create the first parent" \
+  log "CLAIM IT NOW: open http://<this box>:$PORT/setup and create the first admin" \
       "account -- until you do, anyone who can reach the hub can create it themselves."
 fi

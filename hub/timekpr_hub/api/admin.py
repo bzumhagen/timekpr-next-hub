@@ -1,7 +1,7 @@
-"""Parent-facing API: the JSON endpoints behind the hub UI.
+"""Admin-facing API: the JSON endpoints behind the hub UI.
 
-Every route here is gated on a logged-in parent session -- see
-`api/parent_auth.py`, which wires the dependency in `app.py`.
+Every route here is gated on a logged-in admin session -- see
+`api/admin_auth.py`, which wires the dependency in `app.py`.
 """
 
 from __future__ import annotations
@@ -34,19 +34,19 @@ from timekpr_hub_core.models import (
     UserSummary,
 )
 
-from timekpr_hub.api.parent_auth import get_current_parent_api
-from timekpr_hub.db.models import Device, EnrollmentCode, Parent, User
+from timekpr_hub.api.admin_auth import get_current_admin_api
+from timekpr_hub.db.models import Admin, Device, EnrollmentCode, User
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.audit import list_audit_events, record_audit_event
-from timekpr_hub.services.day_hours import clear_day_hour_override, set_day_hour_override
-from timekpr_hub.services.limits import clear_day_override, release_gate, set_day_override, unrelease_gate
-from timekpr_hub.services.parent_auth import (
+from timekpr_hub.services.admin_auth import (
     change_password,
-    count_parents,
+    count_admins,
     create_invite,
     delete_other_sessions,
     verify_password,
 )
+from timekpr_hub.services.audit import list_audit_events, record_audit_event
+from timekpr_hub.services.day_hours import clear_day_hour_override, set_day_hour_override
+from timekpr_hub.services.limits import clear_day_override, release_gate, set_day_override, unrelease_gate
 from timekpr_hub.services.policy import get_current_policy, policy_to_payload, update_policy
 from timekpr_hub.services.summaries import compute_user_summaries
 from timekpr_hub.settings import settings
@@ -96,7 +96,7 @@ async def create_grant(
     body: GrantCreate,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     from timekpr_hub.db.models import Grant
 
@@ -120,14 +120,14 @@ async def create_grant(
         day=grant_day,
         seconds=body.seconds,
         reason=body.reason,
-        source="parent",
-        granted_by="parent-api",
+        source="admin",
+        granted_by="admin-api",
     )
     session.add(grant)
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="grant.create",
         target_type="user",
         target_id=username,
@@ -144,9 +144,9 @@ async def update_user_policy(
     body: PolicyUpdate,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> PolicyPayload:
-    """The only way to change a child's *limit* (as opposed to grant
+    """The only way to change a user's *limit* (as opposed to grant
     additive bonus time) through the hub -- see services/policy.py::
     update_policy. The agent already applies whatever this returns on its
     next tick (sync.py pushes the payload whenever policy_version_applied
@@ -160,11 +160,11 @@ async def update_user_policy(
     before_policy = await get_current_policy(session, user)
     before = policy_to_payload(before_policy).model_dump() if before_policy else None
 
-    policy = await update_policy(session, user=user, update=body, created_by="parent-api")
+    policy = await update_policy(session, user=user, update=body, created_by="admin-api")
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="policy.update",
         target_type="user",
         target_id=username,
@@ -182,7 +182,7 @@ async def set_user_day_override(
     body: DayOverrideCreate,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     """Sets (or replaces) an absolute per-date limit -- "instead of" the
     standing policy, not "in addition to" like a grant. See
@@ -200,12 +200,12 @@ async def set_user_day_override(
         day=day,
         limit_seconds=body.limit_seconds,
         reason=body.reason,
-        created_by="parent-api",
+        created_by="admin-api",
     )
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="override.set",
         target_type="user",
         target_id=username,
@@ -222,7 +222,7 @@ async def clear_user_day_override(
     day: str,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     result = await session.execute(select(User).where(User.canonical_username == username))
     user = result.scalar_one_or_none()
@@ -233,8 +233,8 @@ async def clear_user_day_override(
     if cleared:
         await record_audit_event(
             session,
-            actor_type="parent",
-            actor_id=str(parent.id),
+            actor_type="admin",
+            actor_id=str(admin.id),
             action="override.clear",
             target_type="user",
             target_id=username,
@@ -251,7 +251,7 @@ async def set_user_day_hour_override(
     body: DayHourOverrideCreate,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     """Sets (or replaces) a one-day replacement for the policy's standing
     allowed time-of-day window. Kept separate from `day-override` above,
@@ -294,12 +294,12 @@ async def set_user_day_hour_override(
         day=day,
         intervals=intervals,
         reason=body.reason,
-        created_by="parent-api",
+        created_by="admin-api",
     )
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="day_hours.set",
         target_type="user",
         target_id=username,
@@ -316,7 +316,7 @@ async def clear_user_day_hour_override(
     day: str,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     result = await session.execute(select(User).where(User.canonical_username == username))
     user = result.scalar_one_or_none()
@@ -327,8 +327,8 @@ async def clear_user_day_hour_override(
     if cleared:
         await record_audit_event(
             session,
-            actor_type="parent",
-            actor_id=str(parent.id),
+            actor_type="admin",
+            actor_id=str(admin.id),
             action="day_hours.clear",
             target_type="user",
             target_id=username,
@@ -345,7 +345,7 @@ async def release_user_gate(
     body: GateReleaseCreate,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     """Records that a gated day's precondition was met for one date --
     the exception to `users.gated_weekdays_json`'s recurring rule. Releasing
@@ -357,12 +357,12 @@ async def release_user_gate(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
 
     release = await release_gate(
-        session, user_id=user.id, day=date.fromisoformat(body.day), released_by="parent-api", note=body.note
+        session, user_id=user.id, day=date.fromisoformat(body.day), released_by="admin-api", note=body.note
     )
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="gate.release",
         target_type="user",
         target_id=username,
@@ -379,7 +379,7 @@ async def unrelease_user_gate(
     day: str,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     """Reverses `release_user_gate` -- deletes the release row, re-gating
     that date (absence of a row IS the gate)."""
@@ -392,8 +392,8 @@ async def unrelease_user_gate(
     if unreleased:
         await record_audit_event(
             session,
-            actor_type="parent",
-            actor_id=str(parent.id),
+            actor_type="admin",
+            actor_id=str(admin.id),
             action="gate.unrelease",
             target_type="user",
             target_id=username,
@@ -410,7 +410,7 @@ async def update_user_settings(
     body: UserSettingsUpdate,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     """The hub-only per-user knobs (which weekdays are approval-gated, the
     accounting mode, the offline-grace policy) -- deliberately NOT part of
@@ -442,8 +442,8 @@ async def update_user_settings(
     }
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="user_settings.update",
         target_type="user",
         target_id=username,
@@ -474,7 +474,7 @@ async def list_audit(
     target_id: str | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    """Every parent action, newest first -- see services/audit.py's
+    """Every admin action, newest first -- see services/audit.py's
     `record_audit_event`, which every mutating endpoint in this file and
     api/ui.py already calls. `before`/`after` are the full JSON diffs those
     call sites recorded (e.g. a policy edit's whole payload before and
@@ -525,7 +525,7 @@ async def revoke_device(
     device_id: uuid.UUID,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     """Kills the device's token immediately -- get_current_device 403s a
     revoked device on its very next sync (auth.py's "never fail open").
@@ -542,8 +542,8 @@ async def revoke_device(
     device.status = "revoked"
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="device.revoke",
         target_type="device",
         target_id=str(device.id),
@@ -591,7 +591,7 @@ async def delete_device(
     device_id: uuid.UUID,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
     """Hard delete. FK cascades (ondelete='CASCADE' on user_aliases,
     usage_counters, activity_intervals) drop this device's contribution
@@ -605,8 +605,8 @@ async def delete_device(
     before = {"name": device.name, "status": device.status}
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
         action="device.delete",
         target_type="device",
         target_id=str(device_id),
@@ -619,24 +619,24 @@ async def delete_device(
 
 
 # --------------------------------------------------------------------------
-# Parent accounts: invites, deletion, password change. See services/
-# parent_auth.py for the underlying invite/session logic and
-# api/parent_auth.py's GET/POST /invite/{token} for the redemption page.
+# Admin accounts: invites, deletion, password change. See services/
+# admin_auth.py for the underlying invite/session logic and
+# api/admin_auth.py's GET/POST /invite/{token} for the redemption page.
 # --------------------------------------------------------------------------
 
 
-@router.post("/parent-invites", status_code=status.HTTP_201_CREATED)
-async def create_parent_invite(
+@router.post("/admin-invites", status_code=status.HTTP_201_CREATED)
+async def create_admin_invite(
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
-    token = await create_invite(session, created_by_parent_id=parent.id)
+    token = await create_invite(session, created_by_admin_id=admin.id)
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
-        action="parent.invite_created",
+        actor_type="admin",
+        actor_id=str(admin.id),
+        action="admin.invite_created",
         ip=_client_ip(request),
     )
     await session.commit()
@@ -644,46 +644,46 @@ async def create_parent_invite(
     return {"token": token, "url": invite_url}
 
 
-@router.get("/parents")
-async def list_parents(
-    session: AsyncSession = Depends(get_session), parent: Parent = Depends(get_current_parent_api)
+@router.get("/admins")
+async def list_admins(
+    session: AsyncSession = Depends(get_session), admin: Admin = Depends(get_current_admin_api)
 ) -> list[dict]:
-    result = await session.execute(select(Parent))
+    result = await session.execute(select(Admin))
     return [
-        {"id": str(p.id), "email": p.email, "created_at": p.created_at.isoformat(), "you": p.id == parent.id}
+        {"id": str(p.id), "email": p.email, "created_at": p.created_at.isoformat(), "you": p.id == admin.id}
         for p in result.scalars().all()
     ]
 
 
-@router.delete("/parents/{parent_id}")
-async def delete_parent(
-    parent_id: uuid.UUID,
+@router.delete("/admins/{admin_id}")
+async def delete_admin(
+    admin_id: uuid.UUID,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
-    """The last remaining parent can never be deleted -- including
+    """The last remaining admin can never be deleted -- including
     themselves -- since that would permanently lock the hub's own admin UI
     (there is no other way back in; /setup only ever fires once)."""
-    if await count_parents(session) <= 1:
-        raise HTTPException(status.HTTP_409_CONFLICT, "cannot delete the last remaining parent account")
-    result = await session.execute(select(Parent).where(Parent.id == parent_id))
+    if await count_admins(session) <= 1:
+        raise HTTPException(status.HTTP_409_CONFLICT, "cannot delete the last remaining admin account")
+    result = await session.execute(select(Admin).where(Admin.id == admin_id))
     target = result.scalar_one_or_none()
     if target is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown parent")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown admin")
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
-        action="parent.deleted",
-        target_type="parent",
+        actor_type="admin",
+        actor_id=str(admin.id),
+        action="admin.deleted",
+        target_type="admin",
         target_id=str(target.id),
         before={"email": target.email},
         ip=_client_ip(request),
     )
     await session.delete(target)
     await session.commit()
-    return {"id": str(parent_id), "status": "deleted"}
+    return {"id": str(admin_id), "status": "deleted"}
 
 
 class PasswordChange(BaseModel):
@@ -691,25 +691,25 @@ class PasswordChange(BaseModel):
     new_password: str = Field(min_length=8)
 
 
-@router.post("/parent/password")
+@router.post("/admin/password")
 async def change_own_password(
     request: Request,
     body: PasswordChange,
     session: AsyncSession = Depends(get_session),
-    parent: Parent = Depends(get_current_parent_api),
+    admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
-    if not verify_password(body.current_password, parent.password_hash):
+    if not verify_password(body.current_password, admin.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "current password is incorrect")
-    change_password(parent=parent, new_password=body.new_password)
+    change_password(admin=admin, new_password=body.new_password)
     token = request.cookies.get("tkh_session", "")
-    await delete_other_sessions(session, parent_id=parent.id, keep_token=token)
+    await delete_other_sessions(session, admin_id=admin.id, keep_token=token)
     await record_audit_event(
         session,
-        actor_type="parent",
-        actor_id=str(parent.id),
-        action="parent.password_changed",
-        target_type="parent",
-        target_id=str(parent.id),
+        actor_type="admin",
+        actor_id=str(admin.id),
+        action="admin.password_changed",
+        target_type="admin",
+        target_id=str(admin.id),
         ip=_client_ip(request),
     )
     await session.commit()

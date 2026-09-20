@@ -40,12 +40,12 @@ def _uuid_pk() -> Mapped[uuid.UUID]:
 
 
 # --------------------------------------------------------------------------
-# Parents (household admins)
+# Admins (the grown-ups)
 # --------------------------------------------------------------------------
 
 
-class Parent(Base):
-    __tablename__ = "parents"
+class Admin(Base):
+    __tablename__ = "admins"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
@@ -53,11 +53,11 @@ class Parent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class ParentSession(Base):
-    __tablename__ = "parent_sessions"
+class AdminSession(Base):
+    __tablename__ = "admin_sessions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    parent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("parents.id", ondelete="CASCADE"))
+    admin_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("admins.id", ondelete="CASCADE"))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ip: Mapped[str | None] = mapped_column(String(64))
@@ -65,26 +65,26 @@ class ParentSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class ParentInvite(Base):
-    """A single-use, expiring invite for a second (or third, ...) parent
-    account -- the `EnrollmentCode` pattern applied to parents instead of
-    devices: atomic claim (`used_at IS NULL`), and `created_by_parent_id`
-    kept even after the inviting parent is later deleted (SET NULL) so the
+class AdminInvite(Base):
+    """A single-use, expiring invite for a second (or third, ...) admin
+    account -- the `EnrollmentCode` pattern applied to admins instead of
+    devices: atomic claim (`used_at IS NULL`), and `created_by_admin_id`
+    kept even after the inviting admin is later deleted (SET NULL) so the
     invite's own history survives that."""
 
-    __tablename__ = "parent_invites"
+    __tablename__ = "admin_invites"
 
     token: Mapped[str] = mapped_column(String(64), primary_key=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_by_parent_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("parents.id", ondelete="SET NULL")
+    created_by_admin_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("admins.id", ondelete="SET NULL")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # --------------------------------------------------------------------------
-# Users (the children being managed) and their device aliases
+# Users (the people being managed) and their device aliases
 # --------------------------------------------------------------------------
 
 
@@ -111,7 +111,7 @@ class User(Base):
     offline_cap_s: Mapped[int] = mapped_column(Integer, nullable=False, default=1800, server_default="1800")
 
     # The recurring half of the chore gate: which weekdays ("1".."7") withhold
-    # all time until a parent releases that specific date. Hub-only, like the
+    # all time until an admin releases that specific date. Hub-only, like the
     # other knobs on this table -- never reaches `PolicyPayload` or the agent,
     # so toggling it involves no policy version bump and no device push. The
     # per-date exception lives in `gate_releases`; absence of a release row
@@ -153,7 +153,7 @@ class Device(Base):
     machine_id: Mapped[str] = mapped_column(String(64), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
 
-    # A parent-minted enrollment code is itself the approval -- see
+    # An admin-minted enrollment code is itself the approval -- see
     # api/enroll.py -- so every device starts "active"; there is no
     # separate pending/approve step.
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
@@ -316,7 +316,7 @@ class Grant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        CheckConstraint("source IN ('parent')", name="ck_grants_source"),
+        CheckConstraint("source IN ('admin')", name="ck_grants_source"),
         Index("ix_grants_user_day", "user_id", "day"),
     )
 
@@ -338,7 +338,7 @@ class DayOverride(Base):
     cancelling the day the moment that weekday's standing limit changes; an
     override replaces the base outright and cannot drift. The two compose
     cleanly -- override is "instead of", grant is "in addition to" -- so a
-    parent can zero a day and still hand back 15 minutes afterwards.
+    admin can zero a day and still hand back 15 minutes afterwards.
 
     One row per (user, day): setting a new override for an already-overridden
     date replaces it (see services/limits.py::set_day_override)."""

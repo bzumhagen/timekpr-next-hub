@@ -50,7 +50,7 @@ bash deploy/proxmox/install.sh --tz America/Denver
 ### Claim it immediately
 
 Once `install.sh` finishes, open `http://<the LXC's IP>:8000/setup` in a
-browser **right away** and create the first parent account. Until you do,
+browser **right away** and create the first admin account. Until you do,
 anyone who can reach the hub can create that account themselves. Keep the
 hub on your LAN or behind a Tailscale/WireGuard tunnel -- it serves plain
 HTTP, no TLS.
@@ -79,7 +79,7 @@ idempotent:
   the code is touched.
 - The hub is stopped, the venv is rebuilt from the new `uv.lock`, migrations
   are re-run, and the hub is started again.
-- The parent account and every enrolled device survive untouched.
+- The admin account and every enrolled device survive untouched.
 
 ## Backups
 

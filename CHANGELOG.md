@@ -14,31 +14,37 @@ appended automatically underneath.
 
 ## [0.1.0] - 2026-09-19
 
-First tagged release. Pools a kid's daily screen-time budget across every
+First tagged release. Pools a user's daily screen-time budget across every
 machine they use, instead of `timekpr-next` tracking each one separately.
 
 ### Added
 
 - **Hub** (`timekpr-hub`): FastAPI service over Postgres holding the
   household's users, devices, policies and usage. Web UI for the day's
-  balance per kid, per-device activity, enrollment codes, and an audit
-  log of every parent action.
-- **Agent** (`timekpr-hub-agent`): systemd sidecar for each kid's machine.
-  Reports usage to the hub and applies the balance the hub hands back via
-  `timekprd`'s DBUS interface. Stdlib-only (no third-party runtime
-  dependency at all), survives reboots, and keeps enforcing on a
-  wall-clock offline grace budget when the hub is unreachable.
+  balance per user, per-device activity, enrollment codes, an audit log
+  of every admin action, and support for more than one admin account
+  (invite links, password changes, account removal).
+- **Agent** (`timekpr-hub-agent`): systemd sidecar for each managed
+  machine. Reports usage to the hub and applies the balance the hub hands
+  back via `timekprd`'s DBUS interface. Stdlib-only (no third-party
+  runtime dependency at all), survives reboots, and keeps enforcing on a
+  per-user, admin-configurable offline-grace policy when the hub is
+  unreachable.
 - **Shared core** (`timekpr-hub-core`): the convergence, calendar and
   interval-union math, written once and property-tested, so the hub and
   the agent cannot drift apart on the safety-critical arithmetic.
-- **Policies**: pooled daily limits, allowed-hours windows, per-weekday
-  schedules, one-off per-date overrides, and a temporary override of the
-  hours restriction — all append-only and versioned, with the agent
-  gated on the policy version it has applied.
+- **Policies**: pooled daily, weekly and monthly limits, allowed-hours
+  windows (including timekpr's "unaccounted" hours that don't count
+  against the limit), per-weekday schedules, one-off per-date overrides,
+  and a temporary override of the hours restriction — all append-only
+  and versioned, with the agent gated on the policy version it has
+  applied.
 - **Enrollment**: one-time codes from the hub UI; `timekpr-hub-agent
   enroll` preflights the local timekpr install, redeems the code, writes
   its device token `0600`, and enables the service. Re-enrolling the same
   machine rebinds to the existing device row rather than duplicating it.
+  A local account added to an already-enrolled machine's managed list is
+  provisioned automatically on its first sync, no re-enrollment needed.
 - **Deployment**: `deploy/docker-compose.yml` (hub + Postgres), and a
   native Proxmox LXC install (`deploy/proxmox/`) for the smallest
   footprint — Postgres from apt, the hub as a systemd unit, no Docker.
@@ -48,14 +54,12 @@ machine they use, instead of `timekpr-next` tracking each one separately.
 
 ### Known limits
 
-- Pooled **daily** budget only; week/month pooling and drift detection
-  aren't built yet.
 - The agent ships for Arch/CachyOS only. Other systemd distros work via
   the manual install path, but have no package yet.
 - The hub serves plain HTTP: run it on your LAN or behind a
   Tailscale/WireGuard tunnel, and put your own reverse proxy in front of
   it if you want TLS.
-- Anyone with `sudo` on a kid's machine can stop the agent. The hub UI
+- Anyone with `sudo` on a managed machine can stop the agent. The hub UI
   flags a device that stops checking in; it can't prevent it.
 
 [Unreleased]: https://github.com/bzumhagen/timekpr-next-hub/compare/v0.1.0...HEAD

@@ -4,7 +4,7 @@ A self-hosted hub that pools screen-time budgets for
 [timekpr-next](https://github.com/mjasnik/timekpr-next) across multiple
 machines in a household. A small agent runs alongside `timekprd` on each
 machine, reporting usage to the hub and applying whatever balance the hub
-says is left — so a kid's daily limit is shared across their desktop and
+says is left — so a user's daily limit is shared across their desktop and
 laptop instead of being tracked separately on each.
 
 **Scope today: a pooled daily budget.** Week/month pooling and drift
@@ -26,7 +26,7 @@ if you're contributing code.
   to run the hub itself.
 - Docker or Podman with `compose` support, on that machine -- unless you're
   using the native Proxmox install, which needs neither.
-- On each of your kid's machines: `timekpr-next` already installed and
+- On each machine you want managed: `timekpr-next` already installed and
   running, and a systemd-based Linux distro (Arch/CachyOS today; see
   [multi-distro support](#multi-distro-support-not-started) for others).
 
@@ -84,14 +84,16 @@ a version-independent restore (e.g. onto a newer Postgres major version).
 ## 2. Claim the hub — do this immediately
 
 Open the hub in a browser. The **first thing** it will ask you to do is
-create a parent account at `/setup`. Do this right away: until an account
+create an admin account at `/setup`. Do this right away: until an account
 exists, anyone who can reach the hub can create the first (and only)
 account themselves. Don't expose the hub to anything beyond your LAN/VPN
-until you've claimed it.
+until you've claimed it. A second admin account (another parent, say) can
+be added later from the **Admins** page: generate an invite link there and
+send it to them — they set their own password when they open it.
 
-## 3. Add a kid's machine
+## 3. Add a machine
 
-Install the agent package on the kid's machine (see
+Install the agent package on the machine you want managed (see
 [Installing the agent](#installing-the-agent) below for other install
 options):
 
@@ -110,7 +112,7 @@ sudo timekpr-hub-agent enroll --hub-url http://<hub>:8000 --code K7F29Q
 
 Or just run `sudo timekpr-hub-agent enroll` with no arguments and it will
 prompt you for the hub URL, the code, and which local user accounts to
-manage. A parent-minted code is itself the approval — there's no separate
+manage. An admin-minted code is itself the approval — there's no separate
 "approve this device" step. This also starts the background service, so it
 survives reboots on its own.
 
@@ -130,21 +132,21 @@ the same hub user, no extra step needed.
 
 ## 4. Daily use
 
-The hub's home page shows, per kid: today's usage bar and an activity badge
+The hub's home page shows, per user: today's usage bar and an activity badge
 (draining / idle / offline). Device sync status and enrollment live on their
 own **Devices** page (linked from the top of the dashboard), out of the way
 until you actually need them.
 
 - **Give extra time today**: use the **+30 min** / **-30 min** buttons on
   the dashboard.
-- **Manage the full policy**: click **Edit policy** on a kid's card for the
+- **Manage the full policy**: click **Edit policy** on a user's card for the
   basic editor -- per-day limits and an hours grid for time-of-day windows.
   Everything else timekpr can do (weekly/monthly caps, which days login is
   allowed at all, lockout behavior, PlayTime) is one click away behind
   **Advanced policy settings** on the same page.
 - **See where the time went**: click **Usage stats** for a day-by-day
   spend-vs-limit history and a per-device breakdown.
-- **"No time until approval is given"**: on the kid's **Settings** page, check
+- **"No time until approval is given"**: on the user's **Settings** page, check
   which days are approval-gated (e.g. weekends). On a gated day the dashboard
   shows a **⏸ Time now released** badge; click **Release today** once they're
   done and the day's normal limit applies immediately — no policy edit, no
@@ -157,7 +159,7 @@ until you actually need them.
   later change the regular schedule.
 - **Manage a device**: on the **Devices** page, revoke it (stops hub
   management, reversible) or delete it (erases its history). Revoking does
-  **not** lock the child out — it hands the machine back to local
+  **not** lock the user out — it hands the machine back to local
   self-management at whatever limit it already had, exactly as if it had
   never been enrolled. If you actually want the machine locked, set its
   policy to 0 minutes/day (or grant negative time) before revoking, or
@@ -168,7 +170,7 @@ until you actually need them.
 - **A device shows no recent activity / usage looks stuck.** Check
   `sudo timekpr-hub-agent status` on that machine — it will show whether
   the hub is reachable and when it last synced.
-- **Time isn't converging the way you expect.** Confirm the child's account
+- **Time isn't converging the way you expect.** Confirm the user's account
   is actually enrolled (`status` lists managed users) and that the device
   hasn't been revoked in the hub UI.
 - **Reinstalling the agent, or a fresh OS install on the same machine.**
@@ -189,7 +191,7 @@ until you actually need them.
 core/    timekpr_hub_core  -- pure, IO-free logic shared by hub + agent
                               (convergence math, calendar rules, wire types)
 hub/     timekpr_hub        -- FastAPI app: Postgres-backed API + a small
-                              server-rendered (Jinja2 + vanilla JS) parent UI
+                              server-rendered (Jinja2 + vanilla JS) admin UI
 agent/   timekpr_hub_agent  -- systemd sidecar: talks to the local timekprd
                               over DBUS, syncs with the hub over HTTP
 deploy/                     -- docker-compose (Postgres + hub) for a real
@@ -414,7 +416,7 @@ current balance.
   that clock and leave the agent silently unenforced.
 - `state.json` is written atomically (temp file + fsync + rename + fsync
   the directory) and tolerates unknown/missing fields.
-- The one thing this can't guarantee: anyone with `sudo` on the kid's
+- The one thing this can't guarantee: anyone with `sudo` on a managed
   machine can stop the service or uninstall the package. The hub UI flags a
   device that hasn't checked in recently.
 

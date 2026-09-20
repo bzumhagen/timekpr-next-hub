@@ -23,7 +23,7 @@ empirically against a running `timekprd`):
 
 This lets the convergence controller be simulated against *this* model for
 thousands of simulated days in milliseconds -- 3 devices x 30 days of
-realistic child behavior in under a second -- without needing a real
+realistic user behavior in under a second -- without needing a real
 timekprd, DBUS, or root. It is deliberately re-validated against the real
 daemon's *qualitative* behavior in
 `tests/integration/test_fake_timekpr_parity.py`, using the exact numbers

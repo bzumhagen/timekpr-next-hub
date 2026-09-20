@@ -1,9 +1,9 @@
-"""Second (and later) parent accounts via invite links, plus password
+"""Second (and later) admin accounts via invite links, plus password
 change and removal -- `unauthenticated_client` throughout, since these
-routes are exactly the ones that need a *real* persisted `Parent` row and
-session cookie (the `client` fixture's fake in-memory parent has no row in
-`parents` at all, so `count_parents`/FK-referencing inserts don't behave
-the way a real session does)."""
+routes are exactly the ones that need a *real* persisted `Admin` row and
+session cookie (the `client` fixture's fake in-memory admin has no row in
+`admins` at all, so `count_admins`/FK-referencing inserts don't behave the
+way a real session does)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from tests.conftest import get_test_sessionmaker as _get_test_sessionmaker
 pytestmark = pytest.mark.db
 
 
-async def _setup_first_parent(client, email: str = "first@example.com", password: str = "hunter2hunter"):
+async def _setup_first_admin(client, email: str = "first@example.com", password: str = "hunter2hunter"):
     resp = await client.post("/setup", data={"email": email, "password": password}, follow_redirects=False)
     assert resp.status_code == 303
 
@@ -31,9 +31,9 @@ def _extract_invite_token(body: str) -> str:
 @pytest.mark.asyncio
 async def test_invite_creates_a_second_working_account(unauthenticated_client):
     c = unauthenticated_client
-    await _setup_first_parent(c)
+    await _setup_first_admin(c)
 
-    invite_resp = await c.post("/api/v1/parent-invites")
+    invite_resp = await c.post("/api/v1/admin-invites")
     assert invite_resp.status_code == 201
     token = invite_resp.json()["token"]
 
@@ -47,18 +47,18 @@ async def test_invite_creates_a_second_working_account(unauthenticated_client):
         data={"email": "second@example.com", "password": "correcthorse"},
         follow_redirects=False,
     )
-    assert redeem_resp.status_code == 303  # logged in as the new parent immediately
+    assert redeem_resp.status_code == 303  # logged in as the new admin immediately
 
-    whoami = await c.get("/api/v1/parents")
-    emails = {p["email"] for p in whoami.json()}
+    whoami = await c.get("/api/v1/admins")
+    emails = {a["email"] for a in whoami.json()}
     assert emails == {"first@example.com", "second@example.com"}
 
 
 @pytest.mark.asyncio
 async def test_invite_is_single_use(unauthenticated_client):
     c = unauthenticated_client
-    await _setup_first_parent(c)
-    token = (await c.post("/api/v1/parent-invites")).json()["token"]
+    await _setup_first_admin(c)
+    token = (await c.post("/api/v1/admin-invites")).json()["token"]
 
     first = await c.post(
         f"/invite/{token}", data={"email": "a@example.com", "password": "password1"}, follow_redirects=False
@@ -70,49 +70,49 @@ async def test_invite_is_single_use(unauthenticated_client):
 
 
 @pytest.mark.asyncio
-async def test_last_remaining_parent_cannot_be_deleted(unauthenticated_client):
+async def test_last_remaining_admin_cannot_be_deleted(unauthenticated_client):
     c = unauthenticated_client
-    await _setup_first_parent(c)
+    await _setup_first_admin(c)
 
-    parents = (await c.get("/api/v1/parents")).json()
-    assert len(parents) == 1
-    own_id = parents[0]["id"]
+    admins = (await c.get("/api/v1/admins")).json()
+    assert len(admins) == 1
+    own_id = admins[0]["id"]
 
-    resp = await c.delete(f"/api/v1/parents/{own_id}")
+    resp = await c.delete(f"/api/v1/admins/{own_id}")
     assert resp.status_code == 409
 
 
 @pytest.mark.asyncio
-async def test_a_second_parent_can_be_deleted(unauthenticated_client):
+async def test_a_second_admin_can_be_deleted(unauthenticated_client):
     c = unauthenticated_client
-    await _setup_first_parent(c)
-    token = (await c.post("/api/v1/parent-invites")).json()["token"]
+    await _setup_first_admin(c)
+    token = (await c.post("/api/v1/admin-invites")).json()["token"]
     await c.post(f"/invite/{token}", data={"email": "removable@example.com", "password": "removeme1"})
 
-    parents = (await c.get("/api/v1/parents")).json()
-    assert len(parents) == 2
-    removable_id = next(p["id"] for p in parents if p["email"] == "removable@example.com")
+    admins = (await c.get("/api/v1/admins")).json()
+    assert len(admins) == 2
+    removable_id = next(a["id"] for a in admins if a["email"] == "removable@example.com")
 
-    resp = await c.delete(f"/api/v1/parents/{removable_id}")
+    resp = await c.delete(f"/api/v1/admins/{removable_id}")
     assert resp.status_code == 200
 
-    remaining = (await c.get("/api/v1/parents")).json()
+    remaining = (await c.get("/api/v1/admins")).json()
     assert len(remaining) == 1
 
 
 @pytest.mark.asyncio
 async def test_change_password_requires_the_current_one(unauthenticated_client):
     c = unauthenticated_client
-    await _setup_first_parent(c, password="originalpass")
+    await _setup_first_admin(c, password="originalpass")
 
     wrong = await c.post(
-        "/api/v1/parent/password",
+        "/api/v1/admin/password",
         json={"current_password": "not-it", "new_password": "newpassword1"},
     )
     assert wrong.status_code == 401
 
     right = await c.post(
-        "/api/v1/parent/password",
+        "/api/v1/admin/password",
         json={"current_password": "originalpass", "new_password": "newpassword1"},
     )
     assert right.status_code == 200
@@ -131,43 +131,43 @@ async def test_password_change_invalidates_other_sessions(unauthenticated_client
     import httpx
 
     c = unauthenticated_client
-    await _setup_first_parent(c, password="originalpass")
+    await _setup_first_admin(c, password="originalpass")
 
     # A second, independent session for the same account (e.g. another
     # browser) -- shares the app but not the cookie jar.
     other = httpx.AsyncClient(transport=c._transport, base_url=c.base_url)
     await other.post("/login", data={"email": "first@example.com", "password": "originalpass"})
-    assert (await other.get("/api/v1/parents")).status_code == 200
+    assert (await other.get("/api/v1/admins")).status_code == 200
 
     await c.post(
-        "/api/v1/parent/password",
+        "/api/v1/admin/password",
         json={"current_password": "originalpass", "new_password": "newpassword1"},
     )
 
-    assert (await other.get("/api/v1/parents")).status_code == 401
-    assert (await c.get("/api/v1/parents")).status_code == 200  # the changer stays logged in
+    assert (await other.get("/api/v1/admins")).status_code == 401
+    assert (await c.get("/api/v1/admins")).status_code == 200  # the changer stays logged in
     await other.aclose()
 
 
 @pytest.mark.asyncio
-async def test_parent_account_actions_are_audit_logged(unauthenticated_client):
+async def test_admin_account_actions_are_audit_logged(unauthenticated_client):
     c = unauthenticated_client
-    await _setup_first_parent(c)
-    token = (await c.post("/api/v1/parent-invites")).json()["token"]
+    await _setup_first_admin(c)
+    token = (await c.post("/api/v1/admin-invites")).json()["token"]
     await c.post(f"/invite/{token}", data={"email": "audited@example.com", "password": "auditedpw"})
 
     await c.post(
-        "/api/v1/parent/password",
+        "/api/v1/admin/password",
         json={"current_password": "auditedpw", "new_password": "auditedpw2"},
     )
-    parents = (await c.get("/api/v1/parents")).json()
-    target_id = next(p["id"] for p in parents if p["email"] == "first@example.com")
-    await c.delete(f"/api/v1/parents/{target_id}")
+    admins = (await c.get("/api/v1/admins")).json()
+    target_id = next(a["id"] for a in admins if a["email"] == "first@example.com")
+    await c.delete(f"/api/v1/admins/{target_id}")
 
     session_factory = _get_test_sessionmaker()
     async with session_factory() as session:
         actions = {r.action for r in (await session.execute(text("SELECT action FROM audit_log"))).all()}
-    assert "parent.invite_created" in actions
-    assert "parent.created" in actions
-    assert "parent.password_changed" in actions
-    assert "parent.deleted" in actions
+    assert "admin.invite_created" in actions
+    assert "admin.created" in actions
+    assert "admin.password_changed" in actions
+    assert "admin.deleted" in actions

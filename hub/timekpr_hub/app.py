@@ -16,9 +16,9 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
-from timekpr_hub.api import enroll, parent, parent_auth, sync, ui
-from timekpr_hub.api.parent_auth import RequireLoginRedirect, get_current_parent_api, get_current_parent_ui
-from timekpr_hub.db.models import Parent
+from timekpr_hub.api import admin, admin_auth, enroll, sync, ui
+from timekpr_hub.api.admin_auth import RequireLoginRedirect, get_current_admin_api, get_current_admin_ui
+from timekpr_hub.db.models import Admin
 from timekpr_hub.db.session import SessionLocal, engine
 from timekpr_hub.logging_config import configure_logging
 
@@ -35,10 +35,10 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # warning is silently skipped once and reappears on the next restart.
     try:
         async with SessionLocal() as session:
-            result = await session.execute(select(Parent.id).limit(1))
+            result = await session.execute(select(Admin.id).limit(1))
             if result.first() is None:
                 log.warning(
-                    "no parent account exists yet -- this hub is reachable by anyone who can "
+                    "no admin account exists yet -- this hub is reachable by anyone who can "
                     "reach it until the first account is created at /setup. Claim it before "
                     "exposing this hub beyond your LAN."
                 )
@@ -57,20 +57,20 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="timekpr-next-hub", version=version("timekpr-hub"), lifespan=_lifespan)
 
-# Device- and code-authenticated endpoints: no parent session involved.
+# Device- and code-authenticated endpoints: no admin session involved.
 app.include_router(enroll.router, prefix="/api/v1", tags=["enrollment"])
 app.include_router(sync.router, prefix="/api/v1", tags=["sync"])
 
 # Login/logout/first-run-setup: deliberately unauthenticated (that's the point).
-app.include_router(parent_auth.router, tags=["parent-auth"])
+app.include_router(admin_auth.router, tags=["admin-auth"])
 
-# Everything else requires a logged-in parent -- a JSON
+# Everything else requires a logged-in admin -- a JSON
 # 401 for the API, a redirect to /login for the HTML UI (RequireLoginRedirect
 # below).
 app.include_router(
-    parent.router, prefix="/api/v1", tags=["parent"], dependencies=[Depends(get_current_parent_api)]
+    admin.router, prefix="/api/v1", tags=["admin"], dependencies=[Depends(get_current_admin_api)]
 )
-app.include_router(ui.router, tags=["ui"], dependencies=[Depends(get_current_parent_ui)])
+app.include_router(ui.router, tags=["ui"], dependencies=[Depends(get_current_admin_ui)])
 
 
 @app.exception_handler(RequireLoginRedirect)

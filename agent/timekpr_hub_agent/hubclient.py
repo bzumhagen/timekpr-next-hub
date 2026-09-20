@@ -32,7 +32,7 @@ class DeviceRevokedError(RuntimeError):
 
 class EnrollError(RuntimeError):
     """Raised by `HubClient.enroll` with a message meant to be printed
-    directly to a parent running `enroll` at a terminal -- no status code,
+    directly to an admin running `enroll` at a terminal -- no status code,
     no traceback, just what went wrong and what to do about it."""
 
 
@@ -138,9 +138,9 @@ class HubClient:
                 "(check --hub-url, and --ca-cert if it uses a self-signed certificate)"
             ) from exc
 
-        # Friendly messages for the enrollment-code failure modes a parent
+        # Friendly messages for the enrollment-code failure modes an admin
         # will actually hit -- a bare traceback for "code expired" is not
-        # something to hand a parent at a terminal.
+        # something to hand an admin at a terminal.
         if status == 404:
             raise EnrollError("unknown enrollment code -- generate a new one in the hub UI")
         if status == 409:
@@ -177,7 +177,7 @@ class HubClient:
             # other gap), the running process is left permanently sending a
             # now-stale token that no longer matches any device row, which
             # looks identical to an actual revoke (both are 401/403) and
-            # locks the child out until someone thinks to restart the
+            # locks the user out until someone thinks to restart the
             # service by hand. Seen live: `status` (a fresh process,
             # freshly re-reading the token file) succeeded while the
             # long-running `run` service kept 403ing on the same tick.

@@ -125,7 +125,7 @@ def test_sequential_two_device_convergence_hits_exact_limit():
 
 
 def test_thirty_days_random_activity_never_exceeds_overshoot_bound():
-    """3 devices x 30 days of realistic child behavior, asserting
+    """3 devices x 30 days of realistic user behavior, asserting
     Sum spent <= limit + D*N + 18 every day."""
     rng = random.Random(1234)
     limit = 3600  # 1h/day shared budget

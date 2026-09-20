@@ -71,7 +71,7 @@ class EnrollResponse(BaseModel):
     next_poll_ms: int
     new_users: list[str] = Field(default_factory=list)
     """Which of `local_users` got a freshly-created hub `User` (vs. merged
-    into one the hub already knew) -- lets `enroll` tell a parent "new hub
+    into one the hub already knew) -- lets `enroll` tell an admin "new hub
     user, policy seeded from this device" vs. "joined an existing user"."""
     policies: dict[str, PolicyPayload] = Field(default_factory=dict)
     """Each reported user's current effective policy, so `enroll` can print
@@ -79,7 +79,7 @@ class EnrollResponse(BaseModel):
     rebound: bool = False
     """True when this enrollment matched an existing device by machine_id
     and rotated its token in place, rather than creating a new device row --
-    see hub/timekpr_hub/api/enroll.py. Lets `enroll` tell a parent "re-bound
+    see hub/timekpr_hub/api/enroll.py. Lets `enroll` tell an admin "re-bound
     to your existing device" instead of quietly forking a second history for
     the same machine after a reinstall."""
     previously_enrolled_at: str | None = None
@@ -283,7 +283,7 @@ class PolicyPayload(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# Parent-facing API
+# Admin-facing API
 # --------------------------------------------------------------------------
 
 
@@ -293,7 +293,7 @@ class GrantCreate(BaseModel):
     day: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     """Canonical day (YYYY-MM-DD) this grant applies to. None means today in
     the hub's timezone -- unchanged behavior for every existing caller, which
-    always meant today before dated grants existed. Setting it lets a parent
+    always meant today before dated grants existed. Setting it lets an admin
     adjust a *future* day ("you lose 30 minutes tomorrow") without touching
     the standing policy. For cancelling a day outright, prefer a
     DayOverride instead of a large negative grant: a grant's stored
@@ -401,7 +401,7 @@ class UserSummary(BaseModel):
 
 
 class PolicyUpdate(BaseModel):
-    """A parent-initiated change to a user's policy -- PUT /users/{u}/policy.
+    """An admin-initiated change to a user's policy -- PUT /users/{u}/policy.
     Always creates a new `Policy` version rather than mutating one in place
     (see services/policy.py::update_policy). Every field `PolicyPayload`
     carries is settable here -- the hub's own advanced editor is the last

@@ -62,7 +62,7 @@ class TimekprEnforcer:
         # interface got populated.
         self._connected = self._admin._timekprUserAdminDbusInterface is not None
         if not self._connected:
-            # Previously swallowed entirely -- a child locked out because
+            # Previously swallowed entirely -- a user locked out because
             # timekprd wasn't reachable (wrong group, daemon down, DBUS
             # policy misconfigured) looked identical to "everything's fine,
             # just no news yet" in the log.

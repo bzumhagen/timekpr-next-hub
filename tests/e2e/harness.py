@@ -41,9 +41,9 @@ from typing import TypeVar
 import uvicorn
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from timekpr_hub.api.parent_auth import get_current_parent_api, get_current_parent_ui
+from timekpr_hub.api.admin_auth import get_current_admin_api, get_current_admin_ui
 from timekpr_hub.app import app
-from timekpr_hub.db.models import Parent, User
+from timekpr_hub.db.models import Admin, User
 from timekpr_hub.db.session import engine as hub_engine
 from timekpr_hub_agent import state as state_mod
 from timekpr_hub_agent.enforcer import UserObservation
@@ -57,20 +57,20 @@ _T = TypeVar("_T")
 
 _TABLES = (
     "users, devices, activity_intervals, usage_counters, policies, "
-    "enrollment_codes, grants, parents, parent_sessions"
+    "enrollment_codes, grants, admins, admin_sessions"
 )
 
-# A stand-in parent, exactly like test_hub_api.py's _FAKE_PARENT -- installed
+# A stand-in admin, exactly like test_hub_api.py's _FAKE_ADMIN -- installed
 # via app.dependency_overrides only so the harness can mint enrollment codes
 # without running the full login flow. This works against a real uvicorn
 # server the same way it works against httpx.ASGITransport: both drive the
 # same underlying `app` object, and dependency_overrides is a property of
 # that object, not of any particular transport.
-_FAKE_PARENT = Parent(id=uuid.uuid4(), email="e2e-parent@example.com", password_hash="unused-in-tests")
+_FAKE_ADMIN = Admin(id=uuid.uuid4(), email="e2e-admin@example.com", password_hash="unused-in-tests")
 
 
-async def _override_get_current_parent() -> Parent:
-    return _FAKE_PARENT
+async def _override_get_current_admin() -> Admin:
+    return _FAKE_ADMIN
 
 
 def _find_free_port() -> int:
@@ -123,8 +123,8 @@ async def start_live_hub() -> AsyncIterator[str]:
 
     await hub_engine.dispose()
 
-    app.dependency_overrides[get_current_parent_api] = _override_get_current_parent
-    app.dependency_overrides[get_current_parent_ui] = _override_get_current_parent
+    app.dependency_overrides[get_current_admin_api] = _override_get_current_admin
+    app.dependency_overrides[get_current_admin_ui] = _override_get_current_admin
 
     port = _find_free_port()
     base_url = f"http://127.0.0.1:{port}"
@@ -150,8 +150,8 @@ async def start_live_hub() -> AsyncIterator[str]:
     finally:
         server.should_exit = True
         thread.join(timeout=10)
-        app.dependency_overrides.pop(get_current_parent_api, None)
-        app.dependency_overrides.pop(get_current_parent_ui, None)
+        app.dependency_overrides.pop(get_current_admin_api, None)
+        app.dependency_overrides.pop(get_current_admin_ui, None)
 
 
 async def _run_scratch(fn: Callable[[AsyncSession], Awaitable[_T]]) -> _T:
@@ -172,7 +172,7 @@ async def _run_scratch(fn: Callable[[AsyncSession], Awaitable[_T]]) -> _T:
 
 
 def mint_enrollment_code(base_url: str) -> str:
-    """POST /api/v1/enrollment-codes as the fixture's overridden parent."""
+    """POST /api/v1/enrollment-codes as the fixture's overridden admin."""
     req = urllib.request.Request(
         f"{base_url}/api/v1/enrollment-codes",
         data=b"{}",
@@ -183,9 +183,9 @@ def mint_enrollment_code(base_url: str) -> str:
         return json.loads(resp.read())["code"]
 
 
-def parent_api_request(base_url: str, method: str, path: str, body: dict | None = None) -> dict:
-    """A parent-API call (PUT/DELETE/POST) as the fixture's overridden
-    parent, for endpoints `enroll_device`/`mint_enrollment_code` don't
+def admin_api_request(base_url: str, method: str, path: str, body: dict | None = None) -> dict:
+    """An admin-API call (PUT/DELETE/POST) as the fixture's overridden
+    admin, for endpoints `enroll_device`/`mint_enrollment_code` don't
     already cover -- e.g. the one-day allowed-hours override."""
     data = json.dumps(body).encode() if body is not None else b"{}"
     req = urllib.request.Request(
@@ -223,7 +223,7 @@ def enroll_device(
 
 def set_accounting_mode(username: str, mode: str) -> None:
     """Flip a user's accounting_mode directly in the DB -- there's no
-    parent-API endpoint for this, and the wall-clock
+    admin-API endpoint for this, and the wall-clock
     acceptance scenario needs to exercise both modes against the same real
     union query."""
 

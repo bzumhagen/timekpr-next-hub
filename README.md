@@ -7,9 +7,6 @@ machine, reporting usage to the hub and applying whatever balance the hub
 says is left — so a user's daily limit is shared across their desktop and
 laptop instead of being tracked separately on each.
 
-**Scope today: a pooled daily budget.** Week/month pooling and drift
-detection aren't built yet. The agent packages for Arch/CachyOS; other
-systemd distros work via a manual install.
 
 This README has two parts: [setting up your hub](#setting-up-your-hub) if
 you just want to run it, and [developing on the hub](#developing-on-the-hub)
@@ -24,15 +21,13 @@ if you're contributing code.
 - A machine that stays on (a home server, a mini PC, a Raspberry Pi, or a
   Proxmox LXC — see [Proxmox (smallest footprint)](#proxmox-smallest-footprint))
   to run the hub itself.
-- Docker or Podman with `compose` support, on that machine -- unless you're
-  using the native Proxmox install, which needs neither.
+- Docker or Podman with `compose` support, or a Proxmox server.
 - On each machine you want managed: `timekpr-next` already installed and
-  running, and a systemd-based Linux distro (Arch/CachyOS today; see
-  [multi-distro support](#multi-distro-support-not-started) for others).
+  running, and a systemd-based Linux distro (see
+  [multi-distro support](#multi-distro-support) for supported options).
 
-The hub itself serves plain HTTP -- it's meant to live on your LAN or behind
-a Tailscale/WireGuard tunnel, not on the open internet. If you want HTTPS,
-put your own reverse proxy in front of it.
+The hub itself serves plain HTTP and is not meant to be exposed to the public internet.
+If you plan to do that, either add your own reverse proxy or use a Tailscale/Wireguard tunnel.
 
 ## 1. Start the hub
 
@@ -44,12 +39,10 @@ make deploy-up
 ```
 
 This pulls the published hub image (`ghcr.io/bzumhagen/timekpr-hub`,
-amd64 and arm64) — nothing is compiled on your server. Set
+amd64 and arm64). Set
 `HUB_VERSION=0.1.0` in `deploy/.env` to pin an exact
 [release](https://github.com/bzumhagen/timekpr-next-hub/releases) instead
 of tracking `latest`.
-
-A LAN-only or VPN/Tailscale-gated deployment is recommended — see step 2.
 
 `make deploy-logs` tails everything if you want to watch it come up.
 
@@ -60,36 +53,25 @@ first — see [Backups](#backups).
 
 ### Proxmox (smallest footprint)
 
-For the smallest possible resource footprint, run the hub natively (no
-Docker, no VM) inside an unprivileged Debian LXC on Proxmox: Postgres from
-apt and the hub as a systemd unit. See
+For the smallest possible resource footprint, run the hub natively inside 
+an unprivileged Debian LXC on Proxmox. See
 [`deploy/proxmox/README.md`](deploy/proxmox/README.md) for the install
 script and sizing guidance.
 
 ### Backups
-
-There's no backup service bundled with the compose stack or the Proxmox
-install -- back up how you already back up everything else. A logical dump
-is the simplest option:
 
 ```sh
 docker compose -f deploy/docker-compose.yml exec postgres \
   pg_dump -U timekpr_hub -Fc timekpr_hub > timekpr_hub_$(date +%Y%m%d).dump
 ```
 
-On Proxmox, `vzdump`/Proxmox Backup Server already snapshots the whole
-container nightly -- a logical dump on top of that is still worth having for
-a version-independent restore (e.g. onto a newer Postgres major version).
-
 ## 2. Claim the hub — do this immediately
 
 Open the hub in a browser. The **first thing** it will ask you to do is
-create an admin account at `/setup`. Do this right away: until an account
-exists, anyone who can reach the hub can create the first (and only)
-account themselves. Don't expose the hub to anything beyond your LAN/VPN
-until you've claimed it. A second admin account (another parent, say) can
-be added later from the **Admins** page: generate an invite link there and
-send it to them — they set their own password when they open it.
+create an admin account. Do this right away: until an account
+exists, anyone who can reach the hub can create the first
+account themselves. A second admin account can
+be added later from the **Admins** page.
 
 ## 3. Add a machine
 
@@ -112,8 +94,7 @@ sudo timekpr-hub-agent enroll --hub-url http://<hub>:8000 --code K7F29Q
 
 Or just run `sudo timekpr-hub-agent enroll` with no arguments and it will
 prompt you for the hub URL, the code, and which local user accounts to
-manage. An admin-minted code is itself the approval — there's no separate
-"approve this device" step. This also starts the background service, so it
+manage. This also starts the background service, so it
 survives reboots on its own.
 
 Confirm it worked:
@@ -164,6 +145,16 @@ until you actually need them.
   never been enrolled. If you actually want the machine locked, set its
   policy to 0 minutes/day (or grant negative time) before revoking, or
   just don't re-enroll it once you're done.
+- **What happens while the hub is unreachable**: on the user's **Settings**
+  page, choose whether that device keeps enforcing its last-known limit,
+  allows some extra time before capping, or locks out immediately — and
+  how long the grace period is.
+- **See who did what**: the **Audit log** page lists every change any admin
+  has made (grants, policy edits, device revokes, ...), with a before/after
+  diff.
+- **Add another admin**: the **Admins** page generates a one-time invite
+  link — send it to whoever else should have access; they set their own
+  password when they open it.
 
 ## 5. Troubleshooting
 
@@ -454,6 +445,28 @@ no `.deb`/`.rpm` built for it yet.
 | `enroll --hostname` / `--machine-id` | | Default to the local machine's own values |
 | `enroll --no-start` | | Don't enable/restart the service after enrolling |
 | `status` | | `--hub-url` overrides `TIMEKPR_HUB_URL` for this one check; otherwise reports the full enrollment/connectivity chain |
+
+## JSON API
+
+Everything the hub UI does, it does through `/api/v1/*` -- there's no
+separate "internal" API. Two authentication schemes, matching who's
+calling:
+
+- **`/api/v1/enroll` and `/api/v1/sync`** are device-authenticated:
+  `enroll` takes a one-time code, `sync` takes the resulting device
+  bearer token (`Authorization: Bearer tkh_...`). These are what
+  `timekpr-hub-agent` itself calls.
+- **Everything else** (`/api/v1/users/*`, `/api/v1/devices/*`,
+  `/api/v1/admins/*`, `/api/v1/audit`, ...) needs a logged-in admin
+  session -- the same `tkh_session` cookie `/login` sets for the browser.
+  There's no separate API token; script against it with a cookie jar
+  (`curl -c`/`-b`, `httpx.Client(follow_redirects=True)`, etc.) the way
+  you'd script against any session-authenticated site.
+
+The route modules under [`hub/timekpr_hub/api/`](hub/timekpr_hub/api/) are
+the source of truth for the full endpoint list — `admin.py` for the
+JSON API, `enroll.py`/`sync.py` for the agent-facing pair, `ui.py` for the
+HTML routes the JSON API mirrors.
 
 ## Further reading
 

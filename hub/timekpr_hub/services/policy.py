@@ -144,7 +144,7 @@ async def get_or_create_policy(
 async def update_policy(
     session: AsyncSession, *, user: User, update: PolicyUpdate, created_by: str
 ) -> Policy:
-    """An admin-initiated change: PUT /users/{u}/policy (api/admin.py) and
+    """An admin-initiated change: PUT /users/{u}/policy (api/admin/users.py) and
     the UI's basic/advanced policy forms both funnel through here. Policies
     are append-only -- this always inserts version + 1 and repoints
     `current_policy_id` rather than mutating a row in place, so `sync.py`'s

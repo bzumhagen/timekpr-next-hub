@@ -1,6 +1,6 @@
 """Per-user usage summary computation, shared by the admin JSON API
-(`api/admin.py`'s `GET /users`) and the HTML UI (`api/ui.py`'s users
-fragment). Computed once here, batched into a handful of queries total
+(`api/admin/users.py`'s `GET /users`) and the HTML UI (`api/ui/dashboard.py`'s
+users fragment). Computed once here, batched into a handful of queries total
 regardless of how many users are shown (via the `*_batch` aggregate/limits
 helpers), rather than the ~3 queries per user a per-user loop in each
 caller would cost.
@@ -93,8 +93,8 @@ async def compute_user_summaries(
     the wallclock/parallel accounting-mode groups' global spend, one for
     activity state, one for today's grants, one for today's day overrides,
     and one for today's gate releases -- versus the ~3-4 queries *per user*
-    that `api/admin.py::list_users` and `api/ui.py::_user_summaries` would
-    each cost if they computed this themselves."""
+    that `api/admin/users.py::list_users` and `api/ui/dashboard.py::_user_summaries`
+    would each cost if they computed this themselves."""
     now = datetime.now(UTC)
     stamp = canonical_stamp(now, settings.tz)
     staleness_s = 3 * (settings.default_next_poll_ms / 1000)
@@ -192,7 +192,7 @@ class DayUsage:
     hours_override_intervals: list[AllowedHourInterval] | None = None
     """The stored override for this day, if `hours_overridden` -- carried
     as intervals rather than a pre-formatted string so the display wording
-    stays in one place (`api/ui.py::_hours_display`, the same function the
+    stays in one place (`api/ui/policy.py::_hours_display`, the same function the
     dashboard card and policy editor banner use) instead of being re-derived
     here, which would risk the three disagreeing on phrasing."""
 

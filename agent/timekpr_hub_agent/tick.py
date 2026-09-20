@@ -252,7 +252,7 @@ def run_tick(
                 # exactly the write that would have been made, but touch
                 # neither DBUS (no policy push, no setTimeLeft) nor the
                 # agent's own convergence bookkeeping -- see
-                # api/admin.py's `set_device_observe_mode` docstring for
+                # services/devices.py's `set_device_enforcement` docstring for
                 # the contract this has to match.
                 if user_state.last_enforcement != "observe":
                     log.warning("%s: hub enforcement is 'observe' -- computing but not writing", username)
@@ -382,7 +382,7 @@ def _apply_convergence(
     In observe mode (`dry_run=True`) the plan is computed and logged
     exactly as it would be applied, but neither `enforcer.set_time_left`
     nor `user_state.applied_offset_s` is touched -- observe mode must have
-    zero effect on the device (see api/admin.py's `set_device_observe_mode`
+    zero effect on the device (see services/devices.py's `set_device_enforcement`
     docstring) and zero effect on the agent's own bookkeeping, so enforcing
     again later starts from the same convergence state as if observe mode
     had never happened."""

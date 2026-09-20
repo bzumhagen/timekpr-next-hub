@@ -6,7 +6,9 @@ branch)."""
 
 from __future__ import annotations
 
+import secrets
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -14,8 +16,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.models import LocalPolicySnapshot
 
-from timekpr_hub.db.models import Policy, User, UserAlias
+from timekpr_hub.db.models import EnrollmentCode, Policy, User, UserAlias
 from timekpr_hub.services.policy import create_initial_policy, get_or_create_policy
+
+
+async def create_enrollment_code(session: AsyncSession) -> EnrollmentCode:
+    """A one-time code an admin mints from the hub UI/API and hands to
+    `timekpr-hub-agent enroll --code`. Caller commits."""
+    code = secrets.token_urlsafe(6).upper().replace("_", "A").replace("-", "B")[:8]
+    row = EnrollmentCode(code=code, expires_at=datetime.now(UTC) + timedelta(minutes=15))
+    session.add(row)
+    return row
 
 
 async def provision_user_alias(

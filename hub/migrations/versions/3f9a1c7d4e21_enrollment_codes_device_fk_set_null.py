@@ -25,8 +25,8 @@ def upgrade() -> None:
     # key violation -- every enrolled device has an enrollment_codes row
     # pointing at it via used_by_device_id. SET NULL keeps the historical
     # "this code was redeemed, and when" record intact; it just stops
-    # pointing at a device that no longer exists (see api/ui.py's
-    # delete_device_ui / api/parent.py's delete_device -- the DELETE
+    # pointing at a device that no longer exists (see api/ui/devices.py's
+    # delete_device_ui / api/admin/devices.py's delete_device -- the DELETE
     # /devices/{id} action added alongside revoke).
     op.drop_constraint(_CONSTRAINT, "enrollment_codes", type_="foreignkey")
     op.create_foreign_key(

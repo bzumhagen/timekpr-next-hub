@@ -1,19 +1,12 @@
-"""Admin-facing API: the JSON endpoints behind the hub UI.
-
-Every route here is gated on a logged-in admin session -- see
-`api/admin_auth.py`, which wires the dependency in `app.py`.
-"""
+"""User-scoped admin API: grants, the policy editor, per-date overrides
+(limit and hours), the chore gate, and per-user settings."""
 
 from __future__ import annotations
 
-import secrets
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.allowed_hours import (
     IntervalConflictError,
@@ -37,29 +30,15 @@ from timekpr_hub_core.models import (
 )
 
 from timekpr_hub.api.admin_auth import get_current_admin_api
-from timekpr_hub.api.util import client_ip, get_user_or_404
-from timekpr_hub.db.models import Admin, Device, EnrollmentCode
+from timekpr_hub.api.util import client_ip, get_user_or_404, wire_intervals
+from timekpr_hub.db.models import Admin, Grant
 from timekpr_hub.db.session import get_session
-from timekpr_hub.services.admin_auth import (
-    change_password,
-    count_admins,
-    create_invite,
-    delete_other_sessions,
-    verify_password,
-)
-from timekpr_hub.services.audit import list_audit_events, record_audit_event
+from timekpr_hub.services.audit import record_audit_event
 from timekpr_hub.services.day_hours import clear_day_hour_override, set_day_hour_override
 from timekpr_hub.services.limits import clear_day_override, release_gate, set_day_override, unrelease_gate
 from timekpr_hub.services.policy import get_current_policy, policy_to_payload, update_policy
 from timekpr_hub.services.summaries import compute_user_summaries
 from timekpr_hub.settings import settings
-
-
-def _wire_intervals(records) -> list[AllowedHourInterval]:
-    return [
-        AllowedHourInterval(hour=r.hour, start_min=r.start_min, end_min=r.end_min, unaccounted=r.unaccounted)
-        for r in records
-    ]
 
 
 def _day_hour_override_intervals(body: DayHourOverrideCreate) -> list[AllowedHourInterval]:
@@ -68,16 +47,17 @@ def _day_hour_override_intervals(body: DayHourOverrideCreate) -> list[AllowedHou
     explicit all-24-hours form (never `[]` -- see
     `timekpr_hub_core.allowed_hours.unrestricted`'s docstring); "window"
     goes through the same validate/expand chain the policy editor's
-    "between" mode uses (`api/ui.py::_parse_day_hours`), so a caller gets
-    the identical one-clock-hour-per-interval error message either way."""
+    "between" mode uses (`api/ui/policy.py::_parse_day_hours`), so a caller
+    gets the identical one-clock-hour-per-interval error message either
+    way."""
     if body.mode == "unrestricted":
-        return _wire_intervals(intervals_to_hours(unrestricted()))
+        return wire_intervals(intervals_to_hours(unrestricted()))
     interval = TimeInterval(body.from_min, body.to_min, unaccounted=body.unaccounted)
     try:
         _validate_intervals([interval])
     except IntervalConflictError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
-    return _wire_intervals(intervals_to_hours([interval]))
+    return wire_intervals(intervals_to_hours([interval]))
 
 
 router = APIRouter()
@@ -97,8 +77,6 @@ async def create_grant(
     session: AsyncSession = Depends(get_session),
     admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
-    from timekpr_hub.db.models import Grant
-
     user = await get_user_or_404(session, username)
 
     # `body.day` lets a grant target a future date ("you lose 30 minutes
@@ -417,264 +395,3 @@ async def update_user_settings(
     )
     await session.commit()
     return after
-
-
-@router.post("/enrollment-codes", status_code=status.HTTP_201_CREATED)
-async def create_enrollment_code(session: AsyncSession = Depends(get_session)) -> dict:
-    code = secrets.token_urlsafe(6).upper().replace("_", "A").replace("-", "B")[:8]
-    now = datetime.now(UTC)
-    row = EnrollmentCode(code=code, expires_at=now + timedelta(minutes=15))
-    session.add(row)
-    await session.commit()
-    return {"code": code, "expires_at": row.expires_at.isoformat()}
-
-
-@router.get("/audit")
-async def list_audit(
-    limit: int = 50,
-    offset: int = 0,
-    actor_id: str | None = None,
-    target_type: str | None = None,
-    target_id: str | None = None,
-    session: AsyncSession = Depends(get_session),
-) -> list[dict]:
-    """Every admin action, newest first -- see services/audit.py's
-    `record_audit_event`, which every mutating endpoint in this file and
-    api/ui.py already calls. `before`/`after` are the full JSON diffs those
-    call sites recorded (e.g. a policy edit's whole payload before and
-    after), not a summary."""
-    limit = min(max(limit, 1), 200)
-    events = await list_audit_events(
-        session,
-        limit=limit,
-        offset=max(offset, 0),
-        actor_id=actor_id,
-        target_type=target_type,
-        target_id=target_id,
-    )
-    return [
-        {
-            "id": str(e.id),
-            "ts": e.ts.isoformat(),
-            "actor_type": e.actor_type,
-            "actor_id": e.actor_id,
-            "action": e.action,
-            "target_type": e.target_type,
-            "target_id": e.target_id,
-            "before": e.before_json,
-            "after": e.after_json,
-            "ip": e.ip,
-        }
-        for e in events
-    ]
-
-
-@router.get("/devices")
-async def list_devices(session: AsyncSession = Depends(get_session)) -> list[dict]:
-    result = await session.execute(select(Device))
-    return [
-        {
-            "id": str(d.id),
-            "name": d.name,
-            "status": d.status,
-            "enforcement": d.enforcement,
-            "last_sync_at": d.last_sync_at.isoformat() if d.last_sync_at else None,
-        }
-        for d in result.scalars().all()
-    ]
-
-
-@router.post("/devices/{device_id}/revoke")
-async def revoke_device(
-    device_id: uuid.UUID,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-    admin: Admin = Depends(get_current_admin_api),
-) -> dict:
-    """Kills the device's token immediately -- get_current_device 403s a
-    revoked device on its very next sync (auth.py's "never fail open").
-    History (usage_counters/activity_intervals/user_aliases) is untouched,
-    and the device's machine_id is freed for a later re-enroll to bind a
-    *new* row to (the partial unique index on devices.machine_id only
-    applies to non-revoked rows) -- the reversible, non-destructive action;
-    see delete_device for the alternative that also erases history."""
-    result = await session.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if device is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
-    before_status = device.status
-    device.status = "revoked"
-    await record_audit_event(
-        session,
-        actor_type="admin",
-        actor_id=str(admin.id),
-        action="device.revoke",
-        target_type="device",
-        target_id=str(device.id),
-        before={"status": before_status},
-        after={"status": device.status},
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return {"id": str(device.id), "status": device.status}
-
-
-@router.post("/devices/{device_id}/observe")
-async def set_device_observe_mode(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
-    """Dry-run mode: the agent keeps syncing and computing what it *would*
-    write, logging it, but
-    never actually calls into DBUS -- see `main.py`'s
-    `resp_user.get("enforcement") == "observe"` branch, which already
-    existed for the unmapped-user case and now also serves this per-device
-    toggle. `/sync` (api/sync.py) reads this column and reports
-    `EnforcementMode.OBSERVE` for every user on this device until
-    `set_device_enforce_mode` flips it back."""
-    result = await session.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if device is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
-    device.enforcement = "observe"
-    await session.commit()
-    return {"id": str(device.id), "enforcement": device.enforcement}
-
-
-@router.post("/devices/{device_id}/enforce")
-async def set_device_enforce_mode(device_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
-    """Reverses `set_device_observe_mode` -- back to normal enforcement."""
-    result = await session.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if device is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
-    device.enforcement = "enforce"
-    await session.commit()
-    return {"id": str(device.id), "enforcement": device.enforcement}
-
-
-@router.delete("/devices/{device_id}")
-async def delete_device(
-    device_id: uuid.UUID,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-    admin: Admin = Depends(get_current_admin_api),
-) -> dict:
-    """Hard delete. FK cascades (ondelete='CASCADE' on user_aliases,
-    usage_counters, activity_intervals) drop this device's contribution
-    entirely, which *rewrites* any day it reported usage for -- unlike
-    revoke, this is not reversible and changes past totals. Offered for
-    "enrolled the wrong thing" cleanup; revoke is the routine action."""
-    result = await session.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if device is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown device")
-    before = {"name": device.name, "status": device.status}
-    await record_audit_event(
-        session,
-        actor_type="admin",
-        actor_id=str(admin.id),
-        action="device.delete",
-        target_type="device",
-        target_id=str(device_id),
-        before=before,
-        ip=client_ip(request),
-    )
-    await session.delete(device)
-    await session.commit()
-    return {"id": str(device_id), "status": "deleted"}
-
-
-# --------------------------------------------------------------------------
-# Admin accounts: invites, deletion, password change. See services/
-# admin_auth.py for the underlying invite/session logic and
-# api/admin_auth.py's GET/POST /invite/{token} for the redemption page.
-# --------------------------------------------------------------------------
-
-
-@router.post("/admin-invites", status_code=status.HTTP_201_CREATED)
-async def create_admin_invite(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-    admin: Admin = Depends(get_current_admin_api),
-) -> dict:
-    token = await create_invite(session, created_by_admin_id=admin.id)
-    await record_audit_event(
-        session,
-        actor_type="admin",
-        actor_id=str(admin.id),
-        action="admin.invite_created",
-        ip=client_ip(request),
-    )
-    await session.commit()
-    invite_url = f"{str(request.base_url).rstrip('/')}/invite/{token}"
-    return {"token": token, "url": invite_url}
-
-
-@router.get("/admins")
-async def list_admins(
-    session: AsyncSession = Depends(get_session), admin: Admin = Depends(get_current_admin_api)
-) -> list[dict]:
-    result = await session.execute(select(Admin))
-    return [
-        {"id": str(p.id), "email": p.email, "created_at": p.created_at.isoformat(), "you": p.id == admin.id}
-        for p in result.scalars().all()
-    ]
-
-
-@router.delete("/admins/{admin_id}")
-async def delete_admin(
-    admin_id: uuid.UUID,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-    admin: Admin = Depends(get_current_admin_api),
-) -> dict:
-    """The last remaining admin can never be deleted -- including
-    themselves -- since that would permanently lock the hub's own admin UI
-    (there is no other way back in; /setup only ever fires once)."""
-    if await count_admins(session) <= 1:
-        raise HTTPException(status.HTTP_409_CONFLICT, "cannot delete the last remaining admin account")
-    result = await session.execute(select(Admin).where(Admin.id == admin_id))
-    target = result.scalar_one_or_none()
-    if target is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown admin")
-    await record_audit_event(
-        session,
-        actor_type="admin",
-        actor_id=str(admin.id),
-        action="admin.deleted",
-        target_type="admin",
-        target_id=str(target.id),
-        before={"email": target.email},
-        ip=client_ip(request),
-    )
-    await session.delete(target)
-    await session.commit()
-    return {"id": str(admin_id), "status": "deleted"}
-
-
-class PasswordChange(BaseModel):
-    current_password: str
-    new_password: str = Field(min_length=8)
-
-
-@router.post("/admin/password")
-async def change_own_password(
-    request: Request,
-    body: PasswordChange,
-    session: AsyncSession = Depends(get_session),
-    admin: Admin = Depends(get_current_admin_api),
-) -> dict:
-    if not await run_in_threadpool(verify_password, body.current_password, admin.password_hash):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "current password is incorrect")
-    await run_in_threadpool(change_password, admin=admin, new_password=body.new_password)
-    token = request.cookies.get("tkh_session", "")
-    await delete_other_sessions(session, admin_id=admin.id, keep_token=token)
-    await record_audit_event(
-        session,
-        actor_type="admin",
-        actor_id=str(admin.id),
-        action="admin.password_changed",
-        target_type="admin",
-        target_id=str(admin.id),
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return {"status": "ok"}

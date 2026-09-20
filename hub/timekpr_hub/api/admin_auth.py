@@ -1,7 +1,7 @@
 """Admin-facing login/logout/first-run-setup, and the two dependencies that
 gate every other admin/UI route.
 
-Without this, every route in `api/admin.py` and `api/ui.py` would be
+Without this, every route in `api/admin/` and `api/ui/` would be
 reachable by anyone who could reach the hub at all. The first account is
 created via a first-run `/setup` page rather than a CLI command or an env
 var: `/setup` 404s once an admin exists, so the window during which an

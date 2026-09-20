@@ -388,8 +388,8 @@ class UserSummary(BaseModel):
     devices_active_today: list[str] = Field(default_factory=list)
     activity_state: ActivityState = ActivityState.LOGGED_OUT
     """The most recent non-stale device's activity_state for this user (see
-    hub/timekpr_hub/api/ui.py's staleness rule) -- degrades to LOGGED_OUT once
-    no device has checked in recently."""
+    hub/timekpr_hub/api/ui/devices.py's staleness rule) -- degrades to
+    LOGGED_OUT once no device has checked in recently."""
     as_of: str | None = None
     """ISO8601 timestamp of the sync that produced today_global_spent_s --
     lets a viewer (the UI) extrapolate forward while DRAINING instead of

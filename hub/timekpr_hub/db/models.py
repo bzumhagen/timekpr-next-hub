@@ -376,7 +376,7 @@ class DayHourOverride(Base):
 
     `intervals_json` stores the resolved `AllowedHourInterval` list (the
     same per-hour wire shape `PolicyPayload.allowed_hours` uses) rather than
-    a separate "mode" flag -- `api/ui.py::_classify_day_hours` already
+    a separate "mode" flag -- `api/ui/policy.py::_classify_day_hours` already
     infers all/between/custom back from stored intervals for display, and
     that's the one tested inversion; a second `mode` column would just be a
     second source of truth for the same fact.

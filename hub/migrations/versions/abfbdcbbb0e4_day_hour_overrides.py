@@ -24,7 +24,7 @@ def upgrade() -> None:
     # table's contents get pushed to the device -- see
     # timekpr_hub_core.effective_policy's module docstring. intervals_json
     # stores the resolved AllowedHourInterval list rather than a separate
-    # mode flag; api/ui.py::_classify_day_hours already infers all/between/
+    # mode flag; api/ui/policy.py::_classify_day_hours already infers all/between/
     # custom back from stored intervals for display.
     op.create_table(
         "day_hour_overrides",

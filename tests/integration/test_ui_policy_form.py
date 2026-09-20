@@ -1,5 +1,5 @@
 """Coverage for the UI policy editor's actual form-submission path
-(`POST /users/{username}/policy`, `hub/timekpr_hub/api/ui.py`) -- previously
+(`POST /users/{username}/policy`, `hub/timekpr_hub/api/ui/policy.py`) -- previously
 untested; every existing policy test exercised only the JSON API
 (`PUT /api/v1/users/{u}/policy`). Confirms the editor's redesigned fields
 (hours+minutes pairs, "same/different day" mode, per-day allowed-hours mode,
@@ -190,7 +190,7 @@ async def test_audit_page_renders_and_pages_with_offset(client):
 
 async def test_dashboard_shows_undo_button_after_gate_release(client):
     """The dashboard's gate-released notice must offer a way back (Undo),
-    not just a dead-end confirmation -- api/ui.py's gate-unrelease route
+    not just a dead-end confirmation -- api/ui/overrides.py's gate-unrelease route
     already existed; this is the button that was missing."""
     await _seed_user("undobutton")
     from tests.integration.test_gates_and_overrides import _todays_weekday_token

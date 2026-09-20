@@ -144,30 +144,23 @@ async def get_or_create_policy(
 async def update_policy(
     session: AsyncSession, *, user: User, update: PolicyUpdate, created_by: str
 ) -> Policy:
-    """An admin-initiated change: PUT /users/{u}/policy (api/admin/users.py) and
-    the UI's basic/advanced policy forms both funnel through here. Policies
-    are append-only -- this always inserts version + 1 and repoints
+    """An admin-initiated change: PUT /users/{u}/policy (api/admin/users.py)
+    and the UI's policy forms both funnel through here. Policies are
+    append-only -- always inserts version + 1 and repoints
     `current_policy_id` rather than mutating a row in place, so `sync.py`'s
-    `policy_version_applied != policy.version` check picks it up and pushes
-    it to every device on their very next tick.
+    `policy_version_applied != policy.version` check pushes it to every
+    device on their next tick.
 
-    Every field `PolicyUpdate` exposes is written here -- no field is
-    carried forward from the current policy unedited, since the advanced
-    editor now covers all of them (allowed_hours/lockout_type/wake
-    window/track_inactive/hide_tray_icon/PlayTime/note included). A caller
-    that wants to change only one field must still submit the whole
-    `PolicyUpdate`, seeded from the current policy's payload -- the same
-    "full form, one save" shape the UI presents.
+    Every field `PolicyUpdate` exposes is written -- none is carried
+    forward from the current policy unedited, so a caller changing one
+    field must still submit the whole thing, seeded from the current
+    payload (the "full form, one save" shape the UI presents).
 
-    `SELECT ... FOR UPDATE` on the user row for the duration guards against
-    two concurrent edits both reading the same current version and racing on
-    `uq_policies_user_version` (the same race enrollment guards against).
-    `populate_existing`
-    is required, not cosmetic: every caller here already loaded `user` once
-    earlier in this same session (to resolve the username), so without it
-    SQLAlchemy's identity map would hand back that same Python object,
-    stale `current_policy_id` and all, once the lock is granted --
-    defeating the whole point of re-reading under the lock."""
+    `SELECT ... FOR UPDATE` on the user row guards against two concurrent
+    edits racing on `uq_policies_user_version`. `populate_existing` is
+    required, not cosmetic: `user` was already loaded once earlier in this
+    session, so without it SQLAlchemy's identity map hands back that same
+    stale object once the lock is granted, defeating the re-read."""
     locked = await session.execute(
         select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True)
     )
@@ -215,19 +208,18 @@ async def effective_policy_payload(
     can't just be `policy_to_payload` + `policy.version` once a one-day
     hours override exists.
 
-    `day` is an explicit parameter rather than read from the clock inside,
-    specifically so a caller (a test, or a future "preview tomorrow" view)
-    can ask what the payload would be for any date without touching the
-    system clock -- `/sync` itself always passes its own server-computed
-    `stamp.day` and must keep doing so (see
+    `day` is explicit rather than read from the clock, so a caller (a
+    test, a future "preview tomorrow" view) can ask about any date without
+    touching the system clock -- `/sync` itself always passes its own
+    server-computed `stamp.day` (see
     `tests/integration/test_gates_and_overrides.py`'s warning that `/sync`
-    does not trust the request body for "today").
+    never trusts the request body for "today").
 
     `apply_day_overrides=False` gets the always-materialized standing
-    payload (7 full weekday keys, no per-date substitution) -- what a
-    legacy agent (one that predates `policy_revision_applied`) must be
-    served, since it can only ever be told to revert via the policy
-    *version*, which an expiring hours override does not change."""
+    payload (no per-date substitution) -- what a legacy agent (predates
+    `policy_revision_applied`) must be served, since it can only be told
+    to revert via the policy *version*, which an expiring override
+    doesn't change."""
     standing = policy_to_payload(policy)
     materialized_hours = materialize_allowed_hours(standing.allowed_hours)
     materialized = standing.model_copy(update={"allowed_hours": materialized_hours})

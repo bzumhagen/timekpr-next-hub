@@ -79,16 +79,14 @@ async def global_spent_wallclock(session: AsyncSession, *, user_id: uuid.UUID, d
     by 15min, consume 45min of budget, not 60.
 
     Floored at MAX(usage_counters.spent_seconds) across devices: that
-    absolute, idempotently MAX-merged counter is a hard lower bound on the
-    true total (a single device alone has definitely been active at least
-    that long), and self-heals anything the union under-counts -- a sync
-    that failed to reach the hub before the agent buffered/retried it
-    (main.py's pending_spans), or a tick's span that had to be trimmed
-    against the previous one (main.py's last_tick_utc clamp). The union
-    stays authoritative for the *simultaneous, multi-device* "burn once"
-    case, which this floor cannot express (summing per-device counters would
-    double-count concurrent sessions) -- this only ever pulls the total up
-    to what a single device's own honest counter already proves happened."""
+    absolute, idempotently MAX-merged counter is a hard lower bound (a
+    single device alone was active at least that long), and self-heals
+    anything the union under-counts -- a sync the agent had to buffer and
+    retry (tick.py's pending_spans), or a span trimmed against the
+    previous one (tick.py's last_tick_utc clamp). It only ever pulls the
+    total up to what a single device's own counter already proves; the
+    union stays authoritative for simultaneous multi-device "burn once",
+    which summing per-device counters would double-count."""
     result = await session.execute(
         text(
             """
@@ -118,16 +116,11 @@ async def global_spent_wallclock_batch(
     session: AsyncSession, *, user_ids: list[uuid.UUID], day: date
 ) -> dict[uuid.UUID, int]:
     """`global_spent_wallclock` for every user in `user_ids` in one
-    round-trip instead of one query per user (used by
-    services/summaries.py) -- same GREATEST(wall-clock
-    union, MAX-merged counter) formula as the single-user version above,
-    grouped by user_id. A user with neither an activity_intervals row nor a
-    usage_counters row today is simply absent from the result; callers
-    should default to 0. `range_agg(span)` returning a per-user multirange
-    that's then unnested for its own SUM is exactly the single-user query's
-    approach, just computed once per user instead of once per call; the two
-    are cross-checked for equivalence in
-    tests/integration/test_aggregate_postgres.py."""
+    round-trip (services/summaries.py) -- same GREATEST(wall-clock union,
+    MAX-merged counter) formula, grouped by user_id; cross-checked for
+    equivalence with the single-user query in
+    tests/integration/test_aggregate_postgres.py. A user with no rows
+    today is absent from the result; callers should default to 0."""
     if not user_ids:
         return {}
     stmt = text(

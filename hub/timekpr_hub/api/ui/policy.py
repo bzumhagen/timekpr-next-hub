@@ -80,28 +80,23 @@ _BETWEEN_SEED = (9 * 60, 17 * 60)
 
 def _classify_day_hours(intervals: list[AllowedHourInterval] | None) -> dict:
     """Turns one day's stored `AllowedHourInterval`s into what the editor
-    actually shows: an "all day / between / custom" mode, so a admin almost
-    never has to meet the raw per-hour checkbox grid.
+    shows: an "all day / between / custom" mode, so an admin almost never
+    has to meet the raw per-hour checkbox grid.
 
-    `intervals` absent entirely (day never set, e.g. a brand-new user) is
-    "all day" -- matching `core.allowed_hours.unrestricted()`'s convention
-    that "no restriction" must be an explicit all-24-hours entry, never an
-    empty one (see that module's own docstring: an absent hour means
-    *forbidden* to timekpr, not *allowed*).
-
-    A single interval spanning the whole day is also "all day". A single
-    partial interval is "between" (rendered as two <input type=time>
-    fields, so it gets minute precision the old whole-hour checkbox grid
-    could not express). Anything else (zero intervals, or more than one --
-    i.e. a genuinely split day) is "custom", rendered as the paint track at
-    whole-hour granularity, same as this editor's first version.
+    `intervals` absent (day never set) or a single interval spanning the
+    whole day is "all day" -- matching `core.allowed_hours.unrestricted()`'s
+    convention that "no restriction" must be an explicit all-24-hours
+    entry, never an empty one (an absent hour means *forbidden* to
+    timekpr, not *allowed*). A single partial interval is "between"
+    (minute precision via two <input type=time> fields). Anything else
+    (zero, or more than one -- a genuinely split day) is "custom", the
+    whole-hour-granularity paint track.
 
     `unaccounted` (custom mode only) is True when every checked hour that
     day is timekpr's "!" unaccounted -- allowed, but not counted against
-    the daily limit (e.g. a standing homework hour). It's a single
-    day-level toggle rather than a per-hour one: real per-hour granularity
-    would need a second paint track, and a day that mixes accounted and
-    unaccounted hours is rare enough not to justify that UI cost yet."""
+    the daily limit. A single day-level toggle rather than per-hour: real
+    per-hour granularity would need a second paint track, and a day
+    mixing accounted/unaccounted hours is rare enough not to justify it."""
     if intervals is None:
         return {
             "mode": "all",

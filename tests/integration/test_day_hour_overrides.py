@@ -13,10 +13,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
-from timekpr_hub.db.models import Policy, User
 from timekpr_hub.services.policy import effective_policy_payload
 
+from tests.conftest import (
+    _OMIT,
+    _fetch_user_and_policy,
+    _sync,
+    _today_str,
+    _todays_weekday_token,
+    _tomorrow_str,
+)
 from tests.conftest import get_test_sessionmaker as _get_test_sessionmaker
 from tests.integration.test_gates_and_overrides import _enroll_device, _set_policy_daily_limits
 from tests.integration.test_hub_api import _seed_user
@@ -26,57 +32,6 @@ pytestmark = pytest.mark.db
 
 def _today() -> datetime.date:
     return datetime.now(UTC).date()
-
-
-def _today_str() -> str:
-    return _today().isoformat()
-
-
-def _tomorrow_str() -> str:
-    return (_today() + timedelta(days=1)).isoformat()
-
-
-def _todays_weekday_token() -> str:
-    return str(_today().isoweekday())
-
-
-async def _sync(client, token: str, username: str, *, revision_applied) -> dict:
-    """Like `test_gates_and_overrides._sync`, but lets the caller control
-    `policy_revision_applied` -- omitted entirely (`revision_applied=None`
-    with `include=False`) simulates a legacy agent that predates this
-    field; any string simulates a new-enough one."""
-    today = _today_str()
-    user = {
-        "username": username,
-        "day": today,
-        "cumulative_spent_s": 0,
-        "observed": {
-            "balance_s": 0,
-            "spent_day_s": 0,
-            "limit_today_s": 3600,
-            "logged_in": False,
-            "active": False,
-        },
-        "local_grant_s": 0,
-        "policy_version_applied": 0,
-    }
-    if revision_applied is not _OMIT:
-        user["policy_revision_applied"] = revision_applied
-    resp = await client.post(
-        "/api/v1/sync",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "agent_time": f"{today}T12:00:00+00:00",
-            "tz": "UTC",
-            "ntp_synced": True,
-            "agent_version": "0.1.0",
-            "users": [user],
-        },
-    )
-    return resp.json()["users"][0]
-
-
-_OMIT = object()
 
 
 async def _set_standing_hours_for_today(client, username: str, *, from_min: int, to_min: int) -> None:
@@ -104,17 +59,6 @@ async def _set_standing_hours_for_today(client, username: str, *, from_min: int,
     assert resp.status_code == 200
 
 
-async def _fetch_user_and_policy(username: str) -> tuple[User, Policy]:
-    session_factory = _get_test_sessionmaker()
-    async with session_factory() as session:
-        user = (await session.execute(select(User).where(User.canonical_username == username))).scalar_one()
-        policy = (
-            await session.execute(select(Policy).where(Policy.id == user.current_policy_id))
-        ).scalar_one()
-        return user, policy
-
-
-@pytest.mark.asyncio
 async def test_override_for_today_changes_the_synced_hours_but_not_the_int_version(client):
     await _seed_user("hours_today")
     token = await _enroll_device(client, "hours_today", "m-hours-today")
@@ -136,7 +80,6 @@ async def test_override_for_today_changes_the_synced_hours_but_not_the_int_versi
     assert hours[-1]["hour"] == 19
 
 
-@pytest.mark.asyncio
 async def test_day_hours_override_can_mark_the_window_unaccounted(client):
     """DayHourOverrideCreate.unaccounted must reach the pushed
     AllowedHourInterval -- timekpr's '!' semantics, allowed but not
@@ -165,7 +108,6 @@ async def test_day_hours_override_can_mark_the_window_unaccounted(client):
     assert all(h["unaccounted"] for h in hours)
 
 
-@pytest.mark.asyncio
 async def test_future_dated_override_pushes_nothing_today(client):
     await _seed_user("hours_future")
     token = await _enroll_device(client, "hours_future", "m-hours-future")
@@ -187,7 +129,6 @@ async def test_future_dated_override_pushes_nothing_today(client):
     assert second["policy_revision"] == baseline_revision
 
 
-@pytest.mark.asyncio
 async def test_clearing_the_override_restores_the_standing_hours(client):
     await _seed_user("hours_clear")
     token = await _enroll_device(client, "hours_clear", "m-hours-clear")
@@ -212,7 +153,6 @@ async def test_clearing_the_override_restores_the_standing_hours(client):
     assert len(reverted["policy"]["allowed_hours"][weekday]) == 8  # back to 9:00-17:00
 
 
-@pytest.mark.asyncio
 async def test_a_never_edited_policy_yields_all_seven_materialized_weekdays(client):
     """The revert-path guarantee: `create_initial_policy` writes
     `allowed_hours_json={}`, and the payload the agent receives must still
@@ -228,7 +168,6 @@ async def test_a_never_edited_policy_yields_all_seven_materialized_weekdays(clie
         assert len(hours) == 24
 
 
-@pytest.mark.asyncio
 async def test_a_legacy_agent_never_sees_the_hours_override(client):
     """An agent that omits `policy_revision_applied` entirely (predates
     this feature) must be served the standing payload only, gated on
@@ -265,7 +204,6 @@ async def test_a_legacy_agent_never_sees_the_hours_override(client):
     assert result2["policy_revision"].endswith("-legacy")
 
 
-@pytest.mark.asyncio
 async def test_422_when_the_weekday_is_not_allowed_to_log_in(client):
     await _seed_user("hours_disallowed")
     await _enroll_device(client, "hours_disallowed", "m-hours-disallowed")
@@ -289,7 +227,6 @@ async def test_422_when_the_weekday_is_not_allowed_to_log_in(client):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_read_path_skips_override_if_policy_later_disallows_the_weekday(client):
     """Write-time validation alone isn't enough -- the policy can be
     edited to drop the weekday AFTER the override was set."""
@@ -323,7 +260,6 @@ async def test_read_path_skips_override_if_policy_later_disallows_the_weekday(cl
     assert len(payload.allowed_hours[weekday]) == 24  # materialized-unrestricted default, not overridden-away
 
 
-@pytest.mark.asyncio
 async def test_hours_override_composes_with_a_limit_override_and_a_gated_day(client):
     """Hours (when) and seconds/gate (how much / whether) are orthogonal --
     setting an hours window must not perturb `effective_limit_today_s`."""
@@ -353,7 +289,6 @@ async def test_hours_override_composes_with_a_limit_override_and_a_gated_day(cli
     assert result["policy"]["allowed_hours"][weekday][0]["hour"] == 12
 
 
-@pytest.mark.asyncio
 async def test_day_rollover_reverts_via_effective_policy_payload(client):
     """Exercises the rollover revert directly against
     `effective_policy_payload` (D then D+1), since `/sync` structurally
@@ -388,7 +323,6 @@ async def test_day_rollover_reverts_via_effective_policy_payload(client):
     assert len(tomorrow_payload.allowed_hours[weekday_tomorrow]) == 24
 
 
-@pytest.mark.asyncio
 async def test_ui_form_sets_and_clears_the_override(client):
     """The UI twin -- a raw form POST, mirroring test_ui_policy_form.py's
     pattern -- rather than the JSON API."""

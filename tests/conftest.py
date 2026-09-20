@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 
-from tests.dbutil import TEST_DATABASE_URL
+from tests.dbutil import TEST_DATABASE_URL, all_table_names
 
 os.environ.setdefault("DATABASE_URL", TEST_DATABASE_URL)
 
@@ -41,11 +42,11 @@ os.environ.setdefault("DATABASE_URL", TEST_DATABASE_URL)
 import httpx  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from asgi_lifespan import LifespanManager  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import select, text  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
 from timekpr_hub.api.admin_auth import get_current_admin_api, get_current_admin_ui  # noqa: E402
 from timekpr_hub.app import app  # noqa: E402
-from timekpr_hub.db.models import Admin  # noqa: E402
+from timekpr_hub.db.models import Admin, Policy, User  # noqa: E402
 from timekpr_hub.db.session import get_session  # noqa: E402
 
 # One engine per test *session* (not per app import), created lazily inside
@@ -90,12 +91,7 @@ async def _override_get_current_admin():
 
 async def _truncate_all(session_factory) -> None:
     async with session_factory() as session:
-        await session.execute(
-            text(
-                "TRUNCATE users, devices, activity_intervals, usage_counters, "
-                "policies, enrollment_codes, grants, admins, admin_sessions, audit_log CASCADE"
-            )
-        )
+        await session.execute(text(f"TRUNCATE {all_table_names()} CASCADE"))
         await session.commit()
 
 
@@ -137,3 +133,74 @@ async def unauthenticated_client():
                 yield ac
     finally:
         app.dependency_overrides.pop(get_session, None)
+
+
+# --------------------------------------------------------------------------
+# Shared by tests/integration/test_gates_and_overrides.py and
+# test_day_hour_overrides.py -- both need "today" in the server's own real
+# wall clock (/sync always computes it that way, never trusting the
+# request body, so a manufactured date can't stand in), and both look up a
+# user's current policy row directly rather than through the API.
+# --------------------------------------------------------------------------
+
+
+def _today_str() -> str:
+    return datetime.now(UTC).date().isoformat()
+
+
+def _tomorrow_str() -> str:
+    return (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
+
+
+def _todays_weekday_token() -> str:
+    return str(datetime.now(UTC).isoweekday())
+
+
+async def _fetch_user_and_policy(username: str) -> tuple[User, Policy]:
+    session_factory = get_test_sessionmaker()
+    async with session_factory() as session:
+        user = (await session.execute(select(User).where(User.canonical_username == username))).scalar_one()
+        policy = (
+            await session.execute(select(Policy).where(Policy.id == user.current_policy_id))
+        ).scalar_one()
+        return user, policy
+
+
+_OMIT = object()
+
+
+async def _sync(client, token: str, username: str, *, revision_applied=_OMIT) -> dict:
+    """Posts one /sync tick for `username` reporting zero activity -- for
+    tests that only care what /sync echoes back (effective limits/hours),
+    not the convergence math itself. `revision_applied` simulates the
+    agent's `policy_revision_applied` echo; omitted (the default) simulates
+    an agent that predates that field."""
+    today = _today_str()
+    user = {
+        "username": username,
+        "day": today,
+        "cumulative_spent_s": 0,
+        "observed": {
+            "balance_s": 0,
+            "spent_day_s": 0,
+            "limit_today_s": 3600,
+            "logged_in": False,
+            "active": False,
+        },
+        "local_grant_s": 0,
+        "policy_version_applied": 0,
+    }
+    if revision_applied is not _OMIT:
+        user["policy_revision_applied"] = revision_applied
+    resp = await client.post(
+        "/api/v1/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "agent_time": f"{today}T12:00:00+00:00",
+            "tz": "UTC",
+            "ntp_synced": True,
+            "agent_version": "0.1.0",
+            "users": [user],
+        },
+    )
+    return resp.json()["users"][0]

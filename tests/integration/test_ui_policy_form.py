@@ -48,7 +48,6 @@ async def _get_policy(username: str) -> Policy:
         return policy
 
 
-@pytest.mark.asyncio
 async def test_same_every_day_hm_pair_writes_all_seven_days(client):
     await _seed_user("hmuser")
     form = _base_form("hmuser")
@@ -59,7 +58,6 @@ async def test_same_every_day_hm_pair_writes_all_seven_days(client):
     assert policy.daily_limits_json == [5400] * 7  # 1h30m = 5400s, every day
 
 
-@pytest.mark.asyncio
 async def test_different_each_day_mode_writes_independent_limits(client):
     await _seed_user("diffuser")
     form = _base_form("diffuser")
@@ -74,7 +72,6 @@ async def test_different_each_day_mode_writes_independent_limits(client):
     assert policy.daily_limits_json == [i * 3600 for i in range(7)]
 
 
-@pytest.mark.asyncio
 async def test_between_mode_gives_minute_precision(client):
     """The old whole-hour checkbox grid could only express 15:00-16:00; the
     "between" time pickers must round-trip a genuine partial-hour window."""
@@ -95,7 +92,6 @@ async def test_between_mode_gives_minute_precision(client):
     assert 20 not in monday_hours  # end is exclusive at 20:00
 
 
-@pytest.mark.asyncio
 async def test_between_mode_rejects_start_after_end(client):
     await _seed_user("badrangeuser")
     form = _base_form("badrangeuser")
@@ -106,7 +102,6 @@ async def test_between_mode_rejects_start_after_end(client):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_custom_mode_rejects_a_day_with_no_hours_checked(client):
     await _seed_user("customuser")
     form = _base_form("customuser")
@@ -115,7 +110,6 @@ async def test_custom_mode_rejects_a_day_with_no_hours_checked(client):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_custom_mode_unaccounted_checkbox_marks_every_checked_hour(client):
     """The day-level "these hours don't count against the daily limit"
     checkbox in custom mode must mark every checked hour unaccounted, and
@@ -139,7 +133,6 @@ async def test_custom_mode_unaccounted_checkbox_marks_every_checked_hour(client)
     assert 'name="unaccounted_3" checked' in page.text
 
 
-@pytest.mark.asyncio
 async def test_unchecked_weekly_cap_writes_the_uncapped_maximum(client):
     """Unchecking "also cap per week" must mean uncapped (timekpr's own
     default), not an accidental 0-second cap."""
@@ -154,7 +147,6 @@ async def test_unchecked_weekly_cap_writes_the_uncapped_maximum(client):
     assert policy.monthly_limit_s == 31 * 86400
 
 
-@pytest.mark.asyncio
 async def test_checked_weekly_cap_writes_the_given_hm_value(client):
     await _seed_user("capuser2")
     form = _base_form("capuser2")
@@ -168,7 +160,6 @@ async def test_checked_weekly_cap_writes_the_given_hm_value(client):
     assert policy.weekly_limit_s == 10 * 3600
 
 
-@pytest.mark.asyncio
 async def test_get_policy_page_renders_for_a_brand_new_user(client):
     """A user with no policy yet gets one seeded (get_or_create_policy) and
     the page must render it as "all day" for every weekday -- the
@@ -179,7 +170,6 @@ async def test_get_policy_page_renders_for_a_brand_new_user(client):
     assert "freshuser" in resp.text.lower() or "Freshuser" in resp.text
 
 
-@pytest.mark.asyncio
 async def test_audit_page_renders_and_pages_with_offset(client):
     """The audit page is a plain GET (no live poll, unlike the dashboard/
     devices pages) and must render even with zero events, plus page
@@ -198,7 +188,6 @@ async def test_audit_page_renders_and_pages_with_offset(client):
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_dashboard_shows_undo_button_after_gate_release(client):
     """The dashboard's gate-released notice must offer a way back (Undo),
     not just a dead-end confirmation -- api/ui.py's gate-unrelease route
@@ -219,7 +208,6 @@ async def test_dashboard_shows_undo_button_after_gate_release(client):
     assert "Undo" in resp.text
 
 
-@pytest.mark.asyncio
 async def test_grant_from_ui_with_day_lands_on_that_date_not_today(client):
     """The dashboard's '-30 min tomorrow' button (and any dated grant form
     field) must post to the target date's Grant, not today's."""
@@ -248,7 +236,6 @@ async def test_grant_from_ui_with_day_lands_on_that_date_not_today(client):
     assert row.seconds == -1800
 
 
-@pytest.mark.asyncio
 async def test_rename_user_changes_display_name_only(client):
     await _seed_user("renameuser")
     resp = await client.post("/users/renameuser/rename", data={"display_name": "Renamed User"})
@@ -266,7 +253,6 @@ async def test_rename_user_changes_display_name_only(client):
     assert user.canonical_username == "renameuser"
 
 
-@pytest.mark.asyncio
 async def test_delete_user_removes_the_row_and_its_history(client):
     await _seed_user("deleteuser")
     await client.post("/ui/users/deleteuser/grants", data={"seconds": "600"})
@@ -287,7 +273,6 @@ async def test_delete_user_removes_the_row_and_its_history(client):
     assert remaining_grants == []  # the grant was FK-cascaded away with the user
 
 
-@pytest.mark.asyncio
 async def test_offline_policy_settings_round_trip(client):
     await _seed_user("offlinesettings")
     resp = await client.post(

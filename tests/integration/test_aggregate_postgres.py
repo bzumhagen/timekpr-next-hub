@@ -100,7 +100,6 @@ async def _make_user_and_devices(session: AsyncSession, n_devices: int = 2):
     return user_id, device_ids
 
 
-@pytest.mark.asyncio
 async def test_usage_counter_max_merge_is_idempotent(db_session):
     user_id, (device_id,) = await _make_user_and_devices(db_session, n_devices=1)
     today = date(2026, 9, 9)
@@ -125,7 +124,6 @@ async def test_usage_counter_max_merge_is_idempotent(db_session):
     assert await _device_spent_today(db_session, user_id=user_id, device_id=device_id, day=today) == 250
 
 
-@pytest.mark.asyncio
 async def test_wallclock_union_burn_once_two_overlapping_devices(db_session):
     """The end-to-end acceptance property behind the user's 'burn once'
     choice, run against real Postgres range_agg rather than the pure-Python
@@ -157,7 +155,6 @@ async def test_wallclock_union_burn_once_two_overlapping_devices(db_session):
     assert await global_spent_wallclock(db_session, user_id=user_id, day=today) == 2700
 
 
-@pytest.mark.asyncio
 async def test_wallclock_union_replay_is_idempotent(db_session):
     """Retrying the same /sync POST (same window_end_ts) must not inflate
     the union -- this is the ON CONFLICT DO NOTHING idempotency guarantee."""
@@ -179,7 +176,6 @@ async def test_wallclock_union_replay_is_idempotent(db_session):
     assert await global_spent_wallclock(db_session, user_id=user_id, day=today) == 600
 
 
-@pytest.mark.asyncio
 async def test_wallclock_floor_self_heals_a_union_that_lost_spans_to_an_outage(db_session):
     """global_spent_wallclock must never read BELOW a single device's own
     absolute counter -- that counter is idempotently MAX-merged and can
@@ -211,7 +207,6 @@ async def test_wallclock_floor_self_heals_a_union_that_lost_spans_to_an_outage(d
     assert await global_spent_wallclock(db_session, user_id=user_id, day=today) == 2400
 
 
-@pytest.mark.asyncio
 async def test_wallclock_floor_does_not_override_a_larger_simultaneous_union(db_session):
     """The floor must never pull the total DOWN either -- when the union
     (two devices, non-overlapping) is already larger than any single
@@ -246,7 +241,6 @@ async def test_wallclock_floor_does_not_override_a_larger_simultaneous_union(db_
     assert await global_spent_wallclock(db_session, user_id=user_id, day=today) == 3600
 
 
-@pytest.mark.asyncio
 async def test_global_spent_wallclock_batch_matches_single_user_calls(db_session):
     """`global_spent_wallclock_batch` (the batched form used by
     services/summaries.py) must return exactly what calling the
@@ -300,7 +294,6 @@ async def test_global_spent_wallclock_batch_matches_single_user_calls(db_session
     assert batched == expected  # user_c absent, not 0
 
 
-@pytest.mark.asyncio
 async def test_global_spent_parallel_batch_matches_single_user_calls(db_session):
     user_a, (dev_a1, dev_a2) = await _make_user_and_devices(db_session, n_devices=2)
     user_b, (dev_b1,) = await _make_user_and_devices(db_session, n_devices=1)
@@ -322,7 +315,6 @@ async def test_global_spent_parallel_batch_matches_single_user_calls(db_session)
     assert batched == expected
 
 
-@pytest.mark.asyncio
 async def test_devices_active_today_batch_lists_only_devices_with_positive_spend(db_session):
     user_a, (dev_a1, dev_a2) = await _make_user_and_devices(db_session, n_devices=2)
     user_b, (dev_b1,) = await _make_user_and_devices(db_session, n_devices=1)
@@ -341,7 +333,6 @@ async def test_devices_active_today_batch_lists_only_devices_with_positive_spend
     assert user_c not in result
 
 
-@pytest.mark.asyncio
 async def test_latest_activity_states_batch_reports_each_users_most_recent_state(db_session):
     user_a, (dev_a,) = await _make_user_and_devices(db_session, n_devices=1)
     user_b, (dev_b,) = await _make_user_and_devices(db_session, n_devices=1)
@@ -362,7 +353,6 @@ async def test_latest_activity_states_batch_reports_each_users_most_recent_state
     assert user_c not in batched  # never reported -- absent, not ("logged_out", None)
 
 
-@pytest.mark.asyncio
 async def test_grants_totals_batch_matches_single_user_calls(db_session):
     from timekpr_hub.db.models import Grant
 

@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
-from timekpr_hub.db.models import Policy, User
+from timekpr_hub.db.models import User
 from timekpr_hub.services.limits import (
     base_daily_limit,
     combine_limit,
@@ -29,22 +29,17 @@ from timekpr_hub.services.limits import (
     is_gated_weekday,
 )
 
+from tests.conftest import (
+    _fetch_user_and_policy,
+    _sync,
+    _today_str,
+    _todays_weekday_token,
+    _tomorrow_str,
+)
 from tests.conftest import get_test_sessionmaker as _get_test_sessionmaker
 from tests.integration.test_hub_api import _seed_user
 
 pytestmark = pytest.mark.db
-
-
-def _today_str() -> str:
-    return datetime.now(UTC).date().isoformat()
-
-
-def _tomorrow_str() -> str:
-    return (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
-
-
-def _todays_weekday_token() -> str:
-    return str(datetime.now(UTC).isoweekday())
 
 
 async def _enroll_device(client, username: str, machine_id: str) -> str:
@@ -64,39 +59,6 @@ async def _enroll_device(client, username: str, machine_id: str) -> str:
     return resp.json()["device_token"]
 
 
-async def _sync(client, token: str, username: str) -> dict:
-    """Always reports the server's real "today" -- see the module
-    docstring. `day`/`agent_time` in the request are informational only."""
-    today = _today_str()
-    resp = await client.post(
-        "/api/v1/sync",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "agent_time": f"{today}T12:00:00+00:00",
-            "tz": "UTC",
-            "ntp_synced": True,
-            "agent_version": "0.1.0",
-            "users": [
-                {
-                    "username": username,
-                    "day": today,
-                    "cumulative_spent_s": 0,
-                    "observed": {
-                        "balance_s": 0,
-                        "spent_day_s": 0,
-                        "limit_today_s": 3600,
-                        "logged_in": False,
-                        "active": False,
-                    },
-                    "local_grant_s": 0,
-                    "policy_version_applied": 0,
-                }
-            ],
-        },
-    )
-    return resp.json()["users"][0]
-
-
 async def _set_policy_daily_limits(client, username: str, minutes_per_day: int) -> int:
     resp = await client.put(
         f"/api/v1/users/{username}/policy",
@@ -110,23 +72,12 @@ async def _set_policy_daily_limits(client, username: str, minutes_per_day: int) 
     return resp.json()["version"]
 
 
-async def _fetch_user_and_policy(username: str) -> tuple[User, Policy]:
-    session_factory = _get_test_sessionmaker()
-    async with session_factory() as session:
-        user = (await session.execute(select(User).where(User.canonical_username == username))).scalar_one()
-        policy = (
-            await session.execute(select(Policy).where(Policy.id == user.current_policy_id))
-        ).scalar_one()
-        return user, policy
-
-
 # --------------------------------------------------------------------------
 # Day overrides -- exercised through /sync for TODAY (full stack), since
 # that's the only day /sync will ever actually report on.
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_zero_override_zeroes_the_day(client):
     await _seed_user("override_zero")
     token = await _enroll_device(client, "override_zero", "m-override-zero")
@@ -143,7 +94,6 @@ async def test_zero_override_zeroes_the_day(client):
     assert result["effective_limit_today_s"] == 0
 
 
-@pytest.mark.asyncio
 async def test_nonzero_override_sets_the_limit_exactly(client):
     await _seed_user("override_partial")
     token = await _enroll_device(client, "override_partial", "m-override-partial")
@@ -160,7 +110,6 @@ async def test_nonzero_override_sets_the_limit_exactly(client):
     assert result["effective_limit_today_s"] == 1800
 
 
-@pytest.mark.asyncio
 async def test_override_survives_a_later_change_to_the_standing_limit(client):
     """The exact case that motivated DayOverride over a negative grant: a
     grant's stored second-count would silently stop cancelling the day once
@@ -182,7 +131,6 @@ async def test_override_survives_a_later_change_to_the_standing_limit(client):
     assert result["effective_limit_today_s"] == 0  # still zero, not drifted to 3h
 
 
-@pytest.mark.asyncio
 async def test_clearing_an_override_restores_the_standing_limit(client):
     await _seed_user("override_clear")
     token = await _enroll_device(client, "override_clear", "m-override-clear")
@@ -201,7 +149,6 @@ async def test_clearing_an_override_restores_the_standing_limit(client):
     assert result["effective_limit_today_s"] == 90 * 60
 
 
-@pytest.mark.asyncio
 async def test_grant_composes_with_an_override(client):
     """override is 'instead of' the base, grant is 'in addition to' either --
     the two must compose."""
@@ -230,7 +177,6 @@ async def test_grant_composes_with_an_override(client):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_dated_grant_lands_on_the_target_day_not_today(client):
     await _seed_user("dated_grant")
     token = await _enroll_device(client, "dated_grant", "m-dated-grant")
@@ -265,7 +211,6 @@ async def test_dated_grant_lands_on_the_target_day_not_today(client):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_gated_day_reports_zero_then_the_real_limit_after_release(client):
     await _seed_user("gated_user")
     token = await _enroll_device(client, "gated_user", "m-gated")
@@ -291,7 +236,6 @@ async def test_gated_day_reports_zero_then_the_real_limit_after_release(client):
     assert after_release["effective_limit_today_s"] == 90 * 60
 
 
-@pytest.mark.asyncio
 async def test_release_is_date_scoped_not_weekday_scoped(client):
     """Releasing TODAY must not release the same weekday next week -- the
     gate is meant to re-arm every week on its own. /sync can't report on
@@ -320,7 +264,6 @@ async def test_release_is_date_scoped_not_weekday_scoped(client):
     assert released_next_week is False
 
 
-@pytest.mark.asyncio
 async def test_unrelease_regates_the_day(client):
     await _seed_user("gated_unrelease")
     token = await _enroll_device(client, "gated_unrelease", "m-gated-unrelease")
@@ -348,7 +291,6 @@ async def test_unrelease_regates_the_day(client):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_dashboard_stats_and_sync_agree_on_a_gated_day(client):
     await _seed_user("agree_user")
     token = await _enroll_device(client, "agree_user", "m-agree")

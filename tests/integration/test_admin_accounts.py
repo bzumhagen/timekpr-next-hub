@@ -28,7 +28,6 @@ def _extract_invite_token(body: str) -> str:
     return match.group(1)
 
 
-@pytest.mark.asyncio
 async def test_invite_creates_a_second_working_account(unauthenticated_client):
     c = unauthenticated_client
     await _setup_first_admin(c)
@@ -54,7 +53,6 @@ async def test_invite_creates_a_second_working_account(unauthenticated_client):
     assert emails == {"first@example.com", "second@example.com"}
 
 
-@pytest.mark.asyncio
 async def test_invite_is_single_use(unauthenticated_client):
     c = unauthenticated_client
     await _setup_first_admin(c)
@@ -69,7 +67,6 @@ async def test_invite_is_single_use(unauthenticated_client):
     assert second.status_code == 410
 
 
-@pytest.mark.asyncio
 async def test_last_remaining_admin_cannot_be_deleted(unauthenticated_client):
     c = unauthenticated_client
     await _setup_first_admin(c)
@@ -82,7 +79,6 @@ async def test_last_remaining_admin_cannot_be_deleted(unauthenticated_client):
     assert resp.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_a_second_admin_can_be_deleted(unauthenticated_client):
     c = unauthenticated_client
     await _setup_first_admin(c)
@@ -100,7 +96,6 @@ async def test_a_second_admin_can_be_deleted(unauthenticated_client):
     assert len(remaining) == 1
 
 
-@pytest.mark.asyncio
 async def test_change_password_requires_the_current_one(unauthenticated_client):
     c = unauthenticated_client
     await _setup_first_admin(c, password="originalpass")
@@ -124,7 +119,6 @@ async def test_change_password_requires_the_current_one(unauthenticated_client):
     assert relogin.status_code == 303
 
 
-@pytest.mark.asyncio
 async def test_password_change_invalidates_other_sessions(unauthenticated_client):
     """A session opened before the change must stop working; the one that
     made the change must not be logged out by its own request."""
@@ -149,7 +143,6 @@ async def test_password_change_invalidates_other_sessions(unauthenticated_client
     await other.aclose()
 
 
-@pytest.mark.asyncio
 async def test_admin_account_actions_are_audit_logged(unauthenticated_client):
     c = unauthenticated_client
     await _setup_first_admin(c)

@@ -37,14 +37,12 @@ async def _seed_user(username: str = "alpha") -> None:
         await session.commit()
 
 
-@pytest.mark.asyncio
 async def test_healthz(client):
     resp = await client.get("/healthz")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
 
 
-@pytest.mark.asyncio
 async def test_enroll_requires_valid_code(client):
     resp = await client.post(
         "/api/v1/enroll",
@@ -61,7 +59,6 @@ async def test_enroll_requires_valid_code(client):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_enrollment_code_is_single_use(client):
     code_resp = await client.post("/api/v1/enrollment-codes")
     code = code_resp.json()["code"]
@@ -82,7 +79,6 @@ async def test_enrollment_code_is_single_use(client):
     assert second.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_concurrent_enrollment_redemption_of_the_same_code_only_succeeds_once(client):
     """Two concurrent /enroll calls racing to redeem the same code could
     otherwise both pass the `used_at is None` check before either
@@ -107,7 +103,6 @@ async def test_concurrent_enrollment_redemption_of_the_same_code_only_succeeds_o
     assert sorted(r.status_code for r in results) == [201, 409]
 
 
-@pytest.mark.asyncio
 async def test_concurrent_first_policy_creation_for_a_shared_user_does_not_race(client):
     """Two devices enrolling with `local_users` naming the same
     already-existing-but-policy-less user concurrently used to both read
@@ -146,7 +141,6 @@ async def test_concurrent_first_policy_creation_for_a_shared_user_does_not_race(
     assert policy_count == 1
 
 
-@pytest.mark.asyncio
 async def test_enroll_provisions_a_new_user_when_none_exists(client):
     """No `_seed_user` here -- enrollment itself is the provisioning path
     now, not a prerequisite manual INSERT."""
@@ -175,7 +169,6 @@ async def test_enroll_provisions_a_new_user_when_none_exists(client):
     assert row == "brandnew"
 
 
-@pytest.mark.asyncio
 async def test_enroll_merges_into_an_existing_user_of_the_same_username(client):
     """A second device reporting a username that already exists on the hub
     (e.g. the same account on another machine) should alias into the same
@@ -216,7 +209,6 @@ async def test_enroll_merges_into_an_existing_user_of_the_same_username(client):
     assert alias_user_id == user_id
 
 
-@pytest.mark.asyncio
 async def test_enrolled_device_is_immediately_active_and_can_sync(client):
     """An admin-minted enrollment code is itself the approval -- there's no
     separate un-authenticated approval step that would gate anything, and a
@@ -252,7 +244,6 @@ async def test_enrolled_device_is_immediately_active_and_can_sync(client):
     assert sync_resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_enroll_response_includes_hub_tz(client):
     code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
     resp = await client.post(
@@ -273,7 +264,6 @@ async def test_enroll_response_includes_hub_tz(client):
     assert "dave" in resp.json()["policies"]
 
 
-@pytest.mark.asyncio
 async def test_enroll_seeds_policy_from_device_snapshot_for_a_new_user(client):
     """A brand-new hub user's policy should start from what the
     enrolling device already has configured, not always the 1h/day
@@ -305,7 +295,6 @@ async def test_enroll_seeds_policy_from_device_snapshot_for_a_new_user(client):
     assert policy["weekly_limit_s"] == 50400
 
 
-@pytest.mark.asyncio
 async def test_enroll_does_not_reseed_policy_for_an_existing_user(client):
     """A second device enrolling the same (already-known) username must not
     overwrite that user's existing policy with its own local snapshot --
@@ -341,7 +330,6 @@ async def test_enroll_does_not_reseed_policy_for_an_existing_user(client):
     assert resp.json()["policies"]["frank"]["daily_limits_s"] == [3600] * 7
 
 
-@pytest.mark.asyncio
 async def test_ui_enrollment_code_snippet_uses_the_real_flag_names(client):
     """Regression test: the UI used to print `--hub` (not a real flag) and
     omit the required `--users`, so copy-pasting it into a terminal failed."""
@@ -351,7 +339,6 @@ async def test_ui_enrollment_code_snippet_uses_the_real_flag_names(client):
     assert "--hub " not in resp.text
 
 
-@pytest.mark.asyncio
 async def test_sync_requires_device_token(client):
     resp = await client.post(
         "/api/v1/sync",
@@ -366,7 +353,6 @@ async def test_sync_requires_device_token(client):
     assert resp.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_sync_rejects_revoked_device_immediately(client):
     """Never fail open on an auth error."""
     code_resp = await client.post("/api/v1/enrollment-codes")
@@ -406,7 +392,6 @@ async def test_sync_rejects_revoked_device_immediately(client):
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_full_enroll_sync_flow_two_devices_wallclock_burn_once(client):
     """End-to-end acceptance test: two devices, one pooled
     user, wall-clock 'burn once' accounting -- via the real HTTP API against
@@ -472,7 +457,6 @@ async def test_full_enroll_sync_flow_two_devices_wallclock_burn_once(client):
     assert result_b["global_spent_s"] == 1800  # same union, not 3600
 
 
-@pytest.mark.asyncio
 async def test_reenroll_with_known_machine_id_rebinds_instead_of_duplicating(client):
     """The reported bug: uninstalling and reinstalling the agent (same
     machine, same /etc/machine-id) used to enroll as a brand-new device
@@ -549,7 +533,6 @@ async def test_reenroll_with_known_machine_id_rebinds_instead_of_duplicating(cli
     assert new_token_sync.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_revoked_device_can_be_reenrolled_as_a_genuinely_new_row(client):
     """An admin who explicitly revokes a device (rather than it just being
     reinstalled) should get a fresh device row on the next enroll with that
@@ -592,7 +575,6 @@ async def test_revoked_device_can_be_reenrolled_as_a_genuinely_new_row(client):
     assert second.json()["device_id"] != device_id
 
 
-@pytest.mark.asyncio
 async def test_grant_policy_update_and_device_revoke_are_all_audit_logged(client):
     """Grants, policy edits, and device revoke/delete must each write to
     `audit_log`, with a plausible before/after."""
@@ -668,7 +650,6 @@ async def test_grant_policy_update_and_device_revoke_are_all_audit_logged(client
     assert [e["action"] for e in scoped_resp.json()] == ["device.revoke"]
 
 
-@pytest.mark.asyncio
 async def test_login_is_audit_logged(unauthenticated_client):
     setup_resp = await unauthenticated_client.post(
         "/setup", data={"email": "admin@example.com", "password": "hunter2hunter"}, follow_redirects=False
@@ -691,7 +672,6 @@ async def test_login_is_audit_logged(unauthenticated_client):
     assert count == 1  # only login_submit records this -- setup_submit does not
 
 
-@pytest.mark.asyncio
 async def test_device_observe_toggle_flips_enforcement_reported_by_sync(client):
     """An admin switching a device to observe-only should be reflected
     both in `GET /devices`
@@ -756,7 +736,6 @@ async def test_device_observe_toggle_flips_enforcement_reported_by_sync(client):
     assert enforce_resp.json()["enforcement"] == "enforce"
 
 
-@pytest.mark.asyncio
 async def test_policy_update_bumps_version_and_agent_receives_it_on_next_sync(client):
     """PUT /users/{u}/policy is the only way to change a limit through the
     hub (as opposed to an additive grant) -- confirm it creates a new policy
@@ -825,7 +804,6 @@ async def test_policy_update_bumps_version_and_agent_receives_it_on_next_sync(cl
     assert resp_user["effective_limit_today_s"] == 5400
 
 
-@pytest.mark.asyncio
 async def test_concurrent_policy_updates_for_the_same_user_do_not_race(client):
     """Two concurrent PUT .../policy requests used to both read the same
     current version and race on `uq_policies_user_version` -- and, more
@@ -877,7 +855,6 @@ async def test_concurrent_policy_updates_for_the_same_user_do_not_race(client):
     assert policy_count == 3  # initial (enroll-seeded) + the two updates
 
 
-@pytest.mark.asyncio
 async def test_policy_update_rejects_out_of_range_daily_limit(client):
     await _seed_user("jax")
     resp = await client.put(
@@ -891,7 +868,6 @@ async def test_policy_update_rejects_out_of_range_daily_limit(client):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_admin_and_ui_routes_require_login(unauthenticated_client):
     """Every admin/UI route 401s (JSON) or redirects to /login (HTML)
     without a valid session -- the fix for the "everything is open on the
@@ -905,7 +881,6 @@ async def test_admin_and_ui_routes_require_login(unauthenticated_client):
     assert ui_resp.headers["location"] == "/login"
 
 
-@pytest.mark.asyncio
 async def test_login_flow_setup_then_login_then_logout(unauthenticated_client):
     c = unauthenticated_client
 
@@ -946,7 +921,6 @@ async def test_login_flow_setup_then_login_then_logout(unauthenticated_client):
     assert (await c.get("/api/v1/users")).status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_login_with_wrong_password_is_rejected(unauthenticated_client):
     c = unauthenticated_client
     await c.post("/setup", data={"email": "admin2@example.com", "password": "correcthorsebattery"})
@@ -958,7 +932,6 @@ async def test_login_with_wrong_password_is_rejected(unauthenticated_client):
     assert (await c.get("/api/v1/users")).status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_sync_reports_this_users_offline_policy_settings(client):
     """SyncUserResponse.offline_policy/offline_grace_s/offline_cap_s must
     reflect PUT .../settings, not the hardcoded 'capped'/900/1800 defaults

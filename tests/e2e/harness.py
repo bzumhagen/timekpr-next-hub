@@ -50,15 +50,10 @@ from timekpr_hub_agent.enforcer import UserObservation
 from timekpr_hub_agent.hubclient import HubClient, HubClientConfig, HubUnreachableError
 from timekpr_hub_agent.main import run_tick
 
-from tests.dbutil import TEST_DATABASE_URL, require_db
+from tests.dbutil import TEST_DATABASE_URL, all_table_names, require_db
 from tests.fakes.fake_timekpr import FakeTimekprDaemon
 
 _T = TypeVar("_T")
-
-_TABLES = (
-    "users, devices, activity_intervals, usage_counters, policies, "
-    "enrollment_codes, grants, admins, admin_sessions"
-)
 
 # A stand-in admin, exactly like test_hub_api.py's _FAKE_ADMIN -- installed
 # via app.dependency_overrides only so the harness can mint enrollment codes
@@ -119,7 +114,7 @@ async def start_live_hub() -> AsyncIterator[str]:
     # Truncate via a throwaway engine/loop, independent of the app's own --
     # avoids touching the app engine's loop-binding before it's deliberately
     # reset below.
-    await _run_scratch(lambda session: session.execute(text(f"TRUNCATE {_TABLES} CASCADE")))
+    await _run_scratch(lambda session: session.execute(text(f"TRUNCATE {all_table_names()} CASCADE")))
 
     await hub_engine.dispose()
 

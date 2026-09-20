@@ -52,6 +52,18 @@ async def _db_reachable(url: str) -> bool:
         return False
 
 
+def all_table_names() -> str:
+    """Comma-joined names of every table in the app's schema -- derived
+    from the ORM metadata so a `TRUNCATE {all_table_names()} CASCADE`
+    can't silently miss a table a hand-kept list forgot to add (this
+    repo used to carry two independent such lists, conftest.py's
+    _truncate_all and e2e/harness.py's _TABLES, one of which was
+    already missing audit_log)."""
+    from timekpr_hub.db.models import Base
+
+    return ", ".join(Base.metadata.tables.keys())
+
+
 async def require_db(url: str = TEST_DATABASE_URL) -> None:
     """Call at the top of a `db`-marked fixture. Raises if `url` doesn't look
     like a test database; skips (or fails, under TIMEKPR_HUB_REQUIRE_DB=1) if

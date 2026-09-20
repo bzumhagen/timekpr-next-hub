@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime as _datetime
+from typing import Any
 
 from timekpr_hub_agent.timekpr_paths import ensure_timekpr_importable
 
@@ -69,6 +70,15 @@ class TimekprEnforcer:
             log.warning("could not connect to timekprd over DBUS (check group membership / timekprd status)")
         return self._connected
 
+    def _call(self, dbus_method: str, *args: Any) -> bool:
+        """Every write-side DBUS call shares this shape: connect on demand,
+        call, and reduce timekpr's own (result, message) reply to a bool.
+        `dbus_method` is the name of the method on `timekprAdminConnector`."""
+        if not self._connected and not self.connect():
+            return False
+        result, _message = getattr(self._admin, dbus_method)(*args)
+        return result == 0
+
     def get_user_observation(self, username: str) -> UserObservation | None:
         if not self._connected and not self.connect():
             return None
@@ -119,36 +129,21 @@ class TimekprEnforcer:
     def set_time_left(self, username: str, op: str, seconds: int) -> bool:
         """`op` is one of Op.SET / Op.SUBTRACT / Op.ADD's `.value`
         ('=', '-', '+') from `timekpr_hub_core.convergence`."""
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setTimeLeft(username, op, seconds)
-        return result == 0
+        return self._call("setTimeLeft", username, op, seconds)
 
     def set_time_limit_for_days(self, username: str, daily_limits_s: list[int]) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setTimeLimitForDays(username, daily_limits_s)
-        return result == 0
+        return self._call("setTimeLimitForDays", username, daily_limits_s)
 
     def set_time_limit_for_week(self, username: str, limit_s: int) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setTimeLimitForWeek(username, limit_s)
-        return result == 0
+        return self._call("setTimeLimitForWeek", username, limit_s)
 
     def set_time_limit_for_month(self, username: str, limit_s: int) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setTimeLimitForMonth(username, limit_s)
-        return result == 0
+        return self._call("setTimeLimitForMonth", username, limit_s)
 
     def set_allowed_days(self, username: str, weekdays: list[str]) -> bool:
         """`weekdays` are '1'..'7' (Mon..Sun) strings, matching
         `PolicyPayload.allowed_weekdays` and timekpr's own ALLOWED_WEEKDAYS."""
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setAllowedDays(username, weekdays)
-        return result == 0
+        return self._call("setAllowedDays", username, weekdays)
 
     def set_allowed_hours(
         self, username: str, day_number: str, hours: dict[str, dict[str, int | bool]]
@@ -170,70 +165,40 @@ class TimekprEnforcer:
         if not hours:
             log.error("%s: refusing to push an empty allowed_hours for day %s", username, day_number)
             return False
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setAllowedHours(username, day_number, hours)
-        return result == 0
+        return self._call("setAllowedHours", username, day_number, hours)
 
     def set_track_inactive(self, username: str, track_inactive: bool) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setTrackInactive(username, track_inactive)
-        return result == 0
+        return self._call("setTrackInactive", username, track_inactive)
 
     def set_hide_tray_icon(self, username: str, hide: bool) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setHideTrayIcon(username, hide)
-        return result == 0
+        return self._call("setHideTrayIcon", username, hide)
 
     def set_lockout_type(self, username: str, lockout_type: str, wake_from: str, wake_to: str) -> bool:
         """`lockout_type` is one of timekpr's TK_CTRL_RES_* string values
         (see `core.models.LockoutType`); `wake_from`/`wake_to` are only
         meaningful for 'suspendwake' but are always passed through -- timekpr
         itself just stores them regardless."""
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setLockoutType(username, lockout_type, wake_from or "", wake_to or "")
-        return result == 0
+        return self._call("setLockoutType", username, lockout_type, wake_from or "", wake_to or "")
 
     def set_playtime_enabled(self, username: str, enabled: bool) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setPlayTimeEnabled(username, enabled)
-        return result == 0
+        return self._call("setPlayTimeEnabled", username, enabled)
 
     def set_playtime_limit_override(self, username: str, override: bool) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setPlayTimeLimitOverride(username, override)
-        return result == 0
+        return self._call("setPlayTimeLimitOverride", username, override)
 
     def set_playtime_unaccounted_intervals_enabled(self, username: str, enabled: bool) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setPlayTimeUnaccountedIntervalsEnabled(username, enabled)
-        return result == 0
+        return self._call("setPlayTimeUnaccountedIntervalsEnabled", username, enabled)
 
     def set_playtime_allowed_days(self, username: str, weekdays: list[str]) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setPlayTimeAllowedDays(username, weekdays)
-        return result == 0
+        return self._call("setPlayTimeAllowedDays", username, weekdays)
 
     def set_playtime_limits_for_days(self, username: str, daily_limits_s: list[int]) -> bool:
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setPlayTimeLimitsForDays(username, daily_limits_s)
-        return result == 0
+        return self._call("setPlayTimeLimitsForDays", username, daily_limits_s)
 
     def set_playtime_activities(self, username: str, activities: list[tuple[str, str]]) -> bool:
         """`activities` is a list of (mask, description) pairs -- matches
         `setPlayTimeActivities`'s `saas` signature."""
-        if not self._connected and not self.connect():
-            return False
-        result, _message = self._admin.setPlayTimeActivities(username, [list(a) for a in activities])
-        return result == 0
+        return self._call("setPlayTimeActivities", username, [list(a) for a in activities])
 
     def get_user_policy_snapshot(self, username: str) -> dict | None:
         """This device's own currently-configured limits for `username`, in

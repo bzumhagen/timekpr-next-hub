@@ -1,0 +1,11 @@
+{% for p in parents %}
+  <div class="row" style="padding:.35rem 0; border-top: 1px solid var(--tk-line);">
+    <span>{{ p.email }}{% if p.you %} <span style="opacity:.6;">(you)</span>{% endif %}</span>
+    {% if can_delete and not p.you %}
+      <form data-post="/ui/parents/{{ p.id }}/delete" data-target="#parents-list" data-swap="innerHTML"
+            data-confirm="Remove {{ p.email }}'s account? This can't be undone.">
+        <button type="submit">Remove</button>
+      </form>
+    {% endif %}
+  </div>
+{% endfor %}

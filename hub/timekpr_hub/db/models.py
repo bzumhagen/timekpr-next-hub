@@ -65,6 +65,24 @@ class ParentSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ParentInvite(Base):
+    """A single-use, expiring invite for a second (or third, ...) parent
+    account -- the `EnrollmentCode` pattern applied to parents instead of
+    devices: atomic claim (`used_at IS NULL`), and `created_by_parent_id`
+    kept even after the inviting parent is later deleted (SET NULL) so the
+    invite's own history survives that."""
+
+    __tablename__ = "parent_invites"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("parents.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 # --------------------------------------------------------------------------
 # Users (the children being managed) and their device aliases
 # --------------------------------------------------------------------------

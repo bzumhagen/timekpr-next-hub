@@ -1212,3 +1212,78 @@ async def create_enrollment_code_ui(
         "<p>Or just run <code>sudo timekpr-hub-agent enroll</code> with no flags at all -- "
         "it prompts for the hub URL, the code, and which local users to manage.</p>"
     )
+
+
+# --------------------------------------------------------------------------
+# Parent accounts
+# --------------------------------------------------------------------------
+
+
+async def _parents_fragment_context(session: AsyncSession, parent: Parent) -> dict:
+    result = await session.execute(select(Parent))
+    parents = [{"id": str(p.id), "email": p.email, "you": p.id == parent.id} for p in result.scalars().all()]
+    return {"parents": parents, "can_delete": len(parents) > 1}
+
+
+@router.get("/parents", response_class=HTMLResponse)
+async def parents_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_ui),
+) -> HTMLResponse:
+    context = await _parents_fragment_context(session, parent)
+    return templates.TemplateResponse(request, "parents.html", context)
+
+
+@router.post("/ui/parent-invites", response_class=HTMLResponse)
+async def create_parent_invite_ui(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_ui),
+) -> HTMLResponse:
+    from timekpr_hub.api.parent import create_parent_invite
+
+    result = await create_parent_invite(request, session=session, parent=parent)
+    return HTMLResponse(
+        f"<p>Invite link (expires in 24h, single-use):</p><pre>{result['url']}</pre>"
+        "<p>Send it to the person you're inviting -- they'll set their own password.</p>"
+    )
+
+
+@router.post("/ui/parents/{parent_id}/delete", response_class=HTMLResponse)
+async def delete_parent_ui(
+    request: Request,
+    parent_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_ui),
+) -> HTMLResponse:
+    from timekpr_hub.api.parent import delete_parent
+
+    try:
+        await delete_parent(parent_id, request, session=session, parent=parent)
+    except HTTPException:
+        pass  # last-remaining-parent guard -- the fragment re-render below just shows them all still present
+    context = await _parents_fragment_context(session, parent)
+    return templates.TemplateResponse(request, "_parents_fragment.html", context)
+
+
+@router.post("/ui/parent/password", response_class=HTMLResponse)
+async def change_own_password_ui(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(..., min_length=8),
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_ui),
+) -> HTMLResponse:
+    from timekpr_hub.api.parent import PasswordChange, change_own_password
+
+    try:
+        await change_own_password(
+            request,
+            PasswordChange(current_password=current_password, new_password=new_password),
+            session=session,
+            parent=parent,
+        )
+    except HTTPException as exc:
+        return HTMLResponse(f'<p style="color: var(--tk-danger);">{exc.detail}</p>')
+    return HTMLResponse("<p>Password changed.</p>")

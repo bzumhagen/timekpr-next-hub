@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import APIKeyCookie
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from timekpr_hub.db.models import Parent
@@ -25,11 +26,13 @@ from timekpr_hub.db.session import get_session
 from timekpr_hub.services.audit import record_audit_event
 from timekpr_hub.services.parent_auth import (
     SESSION_COOKIE_NAME,
+    InviteError,
     any_parent_exists,
     create_session,
     delete_session,
     get_parent_by_session_token,
     hash_password,
+    redeem_invite,
     verify_password,
 )
 
@@ -161,4 +164,66 @@ async def logout(
         await session.commit()
     response = RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(SESSION_COOKIE_NAME)
+    return response
+
+
+@router.get("/invite/{token}", response_class=HTMLResponse)
+async def invite_form(request: Request, token: str) -> HTMLResponse:
+    """No auth required -- the token itself is the credential, single-use
+    and expiring, same as an enrollment code. Doesn't check the token's
+    validity up front (that happens atomically on submit, in
+    `redeem_invite`) so a page reload can't burn it just by being viewed."""
+    return templates.TemplateResponse(request, "invite.html", {"token": token, "error": None})
+
+
+@router.post("/invite/{token}")
+async def invite_submit(
+    request: Request,
+    token: str,
+    email: str = Form(...),
+    password: str = Form(..., min_length=8),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        await redeem_invite(session, token=token)
+    except InviteError as exc:
+        return templates.TemplateResponse(
+            request, "invite.html", {"token": token, "error": str(exc)}, status_code=status.HTTP_410_GONE
+        )
+
+    parent = Parent(email=email, password_hash=hash_password(password))
+    session.add(parent)
+    try:
+        await session.flush()
+    except IntegrityError:
+        # A second parent claiming this same invite with a duplicate email
+        # (racing the check below, or just reusing an existing address) --
+        # the invite is already burned by redeem_invite above, so this is a
+        # clean failure rather than a half-created account.
+        await session.rollback()
+        return templates.TemplateResponse(
+            request,
+            "invite.html",
+            {"token": token, "error": "an account with that email already exists"},
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="parent.created",
+        target_type="parent",
+        target_id=str(parent.id),
+        ip=request.client.host if request.client else None,
+    )
+    session_token = await create_session(
+        session,
+        parent_id=parent.id,
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    await session.commit()
+
+    response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
+    _set_session_cookie(response, request, session_token)
     return response

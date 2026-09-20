@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from timekpr_hub_core.allowed_hours import (
@@ -39,6 +40,13 @@ from timekpr_hub.db.session import get_session
 from timekpr_hub.services.audit import list_audit_events, record_audit_event
 from timekpr_hub.services.day_hours import clear_day_hour_override, set_day_hour_override
 from timekpr_hub.services.limits import clear_day_override, release_gate, set_day_override, unrelease_gate
+from timekpr_hub.services.parent_auth import (
+    change_password,
+    count_parents,
+    create_invite,
+    delete_other_sessions,
+    verify_password,
+)
 from timekpr_hub.services.policy import get_current_policy, policy_to_payload, update_policy
 from timekpr_hub.services.summaries import compute_user_summaries
 from timekpr_hub.settings import settings
@@ -608,3 +616,101 @@ async def delete_device(
     await session.delete(device)
     await session.commit()
     return {"id": str(device_id), "status": "deleted"}
+
+
+# --------------------------------------------------------------------------
+# Parent accounts: invites, deletion, password change. See services/
+# parent_auth.py for the underlying invite/session logic and
+# api/parent_auth.py's GET/POST /invite/{token} for the redemption page.
+# --------------------------------------------------------------------------
+
+
+@router.post("/parent-invites", status_code=status.HTTP_201_CREATED)
+async def create_parent_invite(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    token = await create_invite(session, created_by_parent_id=parent.id)
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="parent.invite_created",
+        ip=_client_ip(request),
+    )
+    await session.commit()
+    invite_url = f"{str(request.base_url).rstrip('/')}/invite/{token}"
+    return {"token": token, "url": invite_url}
+
+
+@router.get("/parents")
+async def list_parents(
+    session: AsyncSession = Depends(get_session), parent: Parent = Depends(get_current_parent_api)
+) -> list[dict]:
+    result = await session.execute(select(Parent))
+    return [
+        {"id": str(p.id), "email": p.email, "created_at": p.created_at.isoformat(), "you": p.id == parent.id}
+        for p in result.scalars().all()
+    ]
+
+
+@router.delete("/parents/{parent_id}")
+async def delete_parent(
+    parent_id: uuid.UUID,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    """The last remaining parent can never be deleted -- including
+    themselves -- since that would permanently lock the hub's own admin UI
+    (there is no other way back in; /setup only ever fires once)."""
+    if await count_parents(session) <= 1:
+        raise HTTPException(status.HTTP_409_CONFLICT, "cannot delete the last remaining parent account")
+    result = await session.execute(select(Parent).where(Parent.id == parent_id))
+    target = result.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown parent")
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="parent.deleted",
+        target_type="parent",
+        target_id=str(target.id),
+        before={"email": target.email},
+        ip=_client_ip(request),
+    )
+    await session.delete(target)
+    await session.commit()
+    return {"id": str(parent_id), "status": "deleted"}
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
+@router.post("/parent/password")
+async def change_own_password(
+    request: Request,
+    body: PasswordChange,
+    session: AsyncSession = Depends(get_session),
+    parent: Parent = Depends(get_current_parent_api),
+) -> dict:
+    if not verify_password(body.current_password, parent.password_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "current password is incorrect")
+    change_password(parent=parent, new_password=body.new_password)
+    token = request.cookies.get("tkh_session", "")
+    await delete_other_sessions(session, parent_id=parent.id, keep_token=token)
+    await record_audit_event(
+        session,
+        actor_type="parent",
+        actor_id=str(parent.id),
+        action="parent.password_changed",
+        target_type="parent",
+        target_id=str(parent.id),
+        ip=_client_ip(request),
+    )
+    await session.commit()
+    return {"status": "ok"}

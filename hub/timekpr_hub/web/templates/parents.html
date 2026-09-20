@@ -1,0 +1,35 @@
+{% extends "_base.html" %}
+{% block title %}Parents -- timekpr-next-hub{% endblock %}
+{% block content %}
+  <div class="topbar">
+    <h1>Parent accounts</h1>
+    <a class="button-link" href="/">&larr; Back</a>
+  </div>
+
+  <div class="card">
+    <p class="card-title">Accounts</p>
+    <div id="parents-list">
+      {% include "_parents_fragment.html" %}
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="card-title">Invite another parent</p>
+    <form data-post="/ui/parent-invites" data-target="#invite-result" data-swap="innerHTML">
+      <button type="submit">Generate invite link</button>
+    </form>
+    <div id="invite-result"></div>
+  </div>
+
+  <div class="card">
+    <p class="card-title">Change your password</p>
+    <form data-post="/ui/parent/password" data-target="#password-result" data-swap="innerHTML" class="form-narrow">
+      <label for="current_password">Current password</label>
+      <input type="password" id="current_password" name="current_password" required>
+      <label for="new_password">New password (at least 8 characters)</label>
+      <input type="password" id="new_password" name="new_password" minlength="8" required>
+      <button type="submit">Change password</button>
+    </form>
+    <div id="password-result"></div>
+  </div>
+{% endblock %}

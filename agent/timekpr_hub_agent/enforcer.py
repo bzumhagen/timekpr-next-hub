@@ -45,8 +45,8 @@ class TimekprEnforcer:
     """
 
     def __init__(self) -> None:
-        # Deferred rather than a module-level import: main.py needs to be
-        # importable (for `status`, tests, and CI) without timekpr-next
+        # Deferred rather than a module-level import: this module needs to
+        # be importable (for `status`, tests, and CI) without timekpr-next
         # actually being installed, and a bare ImportError here would be a
         # confusing traceback instead of TimekprNotFoundError's actionable
         # message (which names exactly where it looked).
@@ -114,7 +114,7 @@ class TimekprEnforcer:
             limit_today_s=limit_today,
             logged_in=logged_in,
             # `active` here is retained only as "is there a session at all" --
-            # main.py's run_tick derives the actual draining/idle distinction
+            # tick.py's run_tick derives the actual draining/idle distinction
             # from the tick-over-tick burn delta, which is ground truth (it's
             # literally what moved the counter), rather than from timekpr's
             # own idle hint (which would require a second DBUS field and

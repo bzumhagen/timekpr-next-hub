@@ -180,12 +180,11 @@ async def test_wallclock_floor_self_heals_a_union_that_lost_spans_to_an_outage(d
     """global_spent_wallclock must never read BELOW a single device's own
     absolute counter -- that counter is idempotently MAX-merged and can
     only be an honest floor. This is what makes the hub UI self-heal
-    minutes an outage would otherwise permanently erase from the union
-    (docs/agent-live-test-findings.md-style live discrepancy): the device's
-    cumulative_spent_s reflects everything it ever burned, even ticks whose
-    active_spans never made it to the hub before a later successful sync
-    replays them (main.py's pending_spans) -- and even before that replay
-    lands, this floor already reports the true total."""
+    minutes an outage would otherwise permanently erase from the union: the
+    device's cumulative_spent_s reflects everything it ever burned, even
+    ticks whose active_spans never made it to the hub before a later
+    successful sync replays them (tick.py's pending_spans) -- and even
+    before that replay lands, this floor already reports the true total."""
     user_id, (dev_a,) = await _make_user_and_devices(db_session, n_devices=1)
     today = date(2026, 9, 9)
 

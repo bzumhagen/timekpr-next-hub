@@ -67,15 +67,12 @@ async def sync(
         device.last_seen_at = now
         device.last_sync_at = now
         device.agent_version = req.agent_version
-        # Both operands are the same instant, one measured by the agent's
-        # clock and one by the hub's -- their difference is how far the
-        # device's clock has drifted. This matters beyond diagnostics:
-        # activity spans are timestamped entirely from the agent's own
-        # clock (main.py) and inserted into activity_intervals verbatim, so
-        # a skewed device's spans land at the wrong wall-clock position
-        # relative to every other device's -- simultaneous use on two
-        # devices can then fail to overlap in the union query, and "burn
-        # once" silently becomes "burn twice".
+        # Same instant, measured by the agent's clock vs the hub's -- the
+        # difference matters beyond diagnostics: activity spans are
+        # timestamped entirely from the agent's own clock (tick.py) and
+        # inserted verbatim, so a skewed device's spans land at the wrong
+        # wall-clock position and can fail to overlap another device's in
+        # the union query -- "burn once" silently becomes "burn twice".
         device.clock_skew_ms = round((now - datetime.fromisoformat(req.agent_time)).total_seconds() * 1000)
 
     user_responses: list[SyncUserResponse] = []
@@ -90,13 +87,10 @@ async def sync(
         if alias is None:
             # A local username this device hasn't reported before -- e.g. a
             # second local account added to the agent's managed list after
-            # enrollment. The device's own bearer token is exactly the
-            # authorization enroll's `local_users` already relies on, so
-            # provisioning here rather than staying observe-only forever
-            # means adding a user to an enrolled machine needs no
-            # revoke/re-enroll round trip; the very same sync then falls
-            # through to full enforcement below rather than needing a
-            # second tick.
+            # enrollment. Provisioning here (the device's bearer token is
+            # exactly enroll's own `local_users` authorization) means
+            # adding a user needs no revoke/re-enroll round trip; this same
+            # sync falls through to full enforcement below.
             user, policy, _ = await provision_user_alias(
                 session, device_id=device.id, local_username=user_sync.username
             )
@@ -121,9 +115,9 @@ async def sync(
         for span in user_sync.active_spans:
             # Each span is inserted independently and idempotently on
             # (device_id, window_end_ts) -- normally exactly one (this
-            # tick's), but replayed buffered spans from an outage the agent
-            # couldn't reach the hub with (main.py's pending_spans) land here
-            # too, and re-inserting an already-recorded one is a no-op.
+            # tick's), but replayed buffered spans from an outage
+            # (tick.py's pending_spans) land here too, and re-inserting an
+            # already-recorded one is a no-op.
             start = datetime.fromisoformat(span.start)
             end = datetime.fromisoformat(span.end)
             if end <= start:
@@ -165,18 +159,13 @@ async def sync(
 
         enforcement = EnforcementMode.OBSERVE if device.enforcement == "observe" else EnforcementMode.ENFORCE
 
-        # Two branches, gated on whether THIS agent has ever echoed a
-        # `policy_revision_applied` at all (see that field's docstring in
-        # core/timekpr_hub_core/models.py). A legacy agent only ever reports
-        # back the int policy version, so it must be served the standing
-        # payload and gated on that version alone -- exactly today's
-        # behavior -- because it can never be told to revert a one-day
-        # hours override (an expiring override does not change
-        # `policy.version`). Any agent that HAS reported a revision (even
-        # an empty one, on its very first tick) gets the effective payload
-        # -- standing policy plus today's hours override, if any -- gated
-        # on the revision, which changes exactly when what belongs on the
-        # device changes (see timekpr_hub_core.effective_policy).
+        # Gated on whether THIS agent has ever echoed `policy_revision_applied`
+        # (see that field's docstring). A legacy agent only reports the int
+        # version, so it's served the standing payload gated on that alone
+        # -- it can never be told to revert an expiring hours override.
+        # Any agent that HAS reported a revision gets the effective payload
+        # (standing policy + today's hours override, if any), gated on the
+        # revision (see timekpr_hub_core.effective_policy).
         payload, revision = await effective_policy_payload(
             session,
             policy=policy,

@@ -42,7 +42,7 @@ class UserState:
     last_global_spent_s: int = 0
     last_hub_contact_utc: float = 0.0
     # This user's offline policy as of the last successful sync (see
-    # User.offline_policy/offline_grace_s/offline_cap_s and main.py's
+    # User.offline_policy/offline_grace_s/offline_cap_s and tick.py's
     # _apply_offline_policy) -- cached the same way as the two fields above,
     # since an outage is exactly when there's no fresher answer to use.
     last_offline_policy: str = "capped"
@@ -50,7 +50,7 @@ class UserState:
     last_offline_cap_s: int = 1800
     # cum_local_s at the moment of last_hub_contact_utc -- lets offline
     # enforcement credit local activity since contact without ever
-    # refunding it (see main.py's _apply_offline_policy).
+    # refunding it (see tick.py's _apply_offline_policy).
     cum_local_at_contact_s: int = 0
 
     # Wall-clock end of the last tick's active_span (epoch seconds), so the
@@ -77,7 +77,7 @@ class AgentState:
     # Cached from the hub's last EnrollResponse/SyncResponse. The household
     # timezone lives on the hub (HUB_TZ), not on this device -- this is what
     # lets the agent compute its own canonical-day rollover correctly
-    # (main.py's _canonical_day_str) both online and, using the cached
+    # (tick.py's _canonical_day_str) both online and, using the cached
     # value, while offline. Empty until the first successful sync.
     hub_tz: str = ""
 

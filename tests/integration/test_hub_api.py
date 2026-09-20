@@ -935,7 +935,7 @@ async def test_login_with_wrong_password_is_rejected(unauthenticated_client):
 async def test_sync_reports_this_users_offline_policy_settings(client):
     """SyncUserResponse.offline_policy/offline_grace_s/offline_cap_s must
     reflect PUT .../settings, not the hardcoded 'capped'/900/1800 defaults
-    -- see agent/main.py's _apply_offline_policy, which now reads these
+    -- see agent/tick.py's _apply_offline_policy, which now reads these
     off the response instead of a literal."""
     await _seed_user("offlinesync")
     await client.put(

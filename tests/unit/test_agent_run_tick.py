@@ -434,7 +434,7 @@ def test_policy_revision_is_echoed_only_after_a_successful_push():
     """See `SyncUserRequest.policy_revision_applied`'s docstring: both the
     int version and the revision only advance together, on success -- a
     push that never reaches DBUS must not be silently marked applied
-    (the exact bug main.py:262's comment records having fixed for the int)."""
+    (the exact bug tick.py's run_tick comment records having fixed for the int)."""
     daemon = FakeTimekprDaemon(limit_today_s=3600)
     enforcer = FakeEnforcer({"alice": daemon})
     state = state_mod.AgentState()

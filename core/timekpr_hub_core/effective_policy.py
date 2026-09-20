@@ -36,9 +36,7 @@ import hashlib
 import json
 
 from timekpr_hub_core.allowed_hours import intervals_to_hours, unrestricted
-from timekpr_hub_core.models import AllowedHourInterval, PolicyPayload
-
-_ALL_WEEKDAYS = ["1", "2", "3", "4", "5", "6", "7"]
+from timekpr_hub_core.models import WEEKDAY_TOKENS, AllowedHourInterval, PolicyPayload
 
 
 def _unrestricted_wire_intervals() -> list[AllowedHourInterval]:
@@ -64,7 +62,7 @@ def materialize_allowed_hours(
     forever on a policy whose `allowed_hours_json` is `{}`, the standard
     default for a policy nobody has edited)."""
     unrestricted_wire = _unrestricted_wire_intervals()
-    return {day: list(allowed_hours.get(day) or unrestricted_wire) for day in _ALL_WEEKDAYS}
+    return {day: list(allowed_hours.get(day) or unrestricted_wire) for day in WEEKDAY_TOKENS}
 
 
 def with_day_hour_override(
@@ -82,7 +80,7 @@ def with_day_hour_override(
     check `allowed_weekdays` themselves; this function only guarantees it
     never takes effect."""
     materialized = materialize_allowed_hours(payload.allowed_hours)
-    if weekday in (payload.allowed_weekdays or _ALL_WEEKDAYS):
+    if weekday in (payload.allowed_weekdays or WEEKDAY_TOKENS):
         materialized = {**materialized, weekday: list(intervals)}
     return payload.model_copy(update={"allowed_hours": materialized})
 

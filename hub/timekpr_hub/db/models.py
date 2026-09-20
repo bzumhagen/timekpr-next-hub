@@ -29,6 +29,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSTZRANGE, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql import func
+from timekpr_hub_core.models import WEEKDAY_TOKENS
 
 
 class Base(DeclarativeBase):
@@ -235,7 +236,7 @@ class Policy(Base):
         Boolean, nullable=False, default=True, server_default="true"
     )
     playtime_allowed_weekdays_json: Mapped[list] = mapped_column(
-        JSONB, nullable=False, default=lambda: ["1", "2", "3", "4", "5", "6", "7"]
+        JSONB, nullable=False, default=lambda: list(WEEKDAY_TOKENS)
     )
     playtime_daily_limits_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=lambda: [0] * 7)
     playtime_activities_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

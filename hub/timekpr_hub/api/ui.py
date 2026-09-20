@@ -35,6 +35,7 @@ from timekpr_hub_core.allowed_hours import (
 )
 from timekpr_hub_core.calendar import canonical_stamp
 from timekpr_hub_core.models import (
+    WEEKDAY_TOKENS,
     AllowedHourInterval,
     LockoutType,
     PlayTimeActivity,
@@ -66,7 +67,7 @@ from timekpr_hub.settings import settings
 
 router = APIRouter()
 
-_WEEKDAY_TOKENS = ["1", "2", "3", "4", "5", "6", "7"]
+_WEEKDAY_TOKENS = WEEKDAY_TOKENS
 _WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # (value, short label, one-line consequence), ordered least to most

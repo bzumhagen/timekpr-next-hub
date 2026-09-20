@@ -24,6 +24,7 @@ from timekpr_hub_core.allowed_hours import (
 from timekpr_hub_core.allowed_hours import validate_intervals as _validate_intervals
 from timekpr_hub_core.calendar import canonical_stamp
 from timekpr_hub_core.models import (
+    WEEKDAY_TOKENS,
     AllowedHourInterval,
     DayHourOverrideCreate,
     DayOverrideCreate,
@@ -254,15 +255,7 @@ async def set_user_day_hour_override(
 
     day = date.fromisoformat(body.day)
     policy = await get_current_policy(session, user)
-    allowed_weekdays = (policy.allowed_weekdays_json if policy else None) or [
-        "1",
-        "2",
-        "3",
-        "4",
-        "5",
-        "6",
-        "7",
-    ]
+    allowed_weekdays = (policy.allowed_weekdays_json if policy else None) or WEEKDAY_TOKENS
     if str(day.isoweekday()) not in allowed_weekdays:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,

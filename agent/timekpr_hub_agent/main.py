@@ -419,7 +419,11 @@ def _apply_convergence(*, enforcer, username, obs, target, user_state, force_abs
         user_state.applied_offset_s = result.new_applied_offset_s
 
 
-_ALL_WEEKDAYS = ["1", "2", "3", "4", "5", "6", "7"]
+# Not imported from timekpr_hub_core.models.WEEKDAY_TOKENS: the agent
+# deliberately never imports that module (see agent/pyproject.toml -- it
+# pulls in pydantic, which nothing here needs). A tuple, not a list, since
+# this is handed straight to callers below.
+_ALL_WEEKDAYS: tuple[str, ...] = ("1", "2", "3", "4", "5", "6", "7")
 
 
 def _project_daily_limits_to_allowed_days(daily_limits: list[int], allowed_weekdays: list[str]) -> list[int]:
@@ -469,7 +473,7 @@ def _apply_policy_push(enforcer: TimekprEnforcer, username: str, policy: dict) -
             ok = False
         return success
 
-    allowed_weekdays = policy.get("allowed_weekdays") or _ALL_WEEKDAYS
+    allowed_weekdays = policy.get("allowed_weekdays") or list(_ALL_WEEKDAYS)
     _step("setAllowedDays", enforcer.set_allowed_days(username, allowed_weekdays))
     _step(
         "setTimeLimitForDays",
@@ -539,7 +543,7 @@ def _apply_playtime(
             username, bool(playtime.get("unaccounted_intervals_enabled", True))
         ),
     )
-    pt_weekdays = playtime.get("allowed_weekdays") or _ALL_WEEKDAYS
+    pt_weekdays = playtime.get("allowed_weekdays") or list(_ALL_WEEKDAYS)
     step("setPlayTimeAllowedDays", enforcer.set_playtime_allowed_days(username, pt_weekdays))
     pt_daily_limits = [int(x) for x in (playtime.get("daily_limits_s") or [0] * 7)]
     step(

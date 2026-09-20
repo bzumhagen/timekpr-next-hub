@@ -15,6 +15,7 @@ from timekpr_hub_core.effective_policy import (
     with_day_hour_override,
 )
 from timekpr_hub_core.models import (
+    WEEKDAY_TOKENS,
     AllowedHourInterval,
     PlayTimeActivity,
     PlayTimePayload,
@@ -92,7 +93,7 @@ async def create_initial_policy(
         created_by="system_default" if daily_limits_s is None else "seeded_from_device",
         daily_limits_json=limits,
         allowed_hours_json={},
-        allowed_weekdays_json=allowed_weekdays or ["1", "2", "3", "4", "5", "6", "7"],
+        allowed_weekdays_json=allowed_weekdays or list(WEEKDAY_TOKENS),
         weekly_limit_s=weekly_limit_s if weekly_limit_s is not None else sum(limits),
         monthly_limit_s=monthly_limit_s if monthly_limit_s is not None else sum(limits) * 5,
         lockout_type="lock",

@@ -11,6 +11,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# ISO weekday tokens, "1" (Monday) through "7" (Sunday) -- the single source
+# of truth for the string keys used everywhere a weekday is wire-encoded
+# (allowed_weekdays, gated_weekdays, allowed_hours' per-day keys).
+WEEKDAY_TOKENS: tuple[str, ...] = ("1", "2", "3", "4", "5", "6", "7")
+_WEEKDAY_TOKEN_SET = frozenset(WEEKDAY_TOKENS)
+
 
 class EnforcementMode(str, Enum):
     ENFORCE = "enforce"
@@ -247,7 +253,7 @@ class PlayTimePayload(BaseModel):
     unaccounted_intervals_enabled: bool = True
     """Whether PlayTime activities may run (and count toward PlayTime) during
     an unaccounted ("!") hour; if false they're killed outright during one."""
-    allowed_weekdays: list[str] = Field(default_factory=lambda: ["1", "2", "3", "4", "5", "6", "7"])
+    allowed_weekdays: list[str] = Field(default_factory=lambda: list(WEEKDAY_TOKENS))
     daily_limits_s: list[int] = Field(min_length=7, max_length=7, default_factory=lambda: [0] * 7)
     activities: list[PlayTimeActivity] = Field(default_factory=list)
 
@@ -368,7 +374,7 @@ class UserSettingsUpdate(BaseModel):
     @field_validator("gated_weekdays")
     @classmethod
     def _valid_weekday_tokens(cls, value: list[str]) -> list[str]:
-        if any(v not in {"1", "2", "3", "4", "5", "6", "7"} for v in value):
+        if any(v not in _WEEKDAY_TOKEN_SET for v in value):
             raise ValueError("gated_weekdays entries must be '1'..'7' (Mon..Sun)")
         return value
 
@@ -410,7 +416,7 @@ class PolicyUpdate(BaseModel):
     daily_limits_s: list[int] = Field(min_length=7, max_length=7)
     weekly_limit_s: int = Field(ge=0, le=7 * 86400)
     monthly_limit_s: int = Field(ge=0, le=31 * 86400)
-    allowed_weekdays: list[str] = Field(default_factory=lambda: ["1", "2", "3", "4", "5", "6", "7"])
+    allowed_weekdays: list[str] = Field(default_factory=lambda: list(WEEKDAY_TOKENS))
     allowed_hours: dict[str, list[AllowedHourInterval]] = Field(default_factory=dict)
     lockout_type: LockoutType = LockoutType.LOCK
     wake_from: str | None = Field(default=None, pattern=r"^([01]?[0-9]|2[0-3])$")
@@ -430,6 +436,6 @@ class PolicyUpdate(BaseModel):
     @field_validator("allowed_weekdays")
     @classmethod
     def _valid_weekday_tokens(cls, value: list[str]) -> list[str]:
-        if any(v not in {"1", "2", "3", "4", "5", "6", "7"} for v in value):
+        if any(v not in _WEEKDAY_TOKEN_SET for v in value):
             raise ValueError("allowed_weekdays entries must be '1'..'7' (Mon..Sun)")
         return value

@@ -13,9 +13,8 @@ from timekpr_hub_core.effective_policy import (
     policy_revision,
     with_day_hour_override,
 )
-from timekpr_hub_core.models import AllowedHourInterval, PolicyPayload
+from timekpr_hub_core.models import WEEKDAY_TOKENS, AllowedHourInterval, PolicyPayload
 
-_ALL_WEEKDAYS = ["1", "2", "3", "4", "5", "6", "7"]
 _UNRESTRICTED_WIRE = [
     AllowedHourInterval(hour=r.hour, start_min=r.start_min, end_min=r.end_min)
     for r in intervals_to_hours(unrestricted())
@@ -37,8 +36,8 @@ def _window(from_min: int, to_min: int) -> list[AllowedHourInterval]:
 
 def test_materialize_fills_all_seven_keys_from_empty():
     materialized = materialize_allowed_hours({})
-    assert sorted(materialized.keys()) == _ALL_WEEKDAYS
-    for day in _ALL_WEEKDAYS:
+    assert sorted(materialized.keys()) == list(WEEKDAY_TOKENS)
+    for day in WEEKDAY_TOKENS:
         # None of the 24 hourly records may be empty -- an absent/empty hour
         # means "forbidden" to timekpr, not "allowed" (the lockout trap this
         # function exists to prevent).
@@ -48,7 +47,7 @@ def test_materialize_fills_all_seven_keys_from_empty():
 
 
 def test_materializing_an_already_complete_dict_is_the_identity():
-    complete = {day: _UNRESTRICTED_WIRE for day in _ALL_WEEKDAYS}
+    complete = {day: _UNRESTRICTED_WIRE for day in WEEKDAY_TOKENS}
     materialized = materialize_allowed_hours(complete)
     assert materialized == complete
 
@@ -57,7 +56,7 @@ def test_materialize_only_fills_absent_days_leaves_present_ones_alone():
     window = _window(12 * 60, 20 * 60)
     materialized = materialize_allowed_hours({"3": window})
     assert materialized["3"] == window
-    for day in _ALL_WEEKDAYS:
+    for day in WEEKDAY_TOKENS:
         if day != "3":
             assert materialized[day] == _UNRESTRICTED_WIRE
 
@@ -67,7 +66,7 @@ def test_with_day_hour_override_replaces_exactly_one_key():
     window = _window(12 * 60, 20 * 60)
     result = with_day_hour_override(payload, weekday="3", intervals=window)
     assert result.allowed_hours["3"] == window
-    for day in _ALL_WEEKDAYS:
+    for day in WEEKDAY_TOKENS:
         if day != "3":
             assert result.allowed_hours[day] == _UNRESTRICTED_WIRE
 

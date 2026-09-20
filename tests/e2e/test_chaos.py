@@ -12,7 +12,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from timekpr_hub_agent.fake_timekpr import FakeTimekprDaemon
 from timekpr_hub_agent.main import run_tick
 
 from tests.e2e.harness import (
@@ -23,6 +22,7 @@ from tests.e2e.harness import (
     enroll_device,
     tick_device,
 )
+from tests.fakes.fake_timekpr import FakeTimekprDaemon
 
 # `live_hub` (used as a parameter below) is a fixture from tests/e2e/conftest.py --
 # pytest injects it by name, no import needed or wanted here (see that file).

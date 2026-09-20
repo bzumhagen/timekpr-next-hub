@@ -9,7 +9,7 @@ fake_timekpr.py can't silently drift from reality without a red test.
 
 from __future__ import annotations
 
-from timekpr_hub_agent.fake_timekpr import FakeTimekprDaemon
+from tests.fakes.fake_timekpr import FakeTimekprDaemon
 
 
 def test_relative_ops_never_touch_spent_counters():

@@ -8,14 +8,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-from timekpr_hub_core.calendar import (
-    canonical_stamp,
-    day_changed,
-    days_in_iso_week,
-    month_bounds,
-    month_changed,
-    week_changed,
-)
+from timekpr_hub_core.calendar import canonical_stamp, days_in_iso_week, month_bounds
 
 TZ = ZoneInfo("America/Denver")
 
@@ -47,26 +40,6 @@ def test_iso_week_boundary_end_of_year():
     dt = datetime(2025, 12, 28, 12, 0, 0, tzinfo=TZ)
     stamp = canonical_stamp(dt, TZ)
     assert stamp.iso_week_str == "2025-W52"
-
-
-def test_day_changed():
-    assert day_changed(date(2026, 9, 9), date(2026, 9, 10)) is True
-    assert day_changed(date(2026, 9, 9), date(2026, 9, 9)) is False
-
-
-def test_week_changed_crosses_sunday_to_monday():
-    # 2026-09-13 is a Sunday, 2026-09-14 is the following Monday -> new ISO week.
-    assert week_changed(date(2026, 9, 13), date(2026, 9, 14)) is True
-    assert week_changed(date(2026, 9, 9), date(2026, 9, 10)) is False
-
-
-def test_week_changed_at_iso_year_boundary():
-    assert week_changed(date(2025, 12, 28), date(2025, 12, 29)) is True
-
-
-def test_month_changed():
-    assert month_changed(date(2026, 9, 30), date(2026, 10, 1)) is True
-    assert month_changed(date(2026, 9, 1), date(2026, 9, 30)) is False
 
 
 def test_days_in_iso_week_starts_monday():

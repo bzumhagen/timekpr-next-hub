@@ -64,20 +64,6 @@ def canonical_stamp(instant: datetime, tz: ZoneInfo) -> CanonicalStamp:
     )
 
 
-def day_changed(prev: date, curr: date) -> bool:
-    return prev != curr
-
-
-def week_changed(prev: date, curr: date) -> bool:
-    py, pw, _ = prev.isocalendar()
-    cy, cw, _ = curr.isocalendar()
-    return (py, pw) != (cy, cw)
-
-
-def month_changed(prev: date, curr: date) -> bool:
-    return (prev.year, prev.month) != (curr.year, curr.month)
-
-
 def days_in_iso_week(any_day_in_week: date) -> list[date]:
     """Return the 7 calendar dates (Mon..Sun) of the ISO week containing ``any_day_in_week``."""
     monday = any_day_in_week - timedelta(days=any_day_in_week.isoweekday() - 1)

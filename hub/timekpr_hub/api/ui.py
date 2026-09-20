@@ -760,7 +760,7 @@ def _parse_day_hours(form, day: str) -> list[AllowedHourInterval]:
         records = intervals_to_hours([interval])
         return [AllowedHourInterval(hour=r.hour, start_min=r.start_min, end_min=r.end_min) for r in records]
 
-    # mode == "custom"
+    # Remaining case: mode == "custom".
     checked_hours = sorted(h for h in range(24) if _checkbox(form, f"hh_{day}_{h}"))
     if not checked_hours:
         raise HTTPException(

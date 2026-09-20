@@ -12,11 +12,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from timekpr_hub_agent import state as state_mod
-from timekpr_hub_agent.fake_timekpr import FakeTimekprDaemon
 from timekpr_hub_agent.hubclient import DeviceRevokedError, HubUnreachableError
 from timekpr_hub_agent.main import DEFAULT_OFFLINE_CAP_S, DEFAULT_OFFLINE_GRACE_S, run_tick
 
 from tests.e2e.harness import FakeEnforcer
+from tests.fakes.fake_timekpr import FakeTimekprDaemon
 
 
 class ScriptedHub:

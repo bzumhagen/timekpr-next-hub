@@ -326,20 +326,3 @@ async def devices_active_today_batch(
     for row in result:
         by_user.setdefault(row.user_id, []).append(row.name)
     return by_user
-
-
-async def device_spent_today(
-    session: AsyncSession, *, user_id: uuid.UUID, device_id: uuid.UUID, day: date
-) -> int:
-    """This device's own MAX-merged counter for one day."""
-    result = await session.execute(
-        text(
-            """
-            SELECT COALESCE(spent_seconds, 0) FROM usage_counters
-            WHERE user_id = :user_id AND device_id = :device_id AND day = :day
-            """
-        ),
-        {"user_id": user_id, "device_id": device_id, "day": day},
-    )
-    row = result.first()
-    return int(row[0]) if row else 0

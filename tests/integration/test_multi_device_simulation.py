@@ -7,8 +7,8 @@ bound:
 
 This is deliberately independent of any real database or HTTP -- it exercises
 exactly the arithmetic in `timekpr_hub_core.convergence` against
-`FakeTimekprDaemon`, which is what "simulate 3 devices x 30 days ... in under
-a second" (PLAN) actually looks like in code.
+`FakeTimekprDaemon`, simulating 3 devices x 30 days of realistic user
+behavior in under a second.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from timekpr_hub_agent.fake_timekpr import FakeTimekprDaemon
 from timekpr_hub_core.convergence import (
     ConvergenceConfig,
     CumulativeState,
@@ -25,6 +24,8 @@ from timekpr_hub_core.convergence import (
     Op,
     advance_cumulative,
 )
+
+from tests.fakes.fake_timekpr import FakeTimekprDaemon
 
 CFG = ConvergenceConfig()
 

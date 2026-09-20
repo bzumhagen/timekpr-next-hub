@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from timekpr_hub_agent.fake_timekpr import FakeTimekprDaemon
 from timekpr_hub_agent.main import _apply_policy_push, _project_daily_limits_to_allowed_days
 
 from tests.e2e.harness import FakeEnforcer
+from tests.fakes.fake_timekpr import FakeTimekprDaemon
 
 _FULL_POLICY = {
     "daily_limits_s": [100, 200, 300, 400, 500, 600, 700],

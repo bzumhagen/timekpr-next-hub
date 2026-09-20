@@ -47,11 +47,11 @@ from timekpr_hub.db.models import Admin, User
 from timekpr_hub.db.session import engine as hub_engine
 from timekpr_hub_agent import state as state_mod
 from timekpr_hub_agent.enforcer import UserObservation
-from timekpr_hub_agent.fake_timekpr import FakeTimekprDaemon
 from timekpr_hub_agent.hubclient import HubClient, HubClientConfig, HubUnreachableError
 from timekpr_hub_agent.main import run_tick
 
 from tests.dbutil import TEST_DATABASE_URL, require_db
+from tests.fakes.fake_timekpr import FakeTimekprDaemon
 
 _T = TypeVar("_T")
 

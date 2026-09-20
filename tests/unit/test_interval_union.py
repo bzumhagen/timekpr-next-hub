@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from timekpr_hub_core.interval_union import Span, snap_to_grid, union_seconds, union_seconds_bruteforce
+from timekpr_hub_core.interval_union import Span, union_seconds, union_seconds_bruteforce
 
 
 @st.composite
@@ -54,15 +54,3 @@ def test_wallclock_two_devices_sequential_consumes_sum():
     device_a = Span(0, 1800)
     device_b = Span(1800, 3600)
     assert union_seconds([device_a, device_b]) == 3600
-
-
-@given(t=st.integers(min_value=0, max_value=10_000_000), grid=st.integers(min_value=1, max_value=60))
-def test_snap_to_grid_never_moves_forward(t, grid):
-    assert snap_to_grid(t, grid) <= t
-
-
-@given(t=st.integers(min_value=0, max_value=10_000_000), grid=st.integers(min_value=1, max_value=60))
-def test_snap_to_grid_is_idempotent(t, grid):
-    once = snap_to_grid(t, grid)
-    twice = snap_to_grid(once, grid)
-    assert once == twice

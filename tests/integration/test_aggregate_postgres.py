@@ -19,7 +19,6 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from timekpr_hub.services.aggregate import (
-    device_spent_today,
     devices_active_today_batch,
     global_spent_parallel,
     global_spent_parallel_batch,
@@ -56,6 +55,24 @@ async def db_session():
     await engine.dispose()
 
 
+async def _device_spent_today(
+    session: AsyncSession, *, user_id: uuid.UUID, device_id: uuid.UUID, day: date
+) -> int:
+    """Read back one device's own MAX-merged counter -- no production
+    caller reads a single device's counter in isolation (global_spent_*
+    is what production code needs), so this exists only to assert on
+    upsert_usage_counter's idempotent-merge behavior below."""
+    result = await session.execute(
+        text(
+            "SELECT COALESCE(spent_seconds, 0) FROM usage_counters "
+            "WHERE user_id = :u AND device_id = :d AND day = :day"
+        ),
+        {"u": user_id, "d": device_id, "day": day},
+    )
+    row = result.first()
+    return int(row[0]) if row else 0
+
+
 async def _make_user_and_devices(session: AsyncSession, n_devices: int = 2):
     user_id = uuid.uuid4()
     await session.execute(
@@ -90,22 +107,22 @@ async def test_usage_counter_max_merge_is_idempotent(db_session):
 
     await upsert_usage_counter(db_session, user_id=user_id, device_id=device_id, day=today, spent_seconds=100)
     await db_session.commit()
-    assert await device_spent_today(db_session, user_id=user_id, device_id=device_id, day=today) == 100
+    assert await _device_spent_today(db_session, user_id=user_id, device_id=device_id, day=today) == 100
 
     # replay the same value -- must be a no-op
     await upsert_usage_counter(db_session, user_id=user_id, device_id=device_id, day=today, spent_seconds=100)
     await db_session.commit()
-    assert await device_spent_today(db_session, user_id=user_id, device_id=device_id, day=today) == 100
+    assert await _device_spent_today(db_session, user_id=user_id, device_id=device_id, day=today) == 100
 
     # an older/lower value arriving out of order must NOT decrease the counter
     await upsert_usage_counter(db_session, user_id=user_id, device_id=device_id, day=today, spent_seconds=40)
     await db_session.commit()
-    assert await device_spent_today(db_session, user_id=user_id, device_id=device_id, day=today) == 100
+    assert await _device_spent_today(db_session, user_id=user_id, device_id=device_id, day=today) == 100
 
     # a genuinely larger value does advance it
     await upsert_usage_counter(db_session, user_id=user_id, device_id=device_id, day=today, spent_seconds=250)
     await db_session.commit()
-    assert await device_spent_today(db_session, user_id=user_id, device_id=device_id, day=today) == 250
+    assert await _device_spent_today(db_session, user_id=user_id, device_id=device_id, day=today) == 250
 
 
 @pytest.mark.asyncio

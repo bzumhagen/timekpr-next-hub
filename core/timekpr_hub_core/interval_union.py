@@ -6,11 +6,10 @@ counters can't express that on their own, so each agent tick also reports
 the wall-clock span it covered, and the hub computes the *union* of all
 devices' spans for the day.
 
-In production this union is computed by Postgres 14+'s ``range_agg``, for
-performance at scale. This module is the pure-Python reference
-implementation: it is used directly by the hub's aggregation layer when
-Postgres range types aren't available, and by tests that check the SQL
-query against ground truth without spinning up Postgres.
+In production this union is computed by Postgres 14+'s ``range_agg``
+(hub/timekpr_hub/services/aggregate.py). This module is the pure-Python
+reference implementation, used by tests to check that SQL query against
+ground truth via Hypothesis property testing.
 """
 
 from __future__ import annotations
@@ -65,21 +64,3 @@ def union_seconds_bruteforce(spans: list[Span]) -> int:
     for span in spans:
         covered.update(range(span.start_s, span.end_s))
     return len(covered)
-
-
-def snap_to_grid(timestamp_s: int, grid_s: int = 5) -> int:
-    """Snap a timestamp down to a canonical grid.
-
-    Both endpoints are snapped to a 5-second grid in canonical time, so
-    near-simultaneous activity on two devices reliably overlaps instead of
-    leaving a sliver gap. Two devices reporting spans independently will
-    have start/end timestamps that differ by a second or two (tick jitter,
-    small clock skew); snapping every endpoint to the *same* grid means spans
-    that are "morally" adjacent or overlapping land on identical or
-    neighbouring grid points instead of missing each other by a sliver, so
-    ``union_seconds`` merges them instead of reporting a false micro-gap.
-    Always snapping down (never rounding to nearest) keeps the direction of
-    the small resulting error consistent and easy to reason about: each
-    endpoint moves at most ``grid_s`` seconds earlier than reality.
-    """
-    return (timestamp_s // grid_s) * grid_s

@@ -18,11 +18,9 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +43,7 @@ from timekpr_hub_core.models import (
 )
 
 from timekpr_hub.api.admin_auth import get_current_admin_ui
+from timekpr_hub.api.util import client_ip, get_user_or_404, templates
 from timekpr_hub.db.models import Admin, Device, Grant, User
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.audit import list_audit_events, record_audit_event
@@ -66,7 +65,6 @@ from timekpr_hub.services.summaries import compute_usage_history, compute_user_s
 from timekpr_hub.settings import settings
 
 router = APIRouter()
-templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "web" / "templates"))
 
 _WEEKDAY_TOKENS = ["1", "2", "3", "4", "5", "6", "7"]
 _WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -82,10 +80,6 @@ _LOCKOUT_OPTIONS = [
     ("shutdown", "Shut the computer down", "A full power-off, not just a suspend"),
     ("kill", "Force-kill the session", "Last resort -- nothing is saved"),
 ]
-
-
-def _client_ip(request: Request) -> str | None:
-    return request.client.host if request.client else None
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -240,7 +234,7 @@ async def grant_from_ui(
             target_type="user",
             target_id=username,
             after={"seconds": grant.seconds, "day": grant_day.isoformat(), "reason": grant.reason},
-            ip=_client_ip(request),
+            ip=client_ip(request),
         )
         await session.commit()
 
@@ -272,7 +266,7 @@ async def set_day_override_ui(
     sets the h/m pair instead. Either way this REPLACES that date's base
     limit rather than adding to it -- see services/limits.py::DayOverride's
     docstring for why that's not just a large negative grant."""
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     override_day = date.fromisoformat(day)
     limit_seconds = 0 if mode == "none" else limit_h * 3600 + limit_m * 60
 
@@ -292,7 +286,7 @@ async def set_day_override_ui(
         target_type="user",
         target_id=username,
         after={"day": day, "limit_seconds": limit_seconds, "reason": reason},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
 
@@ -308,7 +302,7 @@ async def clear_day_override_ui(
     session: AsyncSession = Depends(get_session),
     admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     cleared = await clear_day_override(session, user_id=user.id, day=date.fromisoformat(day))
     if cleared:
         await record_audit_event(
@@ -319,7 +313,7 @@ async def clear_day_override_ui(
             target_type="user",
             target_id=username,
             before={"day": day},
-            ip=_client_ip(request),
+            ip=client_ip(request),
         )
         await session.commit()
 
@@ -355,7 +349,7 @@ async def set_day_hour_override_ui(
     (`_parse_day_hours`), except `to_midnight` stands in for `to` when
     checked -- `<input type=time>` can't submit "24:00" itself (see the
     comment on `_BETWEEN_SEED` above for why)."""
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     override_day = date.fromisoformat(day)
 
     if str(override_day.isoweekday()) not in (
@@ -401,7 +395,7 @@ async def set_day_hour_override_ui(
         target_type="user",
         target_id=username,
         after={"day": day, "mode": mode, "reason": reason},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
 
@@ -426,7 +420,7 @@ async def clear_day_hour_override_ui(
     page instead. The dashboard card's own Clear button leaves this blank
     and gets the fragment swap exactly as every other per-date control
     does."""
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     cleared = await clear_day_hour_override(session, user_id=user.id, day=date.fromisoformat(day))
     if cleared:
         await record_audit_event(
@@ -437,7 +431,7 @@ async def clear_day_hour_override_ui(
             target_type="user",
             target_id=username,
             before={"day": day},
-            ip=_client_ip(request),
+            ip=client_ip(request),
         )
         await session.commit()
 
@@ -458,7 +452,7 @@ async def release_gate_ui(
     """Releases *today* specifically -- the dashboard badge only ever shows
     for the current day, so there's no date to pick here (see
     /users/{username}/settings for the recurring gated_weekdays rule)."""
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     today = canonical_stamp(datetime.now(UTC), settings.tz).day
     await release_gate(session, user_id=user.id, day=today, released_by="ui")
     await record_audit_event(
@@ -469,7 +463,7 @@ async def release_gate_ui(
         target_type="user",
         target_id=username,
         after={"day": today.isoformat()},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
 
@@ -486,7 +480,7 @@ async def unrelease_gate_ui(
 ) -> HTMLResponse:
     """Reverses `release_gate_ui` for today -- re-gates the day (absence of
     a release row IS the gate)."""
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     today = canonical_stamp(datetime.now(UTC), settings.tz).day
     unreleased = await unrelease_gate(session, user_id=user.id, day=today)
     if unreleased:
@@ -498,7 +492,7 @@ async def unrelease_gate_ui(
             target_type="user",
             target_id=username,
             before={"day": today.isoformat()},
-            ip=_client_ip(request),
+            ip=client_ip(request),
         )
         await session.commit()
 
@@ -509,14 +503,6 @@ async def unrelease_gate_ui(
 # --------------------------------------------------------------------------
 # Full policy editor
 # --------------------------------------------------------------------------
-
-
-async def _get_user_or_404(session: AsyncSession, username: str) -> User:
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
-    return user
 
 
 def _split_hm(total_s: int) -> dict:
@@ -678,7 +664,7 @@ def _policy_view_model(payload) -> dict:
 async def user_policy_page(
     request: Request, username: str, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     policy = await get_or_create_policy(session, user)
     today = canonical_stamp(datetime.now(UTC), settings.tz).day
     today_override = await day_hour_override(session, user_id=user.id, day=today)
@@ -858,7 +844,7 @@ async def update_policy_ui(
     session: AsyncSession = Depends(get_session),
     admin: Admin = Depends(get_current_admin_ui),
 ):
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     form = await request.form()
     update = await _parse_policy_form(form)
 
@@ -875,7 +861,7 @@ async def update_policy_ui(
         target_id=username,
         before=before,
         after=policy_to_payload(policy).model_dump(mode="json"),
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return RedirectResponse(f"/users/{username}", status_code=status.HTTP_303_SEE_OTHER)
@@ -895,7 +881,7 @@ async def update_policy_ui(
 async def user_settings_page(
     request: Request, username: str, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     return templates.TemplateResponse(
         request,
         "user_settings.html",
@@ -924,7 +910,7 @@ async def update_user_settings_ui(
     session: AsyncSession = Depends(get_session),
     admin: Admin = Depends(get_current_admin_ui),
 ):
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     form = await request.form()
     gated_weekdays = [d for d in _WEEKDAY_TOKENS if _checkbox(form, f"gated_weekday_{d}")]
 
@@ -956,7 +942,7 @@ async def update_user_settings_ui(
         target_id=username,
         before=before,
         after=after,
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return RedirectResponse(f"/users/{username}/settings", status_code=status.HTTP_303_SEE_OTHER)
@@ -973,7 +959,7 @@ async def rename_user_ui(
     """Changes only the display name shown in the hub UI -- `username`
     (`User.canonical_username`, the local unix account it's matched
     against) is never editable here."""
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     before = user.display_name
     user.display_name = display_name
     await record_audit_event(
@@ -985,7 +971,7 @@ async def rename_user_ui(
         target_id=username,
         before={"display_name": before},
         after={"display_name": display_name},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return RedirectResponse(f"/users/{username}/settings", status_code=status.HTTP_303_SEE_OTHER)
@@ -1006,7 +992,7 @@ async def delete_user_ui(
     Devices that go on reporting this local username are unaffected: the
     next /sync for it re-provisions a fresh user via
     services/enrollment.py, exactly as if it had never been added."""
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     await record_audit_event(
         session,
         actor_type="admin",
@@ -1015,7 +1001,7 @@ async def delete_user_ui(
         target_type="user",
         target_id=username,
         before={"display_name": user.display_name},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.delete(user)
     await session.commit()
@@ -1031,7 +1017,7 @@ async def delete_user_ui(
 async def user_stats_page(
     request: Request, username: str, days: int = 30, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    user = await _get_user_or_404(session, username)
+    user = await get_user_or_404(session, username)
     policy = await get_or_create_policy(session, user)
     await session.commit()
     num_days = days if days in (7, 30, 90) else 30
@@ -1128,7 +1114,7 @@ async def revoke_device_ui(
             target_id=str(device.id),
             before={"status": before_status},
             after={"status": device.status},
-            ip=_client_ip(request),
+            ip=client_ip(request),
         )
         await session.commit()
     return await devices_fragment(request, session)
@@ -1187,7 +1173,7 @@ async def delete_device_ui(
             target_type="device",
             target_id=str(device_id),
             before=before,
-            ip=_client_ip(request),
+            ip=client_ip(request),
         )
         await session.delete(device)
         await session.commit()

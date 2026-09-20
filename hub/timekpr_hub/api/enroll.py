@@ -6,7 +6,6 @@ itself is the credential, single-use and short-lived.
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 import uuid
 from datetime import UTC, datetime
@@ -20,15 +19,12 @@ from timekpr_hub.db.models import Device, EnrollmentCode
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.enrollment import provision_user_alias
 from timekpr_hub.services.policy import policy_to_payload
+from timekpr_hub.services.tokens import hash_token
 from timekpr_hub.settings import settings
 
 router = APIRouter()
 
 TOKEN_PREFIX = "tkh_"
-
-
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 @router.post("/enroll", response_model=EnrollResponse, status_code=status.HTTP_201_CREATED)
@@ -85,7 +81,7 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
 
     if existing_device is not None:
         device = existing_device
-        device.token_hash = _hash_token(raw_token)
+        device.token_hash = hash_token(raw_token)
         device.name = req.hostname
         device.agent_version = req.agent_version
         device.status = "active"
@@ -96,7 +92,7 @@ async def enroll(req: EnrollRequest, session: AsyncSession = Depends(get_session
             id=uuid.uuid4(),
             name=req.hostname,
             machine_id=req.machine_id,
-            token_hash=_hash_token(raw_token),
+            token_hash=hash_token(raw_token),
             # An admin-minted enrollment code is itself the approval -- there's
             # no separate authentication on either endpoint for a second
             # "approve" step to actually gate anything. A 'pending' status

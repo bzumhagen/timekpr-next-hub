@@ -8,7 +8,6 @@ server-side, revocable by deleting the row.
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -19,6 +18,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from timekpr_hub.db.models import Admin, AdminInvite, AdminSession
+from timekpr_hub.services.tokens import hash_token
 
 SESSION_COOKIE_NAME = "tkh_session"
 SESSION_TTL = timedelta(days=30)
@@ -38,10 +38,6 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
 async def create_session(
     session: AsyncSession, *, admin_id: uuid.UUID, ip: str | None, user_agent: str | None
 ) -> str:
@@ -53,7 +49,7 @@ async def create_session(
         AdminSession(
             id=uuid.uuid4(),
             admin_id=admin_id,
-            token_hash=_hash_token(raw_token),
+            token_hash=hash_token(raw_token),
             expires_at=now + SESSION_TTL,
             ip=ip,
             user_agent=user_agent,
@@ -63,7 +59,7 @@ async def create_session(
 
 
 async def get_admin_by_session_token(session: AsyncSession, raw_token: str) -> Admin | None:
-    token_hash = _hash_token(raw_token)
+    token_hash = hash_token(raw_token)
     result = await session.execute(select(AdminSession).where(AdminSession.token_hash == token_hash))
     admin_session = result.scalar_one_or_none()
     if admin_session is None:
@@ -75,7 +71,7 @@ async def get_admin_by_session_token(session: AsyncSession, raw_token: str) -> A
 
 
 async def delete_session(session: AsyncSession, raw_token: str) -> None:
-    token_hash = _hash_token(raw_token)
+    token_hash = hash_token(raw_token)
     result = await session.execute(select(AdminSession).where(AdminSession.token_hash == token_hash))
     admin_session = result.scalar_one_or_none()
     if admin_session is not None:
@@ -147,7 +143,7 @@ def change_password(*, admin: Admin, new_password: str) -> None:
 
 
 async def delete_other_sessions(session: AsyncSession, *, admin_id: uuid.UUID, keep_token: str) -> None:
-    keep_hash = _hash_token(keep_token)
+    keep_hash = hash_token(keep_token)
     result = await session.execute(
         select(AdminSession).where(AdminSession.admin_id == admin_id, AdminSession.token_hash != keep_hash)
     )

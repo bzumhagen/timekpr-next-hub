@@ -11,17 +11,15 @@ claims it" -- log a warning at startup naming that state.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import APIKeyCookie
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from timekpr_hub.api.util import client_ip, templates
 from timekpr_hub.db.models import Admin
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.admin_auth import (
@@ -38,7 +36,6 @@ from timekpr_hub.services.admin_auth import (
 from timekpr_hub.services.audit import record_audit_event
 
 router = APIRouter()
-templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "web" / "templates"))
 
 _cookie_scheme = APIKeyCookie(name=SESSION_COOKIE_NAME, auto_error=False)
 
@@ -104,7 +101,7 @@ async def setup_submit(
     token = await create_session(
         session,
         admin_id=admin.id,
-        ip=request.client.host if request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
     await session.commit()
@@ -135,7 +132,7 @@ async def login_submit(
     if admin is None or not await run_in_threadpool(verify_password, password, admin.password_hash):
         return RedirectResponse("/login?error=1", status_code=status.HTTP_303_SEE_OTHER)
 
-    ip = request.client.host if request.client else None
+    ip = client_ip(request)
     token = await create_session(
         session, admin_id=admin.id, ip=ip, user_agent=request.headers.get("user-agent")
     )
@@ -157,7 +154,6 @@ async def login_submit(
 
 @router.post("/logout")
 async def logout(
-    request: Request,
     token: str | None = Depends(_cookie_scheme),
     session: AsyncSession = Depends(get_session),
 ):
@@ -217,12 +213,12 @@ async def invite_submit(
         action="admin.created",
         target_type="admin",
         target_id=str(admin.id),
-        ip=request.client.host if request.client else None,
+        ip=client_ip(request),
     )
     session_token = await create_session(
         session,
         admin_id=admin.id,
-        ip=request.client.host if request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
     await session.commit()

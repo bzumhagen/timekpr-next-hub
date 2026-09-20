@@ -36,7 +36,8 @@ from timekpr_hub_core.models import (
 )
 
 from timekpr_hub.api.admin_auth import get_current_admin_api
-from timekpr_hub.db.models import Admin, Device, EnrollmentCode, User
+from timekpr_hub.api.util import client_ip, get_user_or_404
+from timekpr_hub.db.models import Admin, Device, EnrollmentCode
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services.admin_auth import (
     change_password,
@@ -78,10 +79,6 @@ def _day_hour_override_intervals(body: DayHourOverrideCreate) -> list[AllowedHou
     return _wire_intervals(intervals_to_hours([interval]))
 
 
-def _client_ip(request: Request) -> str | None:
-    return request.client.host if request.client else None
-
-
 router = APIRouter()
 
 
@@ -101,10 +98,7 @@ async def create_grant(
 ) -> dict:
     from timekpr_hub.db.models import Grant
 
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+    user = await get_user_or_404(session, username)
 
     # `body.day` lets a grant target a future date ("you lose 30 minutes
     # tomorrow") without touching the standing policy -- None (the default,
@@ -133,7 +127,7 @@ async def create_grant(
         target_type="user",
         target_id=username,
         after={"seconds": grant.seconds, "day": grant_day_str, "reason": grant.reason},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return {"id": str(grant.id), "seconds": grant.seconds, "day": grant_day_str}
@@ -153,10 +147,7 @@ async def update_user_policy(
     next tick (sync.py pushes the payload whenever policy_version_applied
     disagrees, and the agent already calls setTimeLimitForDays/Week/Month +
     setAllowedDays)."""
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+    user = await get_user_or_404(session, username)
 
     before_policy = await get_current_policy(session, user)
     before = policy_to_payload(before_policy).model_dump() if before_policy else None
@@ -171,7 +162,7 @@ async def update_user_policy(
         target_id=username,
         before=before,
         after=policy_to_payload(policy).model_dump(),
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return policy_to_payload(policy)
@@ -189,10 +180,7 @@ async def set_user_day_override(
     standing policy, not "in addition to" like a grant. See
     services/limits.py::set_day_override for why this exists as its own
     concept rather than a large negative grant."""
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+    user = await get_user_or_404(session, username)
 
     day = date.fromisoformat(body.day)
     override = await set_day_override(
@@ -211,7 +199,7 @@ async def set_user_day_override(
         target_type="user",
         target_id=username,
         after={"day": body.day, "limit_seconds": body.limit_seconds, "reason": body.reason},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return {"id": str(override.id), "day": body.day, "limit_seconds": override.limit_seconds}
@@ -225,10 +213,7 @@ async def clear_user_day_override(
     session: AsyncSession = Depends(get_session),
     admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+    user = await get_user_or_404(session, username)
 
     cleared = await clear_day_override(session, user_id=user.id, day=date.fromisoformat(day))
     if cleared:
@@ -240,7 +225,7 @@ async def clear_user_day_override(
             target_type="user",
             target_id=username,
             before={"day": day},
-            ip=_client_ip(request),
+            ip=client_ip(request),
         )
     await session.commit()
     return {"day": day, "cleared": cleared}
@@ -265,10 +250,7 @@ async def set_user_day_hour_override(
     an hours window on a day the user can't log in at all would silently
     have no effect (see `effective_policy_payload`'s read-path skip for the
     same case, which covers a policy edited *after* this override is set)."""
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+    user = await get_user_or_404(session, username)
 
     day = date.fromisoformat(body.day)
     policy = await get_current_policy(session, user)
@@ -305,7 +287,7 @@ async def set_user_day_hour_override(
         target_type="user",
         target_id=username,
         after={"day": body.day, "mode": body.mode, "reason": body.reason},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return {"id": str(override.id), "day": body.day, "mode": body.mode}
@@ -319,10 +301,7 @@ async def clear_user_day_hour_override(
     session: AsyncSession = Depends(get_session),
     admin: Admin = Depends(get_current_admin_api),
 ) -> dict:
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+    user = await get_user_or_404(session, username)
 
     cleared = await clear_day_hour_override(session, user_id=user.id, day=date.fromisoformat(day))
     if cleared:
@@ -334,7 +313,7 @@ async def clear_user_day_hour_override(
             target_type="user",
             target_id=username,
             before={"day": day},
-            ip=_client_ip(request),
+            ip=client_ip(request),
         )
     await session.commit()
     return {"day": day, "cleared": cleared}
@@ -352,10 +331,7 @@ async def release_user_gate(
     the exception to `users.gated_weekdays_json`'s recurring rule. Releasing
     an already-released day just refreshes who/why (see
     services/limits.py::release_gate)."""
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+    user = await get_user_or_404(session, username)
 
     release = await release_gate(
         session, user_id=user.id, day=date.fromisoformat(body.day), released_by="admin-api", note=body.note
@@ -368,7 +344,7 @@ async def release_user_gate(
         target_type="user",
         target_id=username,
         after={"day": body.day, "note": body.note},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return {"id": str(release.id), "day": body.day}
@@ -384,10 +360,7 @@ async def unrelease_user_gate(
 ) -> dict:
     """Reverses `release_user_gate` -- deletes the release row, re-gating
     that date (absence of a row IS the gate)."""
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+    user = await get_user_or_404(session, username)
 
     unreleased = await unrelease_gate(session, user_id=user.id, day=date.fromisoformat(day))
     if unreleased:
@@ -399,7 +372,7 @@ async def unrelease_user_gate(
             target_type="user",
             target_id=username,
             before={"day": day},
-            ip=_client_ip(request),
+            ip=client_ip(request),
         )
     await session.commit()
     return {"day": day, "unreleased": unreleased}
@@ -417,10 +390,7 @@ async def update_user_settings(
     accounting mode, the offline-grace policy) -- deliberately NOT part of
     PolicyUpdate/update_policy: no policy version bump, no device push, its
     own save action. See core/timekpr_hub_core/models.py::UserSettingsUpdate."""
-    result = await session.execute(select(User).where(User.canonical_username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown user")
+    user = await get_user_or_404(session, username)
 
     before = {
         "gated_weekdays": user.gated_weekdays_json,
@@ -450,7 +420,7 @@ async def update_user_settings(
         target_id=username,
         before=before,
         after=after,
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return after
@@ -550,7 +520,7 @@ async def revoke_device(
         target_id=str(device.id),
         before={"status": before_status},
         after={"status": device.status},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return {"id": str(device.id), "status": device.status}
@@ -612,7 +582,7 @@ async def delete_device(
         target_type="device",
         target_id=str(device_id),
         before=before,
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.delete(device)
     await session.commit()
@@ -638,7 +608,7 @@ async def create_admin_invite(
         actor_type="admin",
         actor_id=str(admin.id),
         action="admin.invite_created",
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     invite_url = f"{str(request.base_url).rstrip('/')}/invite/{token}"
@@ -680,7 +650,7 @@ async def delete_admin(
         target_type="admin",
         target_id=str(target.id),
         before={"email": target.email},
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.delete(target)
     await session.commit()
@@ -711,7 +681,7 @@ async def change_own_password(
         action="admin.password_changed",
         target_type="admin",
         target_id=str(admin.id),
-        ip=_client_ip(request),
+        ip=client_ip(request),
     )
     await session.commit()
     return {"status": "ok"}

@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import version
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
@@ -74,8 +74,8 @@ app.include_router(ui.router, tags=["ui"], dependencies=[Depends(get_current_adm
 
 
 @app.exception_handler(RequireLoginRedirect)
-async def _redirect_unauthenticated_ui_request_to_login(request: Request, exc: RequireLoginRedirect):
-    return RedirectResponse("/login", status_code=303)
+async def _redirect_unauthenticated_ui_request_to_login(_request: Request, _exc: RequireLoginRedirect):
+    return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/healthz")

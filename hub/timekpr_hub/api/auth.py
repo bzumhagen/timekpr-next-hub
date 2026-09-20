@@ -6,8 +6,6 @@ rest, scoped so a device can only touch users mapped to it, and revocable.
 
 from __future__ import annotations
 
-import hashlib
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -15,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from timekpr_hub.db.models import Device
 from timekpr_hub.db.session import get_session
+from timekpr_hub.services.tokens import hash_token
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -26,7 +25,7 @@ async def get_current_device(
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing device token")
 
-    token_hash = hashlib.sha256(credentials.credentials.encode("utf-8")).hexdigest()
+    token_hash = hash_token(credentials.credentials)
     result = await session.execute(select(Device).where(Device.token_hash == token_hash))
     device = result.scalar_one_or_none()
 

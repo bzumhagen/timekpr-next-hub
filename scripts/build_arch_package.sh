@@ -59,6 +59,9 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$mode" ]] || usage
 
+mkdir -p "$out_dir"
+out_dir=$(cd "$out_dir" && pwd)
+
 packaging_dir="$repo_root/agent/packaging"
 # The one version the whole build keys off. check_versions.py has already
 # proven (in CI's lint job, and in the release workflow's own gate) that
@@ -126,7 +129,6 @@ run makepkg --noconfirm --nodeps --cleanbuild
 
 run makepkg --printsrcinfo >"$scratch/.SRCINFO"
 
-mkdir -p "$out_dir"
 cp "$scratch"/*.pkg.tar.zst "$out_dir/"
 
 if [[ "$mode" == tarball ]]; then

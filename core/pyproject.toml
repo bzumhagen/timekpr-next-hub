@@ -1,6 +1,6 @@
 [project]
 name = "timekpr-hub-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pure, IO-free convergence/calendar/interval-union logic shared by the hub and the agent"
 license = "GPL-3.0-only"
 requires-python = ">=3.11"

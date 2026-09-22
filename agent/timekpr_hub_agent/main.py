@@ -16,7 +16,7 @@ from __future__ import annotations
 # `version` by tests/unit/test_agent_config.py, and regexed directly by
 # scripts/check_versions.py/bump_version.py -- keep this a single,
 # unconditional assignment.
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.1.1"
 
 
 def main() -> None:

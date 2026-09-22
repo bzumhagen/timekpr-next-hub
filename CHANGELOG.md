@@ -12,6 +12,8 @@ to upgrade.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-21
+
 ### Fixed
 
 - The agent no longer fires timekpr's "policy changed" desktop
@@ -86,5 +88,6 @@ machine they use, instead of `timekpr-next` tracking each one separately.
 - Anyone with `sudo` on a managed machine can stop the agent. The hub UI
   flags a device that stops checking in; it can't prevent it.
 
-[Unreleased]: https://github.com/bzumhagen/timekpr-next-hub/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/bzumhagen/timekpr-next-hub/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/bzumhagen/timekpr-next-hub/releases/tag/v0.1.1
 [0.1.0]: https://github.com/bzumhagen/timekpr-next-hub/releases/tag/v0.1.0

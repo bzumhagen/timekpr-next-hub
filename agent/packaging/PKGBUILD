@@ -32,7 +32,7 @@
 # pinned to whatever `python3 -m venv` picked at build time, and a version
 # mismatch after a system upgrade would silently break it until rebuilt.
 pkgname=timekpr-hub-agent
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="Sidecar agent that pools timekpr-next screen-time budgets across multiple devices via a self-hosted hub"
 arch=('any')

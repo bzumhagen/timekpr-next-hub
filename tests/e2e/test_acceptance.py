@@ -236,3 +236,43 @@ def test_day_hour_override_is_pushed_and_reverted(live_hub, tmp_path):
     # And, again, the push must stop once the revert has landed.
     tick_device(device, clock, managed_users=[USERNAME])
     assert enforcer.set_allowed_hours_calls == calls_after_revert
+
+
+async def test_a_failing_push_step_does_not_re_pop_every_other_field_each_tick(live_hub, tmp_path):
+    """The "policy changed popup on every sync" report, end to end.
+
+    timekpr notifies the user on every admin setter it is handed, changed
+    or not, so a user experiences one popup per DBUS write. A push is
+    all-or-nothing, so one setter the local timekpr rejects keeps the
+    agent from advancing `policy_revision_applied` and the hub resending
+    the whole payload every tick. The retry must be one write, not ~20.
+    `setPlayTimeActivities` stands in for any such step."""
+    clock = VirtualClock.starting_at()
+    daemon = FakeTimekprDaemon(limit_today_s=ONE_HOUR)
+    hub = enroll_device(
+        base_url=live_hub,
+        token_path=tmp_path / "device-token",
+        machine_id=f"machine-{uuid.uuid4()}",
+        hostname="device",
+        local_users=[USERNAME],
+    )
+    enforcer = FakeEnforcer({USERNAME: daemon})
+    device = SimulatedDevice(hub=hub, enforcer=enforcer)
+
+    def _rejected_by_this_build(username, activities):
+        enforcer.write_calls.append("set_playtime_activities")
+        return False
+
+    enforcer.set_playtime_activities = _rejected_by_this_build
+
+    tick_device(device, clock, managed_users=[USERNAME])
+    first_tick = list(enforcer.write_calls)
+    assert len(first_tick) > 5, "a fresh device still pushes the whole policy"
+    assert "set_playtime_activities" in first_tick
+
+    # The hub keeps resending, correctly -- the policy genuinely isn't
+    # fully applied -- but each tick is one write, not ~20.
+    for _ in range(5):
+        enforcer.write_calls.clear()
+        tick_device(device, clock, managed_users=[USERNAME])
+        assert enforcer.write_calls == ["set_playtime_activities"]

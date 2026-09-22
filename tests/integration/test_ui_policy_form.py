@@ -209,8 +209,9 @@ async def test_dashboard_shows_undo_button_after_gate_release(client):
 
 
 async def test_grant_from_ui_with_day_lands_on_that_date_not_today(client):
-    """The dashboard's '-30 min tomorrow' button (and any dated grant form
-    field) must post to the target date's Grant, not today's."""
+    """A dated grant must land on the target date's Grant, not today's.
+    The dashboard no longer ships a one-click button for this, but `day`
+    stays a supported form/API field (see GrantCreate.day)."""
     from datetime import date, timedelta
 
     await _seed_user("dategrant")

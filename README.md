@@ -86,17 +86,18 @@ The hub's home page shows, per user: today's usage bar and an activity
 badge (draining / idle / offline). Device sync status and enrollment live
 on their own **Devices** page, out of the way until you need them.
 
-- **Give extra time today**: the **+30 min** / **-30 min** buttons on the
-  dashboard.
+- **Give or take back time today**: the **Add** (+15 / +30 min) and
+  **Remove** (−15 / −30 min) buttons on the dashboard.
 - **Manage the full policy**: **Edit policy** on a user's card — per-day
   limits and an hours grid for time-of-day windows. Weekly/monthly caps,
   which days login is allowed at all, lockout behavior, and PlayTime are
   behind **Advanced policy settings** on the same page.
 - **See where the time went**: **Usage stats** for a day-by-day
   spend-vs-limit history and a per-device breakdown.
-- **Approval-gated days** ("no time until a chore is done"): set which
-  days are gated on the user's **Settings** page. A gated day shows a
-  **⏸ Chores not done** badge on the dashboard; **Release today** applies
+- **Approval-gated days** ("no time until a chore is done", or homework,
+  or anything else): set which days are gated on the user's **Settings**
+  page. A gated day shows a
+  **⏸ Waiting on approval** badge on the dashboard; **Release today** applies
   the day's normal limit immediately, no policy edit or device restart.
   The gate re-arms on its own the next time that weekday comes around.
 - **A specific date's limit** ("no time tomorrow", or any other date):

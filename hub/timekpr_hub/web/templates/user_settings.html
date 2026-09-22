@@ -20,12 +20,12 @@
 
   <form method="post" action="/users/{{ username }}/settings">
     <div class="card">
-      <p class="card-title">Chores-first days</p>
+      <p class="card-title">Approval-gated days</p>
       <p class="hint">
         On a checked day, time is withheld until you click "Release today" on the dashboard --
         the day's normal limit still applies once released. Use this for a recurring rule like
-        "weekend time only after chores"; for a one-off exception on a single date, use
-        "Adjust a day" on the dashboard instead.
+        "weekend time only once the day's been approved"; for a one-off exception on a single
+        date, use "Adjust a day" on the dashboard instead.
       </p>
       <div class="checkbox-row">
         {% for day in weekday_tokens %}

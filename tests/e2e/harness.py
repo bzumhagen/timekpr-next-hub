@@ -326,6 +326,39 @@ class FakeEnforcer:
         re-pushes every tick forever is the failure this counter exists to
         catch (see test_acceptance.py's day-hours override test)."""
 
+        self._read_fails = False
+        """Set by a test to make `get_applied_policy` return None."""
+
+        self.write_calls: list[str] = []
+        """Every policy-setter name invoked, in order. timekpr notifies the
+        user on each one whether or not the value changed, so the call
+        count is what the push diff is judged on -- the stored values
+        alone can't distinguish a skipped write from a redundant one."""
+        for _name in (
+            "set_time_limit_for_days",
+            "set_time_limit_for_week",
+            "set_time_limit_for_month",
+            "set_allowed_days",
+            "set_allowed_hours",
+            "set_track_inactive",
+            "set_hide_tray_icon",
+            "set_lockout_type",
+            "set_playtime_enabled",
+            "set_playtime_limit_override",
+            "set_playtime_unaccounted_intervals_enabled",
+            "set_playtime_allowed_days",
+            "set_playtime_limits_for_days",
+            "set_playtime_activities",
+        ):
+            setattr(self, _name, self._counting(_name, getattr(self, _name)))
+
+    def _counting(self, name: str, method):
+        def wrapper(*args, **kwargs):
+            self.write_calls.append(name)
+            return method(*args, **kwargs)
+
+        return wrapper
+
     def get_user_observation(self, username: str) -> UserObservation | None:
         d = self.daemons.get(username)
         if d is None:
@@ -423,6 +456,43 @@ class FakeEnforcer:
     def set_playtime_activities(self, username: str, activities: list[tuple[str, str]]) -> bool:
         self._playtime_activities[username] = list(activities)
         return True
+
+    def get_applied_policy(self, username: str) -> dict | None:
+        """Mirrors the real enforcer's readback, in timekpr's own key
+        names. A key appears only once something has been written, which
+        is the real daemon's "absent means unknown, so push it" contract:
+        a fresh fake therefore pushes every field."""
+        if self._read_fails:
+            return None
+        snapshot: dict = {}
+
+        def _take(key: str, store: dict, convert=lambda v: v) -> None:
+            if username in store:
+                snapshot[key] = convert(store[username])
+
+        _take("ALLOWED_WEEKDAYS", self._allowed_weekdays, list)
+        _take("LIMITS_PER_WEEKDAYS", self._daily_limits, list)
+        _take("LIMIT_PER_WEEK", self._weekly_limits)
+        _take("LIMIT_PER_MONTH", self._monthly_limits)
+        _take("TRACK_INACTIVE", self._track_inactive)
+        _take("HIDE_TRAY_ICON", self._hide_tray_icon)
+        if username in self._lockout:
+            lockout_type, wake_from, wake_to = self._lockout[username]
+            snapshot["LOCKOUT_TYPE"] = lockout_type
+            # Replicated so the diff is tested against the shape it
+            # actually sees: the real daemon reports the wake window only
+            # for 'suspendwake', joined as "from;to".
+            if lockout_type == "suspendwake":
+                snapshot["WAKEUP_HOUR_INTERVAL"] = f"{wake_from};{wake_to}"
+        for day, hours in self._allowed_hours.get(username, {}).items():
+            snapshot[f"ALLOWED_HOURS_{day}"] = dict(hours)
+        _take("PLAYTIME_ENABLED", self._playtime_enabled)
+        _take("PLAYTIME_LIMIT_OVERRIDE_ENABLED", self._playtime_override)
+        _take("PLAYTIME_UNACCOUNTED_INTERVALS_ENABLED", self._playtime_unaccounted_intervals)
+        _take("PLAYTIME_ALLOWED_WEEKDAYS", self._playtime_allowed_weekdays, list)
+        _take("PLAYTIME_LIMITS_PER_WEEKDAYS", self._playtime_daily_limits, list)
+        _take("PLAYTIME_ACTIVITIES", self._playtime_activities, list)
+        return snapshot
 
 
 @dataclass

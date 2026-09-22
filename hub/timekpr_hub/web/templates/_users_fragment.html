@@ -33,14 +33,14 @@
 
   {% if u.gated_today %}
     <div class="notice" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;">
-      <span>&#9208; Chores not done -- today's time is on hold</span>
+      <span>&#9208; Waiting on approval -- today's time is on hold</span>
       <form data-post="/ui/users/{{ u.username }}/gate-release" data-target="closest .user-card" data-swap="outerHTML">
         <button type="submit">Release today</button>
       </form>
     </div>
   {% elif u.gate_released_today %}
     <div class="notice" style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;">
-      <span>&#10003; Chores done -- today released</span>
+      <span>&#10003; Approved -- today released</span>
       <form data-post="/ui/users/{{ u.username }}/gate-unrelease" data-target="closest .user-card" data-swap="outerHTML"
             data-confirm="Re-gate {{ u.display_name }}'s day? Today's time goes back on hold until released again.">
         <button type="submit">Undo</button>
@@ -81,21 +81,25 @@
     </div>
   {% endif %}
 
-  <div class="actions">
-    <form data-post="/ui/users/{{ u.username }}/grants" data-target="closest .user-card" data-swap="outerHTML">
-      <input type="hidden" name="seconds" value="1800">
-      <button type="submit">+30 min</button>
-    </form>
-    <form data-post="/ui/users/{{ u.username }}/grants" data-target="closest .user-card" data-swap="outerHTML">
-      <input type="hidden" name="seconds" value="-1800">
-      <button type="submit">-30 min</button>
-    </form>
-    <form data-post="/ui/users/{{ u.username }}/grants" data-target="closest .user-card" data-swap="outerHTML"
-          title="Deduct 30 minutes from {{ u.tomorrow }} instead of today">
-      <input type="hidden" name="seconds" value="-1800">
-      <input type="hidden" name="day" value="{{ u.tomorrow }}">
-      <button type="submit">-30 min tomorrow</button>
-    </form>
+  <div class="quick-grants">
+    <div class="grant-row add">
+      <span class="grant-label">Add</span>
+      {% for mins in [15, 30] %}
+        <form data-post="/ui/users/{{ u.username }}/grants" data-target="closest .user-card" data-swap="outerHTML">
+          <input type="hidden" name="seconds" value="{{ mins * 60 }}">
+          <button type="submit">+{{ mins }} min</button>
+        </form>
+      {% endfor %}
+    </div>
+    <div class="grant-row remove">
+      <span class="grant-label">Remove</span>
+      {% for mins in [15, 30] %}
+        <form data-post="/ui/users/{{ u.username }}/grants" data-target="closest .user-card" data-swap="outerHTML">
+          <input type="hidden" name="seconds" value="-{{ mins * 60 }}">
+          <button type="submit">&minus;{{ mins }} min</button>
+        </form>
+      {% endfor %}
+    </div>
   </div>
   <div class="actions">
     <a class="button-link" href="/users/{{ u.username }}">Edit policy</a>

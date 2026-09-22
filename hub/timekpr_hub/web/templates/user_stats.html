@@ -23,7 +23,7 @@
           {%- if d.overridden %} &#9998;{% endif -%}
           {%- if d.hours_overridden %} &#128337;{% endif -%}
         </span>
-        <div class="bar-track" title="{{ '%d:%02d'|format(d.spent_s // 3600, (d.spent_s % 3600) // 60) }} of {{ '%d:%02d'|format(d.limit_s // 3600, (d.limit_s % 3600) // 60) }}{% if d.grants_s %} ({{ '%+d'|format(d.grants_s // 60) }} min granted){% endif %}{% if d.overridden %} -- day override set{% endif %}{% if d.hours_overridden %} -- hours set to {{ hours_override_display.get(d.day, '') }}{% endif %}{% if d.gated %}{% if d.gate_released %} -- chore gate released{% else %} -- chore gate active{% endif %}{% endif %}">
+        <div class="bar-track" title="{{ '%d:%02d'|format(d.spent_s // 3600, (d.spent_s % 3600) // 60) }} of {{ '%d:%02d'|format(d.limit_s // 3600, (d.limit_s % 3600) // 60) }}{% if d.grants_s %} ({{ '%+d'|format(d.grants_s // 60) }} min granted){% endif %}{% if d.overridden %} -- day override set{% endif %}{% if d.hours_overridden %} -- hours set to {{ hours_override_display.get(d.day, '') }}{% endif %}{% if d.gated %}{% if d.gate_released %} -- approved{% else %} -- awaiting approval{% endif %}{% endif %}">
           {% set pct = (d.spent_s / d.limit_s * 100) if d.limit_s else (100 if d.spent_s else 0) %}
           <div class="bar-fill {% if pct >= 100 %}over{% endif %}" style="width: {{ [pct, 100] | min }}%;"></div>
         </div>
@@ -32,7 +32,7 @@
     {% endfor %}
     <p class="hint">
       Bar shows time spent against that day's effective limit (policy + grants + any override).
-      &#9208; chore gate active &middot; &#10003; chore gate released &middot; &#9998; day override set.
+      &#9208; awaiting approval &middot; &#10003; approved &middot; &#9998; day override set.
     </p>
   </div>
 

@@ -19,6 +19,20 @@ from timekpr_hub_agent.timekpr_paths import ensure_timekpr_importable
 log = logging.getLogger("timekpr_hub_agent")
 
 
+def _normalize_hours(raw: Any) -> dict[str, dict[str, int | bool]]:
+    """Rebuild one ALLOWED_HOURS_n reply into the shape
+    `core.allowed_hours.hours_to_dbus_payload` emits, so the two compare
+    with `==`. timekpr returns the right keys but DBUS-wrapped values."""
+    return {
+        str(hour): {
+            "STARTMIN": int(rec["STARTMIN"]),
+            "ENDMIN": int(rec["ENDMIN"]),
+            "UACC": bool(rec.get("UACC", False)),
+        }
+        for hour, rec in raw.items()
+    }
+
+
 @dataclass
 class UserObservation:
     """What the agent read from timekpr this tick -- the subset of
@@ -189,16 +203,63 @@ class TimekprEnforcer:
         `setPlayTimeActivities`'s `saas` signature."""
         return self._call("setPlayTimeActivities", username, [list(a) for a in activities])
 
+    def get_applied_policy(self, username: str) -> dict | None:
+        """Everything `_apply_policy_push` writes, as timekpr currently
+        holds it, so a push can skip the calls that would change nothing
+        (see `policy_push._Push` for why that matters).
+
+        Absent keys are omitted, not defaulted, and an unreadable config
+        is None: both mean "push it", so the diff can only ever suppress a
+        write it knows is redundant. Keys stay as timekpr names them --
+        making them comparable to a hub payload is policy_push.py's job.
+        """
+        info = self._user_config(username)
+        if info is None:
+            return None
+
+        snapshot: dict[str, Any] = {}
+
+        def _take(key: str, convert) -> None:
+            if key in info:
+                snapshot[key] = convert(info[key])
+
+        # Coerced because these arrive DBUS-wrapped
+        # (dbus.Int32/Boolean/String), which won't reliably compare equal.
+        for key in ("LIMIT_PER_WEEK", "LIMIT_PER_MONTH"):
+            _take(key, int)
+        for key in ("TRACK_INACTIVE", "HIDE_TRAY_ICON"):
+            _take(key, bool)
+        _take("LOCKOUT_TYPE", str)
+        # timekpr sends this only for "suspendwake".
+        _take("WAKEUP_HOUR_INTERVAL", str)
+        _take("ALLOWED_WEEKDAYS", lambda v: [str(d) for d in v])
+        _take("LIMITS_PER_WEEKDAYS", lambda v: [int(x) for x in v])
+        for day in ("1", "2", "3", "4", "5", "6", "7"):
+            _take(f"ALLOWED_HOURS_{day}", _normalize_hours)
+        _take("PLAYTIME_ENABLED", bool)
+        _take("PLAYTIME_LIMIT_OVERRIDE_ENABLED", bool)
+        _take("PLAYTIME_UNACCOUNTED_INTERVALS_ENABLED", bool)
+        _take("PLAYTIME_ALLOWED_WEEKDAYS", lambda v: [str(d) for d in v])
+        _take("PLAYTIME_LIMITS_PER_WEEKDAYS", lambda v: [int(x) for x in v])
+        _take("PLAYTIME_ACTIVITIES", lambda v: [(str(a[0]), str(a[1]) if len(a) > 1 else "") for a in v])
+        return snapshot
+
+    def _user_config(self, username: str) -> dict | None:
+        if not self._connected and not self.connect():
+            return None
+        result, _message, info = self._admin.getUserConfigurationAndInformation(username, "F")
+        if result != 0:
+            return None
+        return info
+
     def get_user_policy_snapshot(self, username: str) -> dict | None:
         """This device's own currently-configured limits for `username`, in
         the shape `EnrollRequest`'s per-user policy snapshot expects
         Used only at enroll time, to seed a brand-new hub user's
         policy from whatever this device already has configured, instead of
         always starting from the hub's 1h/day placeholder default."""
-        if not self._connected and not self.connect():
-            return None
-        result, _message, info = self._admin.getUserConfigurationAndInformation(username, "F")
-        if result != 0:
+        info = self._user_config(username)
+        if info is None:
             return None
         return {
             "daily_limits_s": [int(x) for x in info["LIMITS_PER_WEEKDAYS"]],

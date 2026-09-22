@@ -12,6 +12,30 @@ to upgrade.
 
 ## [Unreleased]
 
+### Fixed
+
+- The agent no longer fires timekpr's "policy changed" desktop
+  notification when nothing actually changed. timekpr notifies the user on
+  every admin setter it is handed, changed or not, and a policy push is
+  ~20 of them; because a push is all-or-nothing, a single setter the local
+  timekpr build rejected meant the agent never told the hub the policy had
+  landed, so the hub resent it and all ~20 notifications re-fired every
+  20 seconds indefinitely. The agent now reads the device's current
+  configuration back and writes only the fields that genuinely differ, so
+  an unchanged policy touches DBUS zero times and a stuck field retries
+  alone.
+
+### Changed
+
+- Dashboard quick actions are now grouped **Add** (+15 / +30 min) and
+  **Remove** (-15 / -30 min) rows, with larger touch targets for phones.
+  The one-click "-30 min tomorrow" button is gone; dated grants remain
+  available through **Adjust a day** and the JSON API.
+- Approval-gated days no longer describe themselves as being about chores
+  specifically, since a day can be held for any reason: the badge now
+  reads **Waiting on approval** / **Approved**, and the user's settings
+  card is **Approval-gated days**.
+
 ## [0.1.0] - 2026-09-20
 
 First tagged release. Pools a user's daily screen-time budget across every

@@ -95,10 +95,11 @@ async def grant_from_ui(
     session: AsyncSession = Depends(get_session),
     admin: Admin = Depends(get_current_admin_ui),
 ) -> HTMLResponse:
-    """`day` defaults to today (unchanged behavior for the +/-30min quick
-    actions); passing a future date is the "you lose 30 minutes tomorrow"
-    flow GrantCreate.day's docstring describes -- see the dashboard's own
-    "-30 min tomorrow" button."""
+    """`day` defaults to today, which is what the dashboard's +/-15/30min
+    quick actions post. A future date is still accepted -- that's the "you
+    lose 30 minutes tomorrow" flow GrantCreate.day's docstring describes,
+    reachable through the JSON API (the dashboard no longer ships a
+    one-click button for it)."""
     result = await session.execute(select(User).where(User.canonical_username == username))
     user = result.scalar_one_or_none()
     if user is not None:

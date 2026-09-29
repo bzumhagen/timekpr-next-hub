@@ -7,6 +7,10 @@ machine, reporting usage to the hub and applying whatever balance the hub
 says is left — so a user's daily limit is shared across their desktop and
 laptop instead of being tracked separately on each.
 
+![The hub dashboard: one card per managed user, each showing today's pooled usage against that user's daily limit, every machine they used it on, and buttons to add or remove time.](docs/dashboard.png)
+
+The dashboard is the primary day-to-day interface (pictured above), and renders well on mobile or desktop.
+
 ---
 
 # Setting up your hub

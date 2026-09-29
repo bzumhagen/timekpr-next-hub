@@ -496,3 +496,59 @@ def test_repush_when_only_the_revision_changed_not_the_int_version():
     assert state.users["alice"].policy_revision_applied == "1-def"
     assert state.users["alice"].policy_version_applied == 1
     assert "alice" in enforcer._allowed_hours  # the push actually happened
+
+
+def test_a_failed_push_reports_the_stuck_setter_to_the_hub_next_tick():
+    """A push timekpr refuses is invisible hub-side otherwise: an unadvanced
+    revision looks identical to "not applied yet". The agent names the
+    setter so /devices can show it instead of an admin reading this
+    machine's journal (see `SyncUserRequest.policy_push_error`).
+
+    The report necessarily lands one tick late -- the push runs after the
+    response that carried the policy -- which is why tick 2's payload, not
+    tick 1's, is what carries it.
+    """
+    daemon = FakeTimekprDaemon(limit_today_s=3600)
+    enforcer = FakeEnforcer({"alice": daemon})
+    enforcer.set_time_limit_for_week = lambda *_a, **_kw: False
+    state = state_mod.AgentState()
+
+    pushed = _sync_response_with_policy(
+        "alice", policy_version=1, policy_revision="1-abc", policy=_MINIMAL_POLICY
+    )
+    hub = ScriptedHub([pushed, pushed])
+    run_tick(
+        enforcer=enforcer, hub=hub, state=state, managed_users=["alice"], agent_version="0.1.0", tz_name="UTC"
+    )
+
+    assert state.users["alice"].last_policy_push_error == "setTimeLimitForWeek"
+    # The failure must not be mistaken for success: the revision stays put,
+    # so the hub keeps re-sending until the setter actually lands.
+    assert state.users["alice"].policy_revision_applied == ""
+    assert hub.payloads[0]["users"][0]["policy_push_error"] is None
+
+    run_tick(
+        enforcer=enforcer, hub=hub, state=state, managed_users=["alice"], agent_version="0.1.0", tz_name="UTC"
+    )
+    assert hub.payloads[1]["users"][0]["policy_push_error"] == "setTimeLimitForWeek"
+
+
+def test_a_recovered_push_clears_the_reported_error():
+    """A resolved failure has to disappear by itself -- the hub only ever
+    stores what the last sync reported, so a stale label would otherwise
+    accuse a healthy device forever."""
+    daemon = FakeTimekprDaemon(limit_today_s=3600)
+    enforcer = FakeEnforcer({"alice": daemon})
+    state = state_mod.AgentState()
+    state.users["alice"] = state_mod.UserState(last_policy_push_error="setLockoutType")
+
+    response = _sync_response_with_policy(
+        "alice", policy_version=1, policy_revision="1-abc", policy=_MINIMAL_POLICY
+    )
+    hub = ScriptedHub([response])
+    run_tick(
+        enforcer=enforcer, hub=hub, state=state, managed_users=["alice"], agent_version="0.1.0", tz_name="UTC"
+    )
+
+    assert state.users["alice"].last_policy_push_error is None
+    assert state.users["alice"].policy_revision_applied == "1-abc"

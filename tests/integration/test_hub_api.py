@@ -988,3 +988,108 @@ async def test_sync_reports_this_users_offline_policy_settings(client):
     assert resp_user["offline_policy"] == "closed"
     assert resp_user["offline_grace_s"] == 120
     assert resp_user["offline_cap_s"] == 240
+
+
+async def test_sync_records_and_clears_a_reported_policy_push_error(client):
+    """A push timekpr refuses is otherwise invisible hub-side: an unadvanced
+    revision looks exactly like "not applied yet". The agent names the stuck
+    setter (SyncUserRequest.policy_push_error) and /devices surfaces it, so
+    nobody has to read a client's journal to find it.
+
+    Both directions matter. A stale label left behind after the underlying
+    problem is fixed would accuse a healthy device forever, so the clean
+    sync must clear it.
+    """
+    await _seed_user("pusherr")
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    enroll_resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h",
+            "machine_id": "m-push-error",
+            "agent_version": "0.1.2",
+            "local_users": ["pusherr"],
+        },
+    )
+    token = enroll_resp.json()["device_token"]
+
+    def _payload(push_error: str | None) -> dict:
+        return {
+            "agent_time": "2026-09-28T00:00:00+00:00",
+            "agent_version": "0.1.2",
+            "users": [
+                {
+                    "username": "pusherr",
+                    "cumulative_spent_s": 0,
+                    "observed": {
+                        "balance_s": 0,
+                        "spent_day_s": 0,
+                        "limit_today_s": 3600,
+                        "logged_in": False,
+                        "active": False,
+                    },
+                    "policy_version_applied": 0,
+                    "policy_push_error": push_error,
+                }
+            ],
+        }
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    pushed = await client.post("/api/v1/sync", json=_payload("setLockoutType"), headers=headers)
+    assert pushed.status_code == 200
+    devices = (await client.get("/api/v1/devices")).json()
+    device = next(d for d in devices if d["name"] == "h")
+    assert device["policy_push_errors"] == [{"username": "pusherr", "error": "setLockoutType"}]
+
+    cleared = await client.post("/api/v1/sync", json=_payload(None), headers=headers)
+    assert cleared.status_code == 200
+    devices = (await client.get("/api/v1/devices")).json()
+    assert next(d for d in devices if d["name"] == "h")["policy_push_errors"] == []
+
+
+async def test_sync_accepts_an_agent_that_omits_policy_push_error(client):
+    """Agents predating the field never send it. That must not 422 the whole
+    sync -- an upgraded hub has to keep talking to every agent already
+    deployed (see SyncUserRequest.policy_push_error on why absent and None
+    mean the same thing here)."""
+    await _seed_user("oldagent")
+    code = (await client.post("/api/v1/enrollment-codes")).json()["code"]
+    enroll_resp = await client.post(
+        "/api/v1/enroll",
+        json={
+            "enrollment_code": code,
+            "hostname": "h-old",
+            "machine_id": "m-old-agent",
+            "agent_version": "0.1.1",
+            "local_users": ["oldagent"],
+        },
+    )
+    token = enroll_resp.json()["device_token"]
+
+    resp = await client.post(
+        "/api/v1/sync",
+        json={
+            "agent_time": "2026-09-28T00:00:00+00:00",
+            "agent_version": "0.1.1",
+            "users": [
+                {
+                    "username": "oldagent",
+                    "cumulative_spent_s": 0,
+                    "observed": {
+                        "balance_s": 0,
+                        "spent_day_s": 0,
+                        "limit_today_s": 3600,
+                        "logged_in": False,
+                        "active": False,
+                    },
+                    "policy_version_applied": 0,
+                }
+            ],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    devices = (await client.get("/api/v1/devices")).json()
+    assert next(d for d in devices if d["name"] == "h-old")["policy_push_errors"] == []

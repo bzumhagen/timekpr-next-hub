@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from timekpr_hub.api.admin_auth import get_current_admin_ui
 from timekpr_hub.api.util import client_ip, templates
-from timekpr_hub.db.models import Admin, Device
+from timekpr_hub.db.models import Admin, Device, UserAlias
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services import devices as device_ops
 from timekpr_hub.services.enrollment import create_enrollment_code
@@ -37,6 +37,21 @@ async def devices_page(request: Request) -> HTMLResponse:
 async def devices_fragment(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     result = await session.execute(select(Device))
     now = datetime.now(UTC)
+
+    # One query for every outstanding push failure across all devices,
+    # grouped here -- not a per-device lookup inside the loop below. A
+    # failure means the agent asked timekpr to apply a setting and timekpr
+    # refused; it repeats every tick until fixed (see
+    # SyncUserRequest.policy_push_error), so anything listed here is live.
+    push_error_rows = await session.execute(
+        select(UserAlias.device_id, UserAlias.local_username, UserAlias.policy_push_error).where(
+            UserAlias.policy_push_error.is_not(None)
+        )
+    )
+    push_errors: dict[uuid.UUID, list[dict[str, str]]] = {}
+    for device_id, local_username, error in push_error_rows.all():
+        push_errors.setdefault(device_id, []).append({"username": local_username, "error": error})
+
     devices = []
     for d in result.scalars().all():
         if d.last_seen_at is None:
@@ -57,6 +72,7 @@ async def devices_fragment(request: Request, session: AsyncSession = Depends(get
                 "agent_version": d.agent_version or "?",
                 "last_seen": seen_label,
                 "stale": stale,
+                "push_errors": push_errors.get(d.id, []),
             }
         )
     return templates.TemplateResponse(request, "_devices_fragment.html", {"devices": devices})

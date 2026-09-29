@@ -118,3 +118,25 @@ def test_save_and_load_round_trip_pending_spans_and_last_tick_utc(tmp_path):
     assert loaded.users["alice"].pending_spans == [
         {"start": "2026-01-01T00:00:00+00:00", "end": "2026-01-01T00:05:00+00:00", "burned_s": 300}
     ]
+
+
+def test_load_defaults_policy_push_error_when_state_predates_the_field(tmp_path):
+    """A state.json written before push-failure reporting existed has no
+    `last_policy_push_error` key. It must load with the default (None,
+    meaning "nothing to report") rather than crash the agent on upgrade --
+    the same guarantee every other added field gets here."""
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"users": {"alice": {"day": "2026-01-01", "policy_version_applied": 3}}}))
+    state = load(path)
+    assert state.users["alice"].last_policy_push_error is None
+
+
+def test_save_and_load_round_trip_policy_push_error(tmp_path):
+    """Persisted, not just held in memory: a crash-restart loop is the one
+    case where the agent never reaches its own next sync, and it is exactly
+    the case where knowing which setter is stuck matters most."""
+    path = tmp_path / "state.json"
+    state = AgentState()
+    state.user("alice").last_policy_push_error = "setLockoutType"
+    save(state, path)
+    assert load(path).users["alice"].last_policy_push_error == "setLockoutType"

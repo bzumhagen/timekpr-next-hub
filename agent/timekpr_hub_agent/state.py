@@ -31,6 +31,12 @@ class UserState:
     separate field from the int version above rather than a replacement for
     it -- both are kept and both only advance on a successful push)."""
     last_enforcement: str = ""  # "enforce", "observe", or "revoked" -- only used to log on transition
+    last_policy_push_error: str | None = None
+    """Setter labels timekpr rejected on the last policy push, reported to
+    the hub on the next sync (see `SyncUserRequest.policy_push_error`).
+    Persisted rather than held in memory so a crash-restart loop -- the one
+    case where the agent never survives to its own next sync -- still
+    carries the reason out to the hub."""
 
     # Cached last-known values from the hub, used while offline. Wall-clock
     # (epoch seconds), not time.monotonic(): monotonic's epoch is arbitrary

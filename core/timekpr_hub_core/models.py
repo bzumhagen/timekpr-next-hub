@@ -153,6 +153,22 @@ class SyncUserRequest(BaseModel):
     an hours override it can never be told to revert (it only ever echoes
     the int version, which an expiring override does not change)."""
 
+    policy_push_error: str | None = None
+    """The setter label(s) from the last policy push that timekpr rejected
+    -- e.g. "setLockoutType" -- or None when the last push fully succeeded.
+
+    Purely diagnostic: the hub stores it for display and never gates
+    anything on it (a failed push is already expressed by
+    `policy_revision_applied` not advancing). Unlike the field above, None
+    carries no "this agent predates the field" meaning -- an agent that
+    never sends it simply never reports a failure, which is indistinguishable
+    from, and treated as, no failure.
+
+    Reported one tick late by construction: the push happens after the sync
+    response that carried the policy, so the result can only ride the
+    *next* request. That is fine for a condition that repeats every poll
+    interval, which is the only kind worth surfacing."""
+
 
 class SyncRequest(BaseModel):
     agent_time: str

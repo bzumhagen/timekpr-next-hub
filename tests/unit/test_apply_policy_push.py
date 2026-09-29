@@ -43,7 +43,7 @@ def _fresh_enforcer() -> FakeEnforcer:
 
 def test_apply_policy_push_pushes_every_field():
     enforcer = _fresh_enforcer()
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is True
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is True
 
     # Issue #1: LIMITS_PER_WEEKDAYS must be projected to the allowed-days
     # subset, in the same order, with Tuesday's own limit (200) dropped --
@@ -79,13 +79,13 @@ def test_apply_policy_push_refuses_an_empty_allowed_hours_day():
     of that day entirely."""
     enforcer = _fresh_enforcer()
     bad = dict(_FULL_POLICY, allowed_hours={"2": []})
-    assert _apply_policy_push(enforcer, "kiddo", bad) is False
+    assert _apply_policy_push(enforcer, "kiddo", bad).ok is False
 
 
 def test_apply_policy_push_rejects_wrong_daily_limit_count():
     enforcer = _fresh_enforcer()
     bad = dict(_FULL_POLICY, daily_limits_s=[100, 200, 300])
-    assert _apply_policy_push(enforcer, "kiddo", bad) is False
+    assert _apply_policy_push(enforcer, "kiddo", bad).ok is False
 
 
 def _wire_hours(intervals) -> list[dict]:
@@ -116,7 +116,7 @@ def test_a_materialized_hours_payload_pushes_all_seven_weekdays():
     materialized = {str(day): _wire_hours(unrestricted()) for day in range(1, 8)}
     enforcer = _fresh_enforcer()
     policy = dict(_FULL_POLICY, allowed_hours=materialized)
-    assert _apply_policy_push(enforcer, "kiddo", policy) is True
+    assert _apply_policy_push(enforcer, "kiddo", policy).ok is True
     assert set(enforcer._allowed_hours["kiddo"].keys()) == {"1", "2", "3", "4", "5", "6", "7"}
     for payload in enforcer._allowed_hours["kiddo"].values():
         assert payload == _dbus_hours(0, 24)
@@ -140,13 +140,13 @@ def test_pushing_an_hours_override_then_the_standing_payload_reverts_it():
 
     # Tick 1: the override is in effect for weekday 3.
     override_policy = dict(_FULL_POLICY, allowed_hours=overridden_hours)
-    assert _apply_policy_push(enforcer, "kiddo", override_policy) is True
+    assert _apply_policy_push(enforcer, "kiddo", override_policy).ok is True
     assert enforcer._allowed_hours["kiddo"]["3"] == _dbus_hours(0, 24)
 
     # Tick 2: the standing payload is pushed again -- weekday 3 must be
     # back to 09:00-17:00, not left at "any time".
     standing_policy = dict(_FULL_POLICY, allowed_hours=standing_hours)
-    assert _apply_policy_push(enforcer, "kiddo", standing_policy) is True
+    assert _apply_policy_push(enforcer, "kiddo", standing_policy).ok is True
     assert enforcer._allowed_hours["kiddo"]["3"] == _dbus_hours(9, 17)
 
 
@@ -157,26 +157,26 @@ def test_pushing_an_hours_override_then_the_standing_payload_reverts_it():
 
 def test_re_pushing_an_unchanged_policy_touches_dbus_zero_times():
     enforcer = _fresh_enforcer()
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is True
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is True
     first_pass = list(enforcer.write_calls)
     assert first_pass, "a fresh device must push everything"
 
     enforcer.write_calls.clear()
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is True
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is True
     assert enforcer.write_calls == []
 
     enforcer.write_calls.clear()
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is True
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is True
     assert enforcer.write_calls == []
 
 
 def test_changing_one_field_re_pushes_only_that_field():
     enforcer = _fresh_enforcer()
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is True
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is True
 
     enforcer.write_calls.clear()
     changed = dict(_FULL_POLICY, weekly_limit_s=_FULL_POLICY["weekly_limit_s"] + 600)
-    assert _apply_policy_push(enforcer, "kiddo", changed) is True
+    assert _apply_policy_push(enforcer, "kiddo", changed).ok is True
     assert enforcer.write_calls == ["set_time_limit_for_week"]
     assert enforcer._weekly_limits["kiddo"] == 1600
 
@@ -187,11 +187,11 @@ def test_one_changed_hours_day_does_not_re_push_the_other_six():
     unrestricted_wire = _wire_hours(unrestricted())
     standing = {str(day): unrestricted_wire for day in range(1, 8)}
     enforcer = _fresh_enforcer()
-    assert _apply_policy_push(enforcer, "kiddo", dict(_FULL_POLICY, allowed_hours=standing)) is True
+    assert _apply_policy_push(enforcer, "kiddo", dict(_FULL_POLICY, allowed_hours=standing)).ok is True
 
     enforcer.write_calls.clear()
     narrowed = dict(standing, **{"3": _wire_hours([TimeInterval(9 * 60, 17 * 60)])})
-    assert _apply_policy_push(enforcer, "kiddo", dict(_FULL_POLICY, allowed_hours=narrowed)) is True
+    assert _apply_policy_push(enforcer, "kiddo", dict(_FULL_POLICY, allowed_hours=narrowed)).ok is True
     assert enforcer.write_calls == ["set_allowed_hours"]
     assert enforcer._allowed_hours["kiddo"]["3"] == _dbus_hours(9, 17)
 
@@ -205,11 +205,11 @@ def test_changing_allowed_weekdays_always_re_pushes_the_daily_limits():
     # Equal projections either side, so only the coupling rule can force
     # the second write.
     same_limit_everywhere = dict(_FULL_POLICY, daily_limits_s=[3600] * 7)
-    assert _apply_policy_push(enforcer, "kiddo", same_limit_everywhere) is True
+    assert _apply_policy_push(enforcer, "kiddo", same_limit_everywhere).ok is True
 
     enforcer.write_calls.clear()
     fewer_days = dict(same_limit_everywhere, allowed_weekdays=["1", "3", "4", "5", "6"])
-    assert _apply_policy_push(enforcer, "kiddo", fewer_days) is True
+    assert _apply_policy_push(enforcer, "kiddo", fewer_days).ok is True
     assert "set_allowed_days" in enforcer.write_calls
     assert "set_time_limit_for_days" in enforcer.write_calls
     assert enforcer._daily_limits["kiddo"] == [3600] * 5
@@ -220,12 +220,12 @@ def test_an_unreadable_device_config_pushes_everything():
     """The diff may only suppress a write it knows is redundant, so an
     unreadable config has to fail toward applying."""
     enforcer = _fresh_enforcer()
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is True
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is True
     full_push = list(enforcer.write_calls)
 
     enforcer._read_fails = True
     enforcer.write_calls.clear()
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is True
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is True
     assert enforcer.write_calls == full_push
 
 
@@ -243,14 +243,14 @@ def test_a_persistently_failing_step_stops_dragging_the_others_with_it():
 
     enforcer.set_playtime_activities = _always_fails
 
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is False
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is False
     first_pass = list(enforcer.write_calls)
     assert len(first_pass) > 1, "a fresh device still pushes every field"
     enforcer.write_calls.clear()
 
     # Still outstanding, because the failed write left PLAYTIME_ACTIVITIES
     # absent from the readback.
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is False
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is False
     assert enforcer.write_calls == ["set_playtime_activities"]
     assert len(failed_calls) == 2
     assert "PLAYTIME_ACTIVITIES" not in enforcer.get_applied_policy("kiddo")
@@ -259,11 +259,11 @@ def test_a_persistently_failing_step_stops_dragging_the_others_with_it():
 def test_lockout_wake_window_change_alone_re_pushes_the_lockout_type():
     """One call carries both, so both have to match to skip it."""
     enforcer = _fresh_enforcer()
-    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY) is True
+    assert _apply_policy_push(enforcer, "kiddo", _FULL_POLICY).ok is True
 
     enforcer.write_calls.clear()
     moved_wake = dict(_FULL_POLICY, wake_to="9")
-    assert _apply_policy_push(enforcer, "kiddo", moved_wake) is True
+    assert _apply_policy_push(enforcer, "kiddo", moved_wake).ok is True
     assert enforcer.write_calls == ["set_lockout_type"]
     assert enforcer._lockout["kiddo"] == ("suspendwake", "7", "9")
 
@@ -279,3 +279,44 @@ def test_projection_gives_each_allowed_day_its_own_limit(daily_limits, allowed_d
     limit (index = ISO weekday - 1), never a neighboring day's."""
     projected = _project_daily_limits_to_allowed_days(daily_limits, allowed_days)
     assert projected == [daily_limits[int(day) - 1] for day in allowed_days]
+
+
+def test_a_lockout_type_without_a_wake_window_applies_and_then_settles():
+    """The 0.1.2 regression test. Every lockout type other than
+    'suspendwake' leaves wake_from/wake_to empty in the hub payload, but
+    timekpr validates both on every setLockoutType call regardless and
+    rejects the whole call unless they are numeric. The agent used to pass
+    "" for an absent window, so LOCKOUT_TYPE never landed, the push never
+    reported success, and the hub re-sent the policy every ~20s -- firing a
+    "policy changed" notification on each retry, forever.
+
+    The two assertions that matter are that the first push *succeeds* and
+    that the second one *skips*: a fix that only made the call succeed
+    without converging would still re-push every tick.
+    """
+    enforcer = _fresh_enforcer()
+    policy = dict(_FULL_POLICY, lockout_type="lock", wake_from=None, wake_to=None)
+
+    assert _apply_policy_push(enforcer, "kiddo", policy).ok is True
+    assert enforcer._lockout["kiddo"] == ("lock", "0", "23")
+
+    enforcer.write_calls.clear()
+    assert _apply_policy_push(enforcer, "kiddo", policy).ok is True
+    assert enforcer.write_calls == []
+
+
+def test_suspendwake_without_a_configured_window_also_settles():
+    """`suspendwake` is selectable with wake_from/wake_to left unset, and
+    that path compares the substituted defaults against the device's
+    WAKEUP_HOUR_INTERVAL readback rather than the lockout type alone -- so
+    it needs its own proof that it converges instead of re-pushing (and
+    re-notifying) every tick."""
+    enforcer = _fresh_enforcer()
+    policy = dict(_FULL_POLICY, lockout_type="suspendwake", wake_from=None, wake_to=None)
+
+    assert _apply_policy_push(enforcer, "kiddo", policy).ok is True
+    assert enforcer._lockout["kiddo"] == ("suspendwake", "0", "23")
+
+    enforcer.write_calls.clear()
+    assert _apply_policy_push(enforcer, "kiddo", policy).ok is True
+    assert enforcer.write_calls == []

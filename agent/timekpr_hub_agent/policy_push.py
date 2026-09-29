@@ -18,6 +18,21 @@ log = logging.getLogger("timekpr_hub_agent")
 # this is handed straight to callers below.
 _ALL_WEEKDAYS: tuple[str, ...] = ("1", "2", "3", "4", "5", "6", "7")
 
+# timekpr validates the wake window on EVERY setLockoutType call, including
+# for the lockout types that never read it, and rejects the whole call
+# unless both bounds are `.isnumeric()` (server/config/configprocessor.py's
+# checkAndSetLockoutType). Its `if pWakeFrom is not None` escape is
+# unreachable across the method's `ssss` DBUS signature -- None cannot
+# cross the wire, so an absent window arrives as "" and `"".isnumeric()`
+# is False. Sending "" therefore failed every non-suspendwake push
+# silently and forever: LOCKOUT_TYPE never landed, so the diff below
+# correctly re-pushed it every tick, and timekpr fired a "policy changed"
+# notification on each retry (it calls adjustLimitsFromConfig outside its
+# own result check). These are the same defaults timekpr's own CLI
+# substitutes -- see processSetLockoutType in client/admin/adminprocessor.py.
+_DEFAULT_WAKE_FROM = "0"
+_DEFAULT_WAKE_TO = "23"
+
 
 class _Unknown:
     """Marks a current value as unreadable. Not None, which is itself a
@@ -65,6 +80,10 @@ class _Push:
         self.ok = True
         self.applied_count = 0
         self.skipped_count = 0
+        self.failed: list[str] = []
+        """Labels of the steps timekpr rejected, in call order -- reported
+        to the hub so a stuck setter is visible there instead of only in
+        this machine's journal."""
 
     def current(self, key: str) -> Any:
         """The device's current value for `key`, or `_UNKNOWN` when the
@@ -85,26 +104,34 @@ class _Push:
             # record of which call it was.
             log.warning("%s: policy push step failed: %s", self.username, label)
             self.ok = False
+            self.failed.append(label)
         return True
 
 
-def _apply_policy_push(enforcer: TimekprEnforcer, username: str, policy: dict) -> bool:
+def _apply_policy_push(enforcer: TimekprEnforcer, username: str, policy: dict) -> _Push:
     """Apply a hub policy payload to the local timekpr config -- every field
     `PolicyPayload` carries, not just daily/weekly/monthly limits and
     allowed weekdays. Only the fields that differ from what timekpr
     already holds are written -- see `_Push`.
 
-    All-or-nothing on the return value: the caller only advances
+    All-or-nothing on `.ok`: the caller only advances
     `policy_version_applied` when every needed write succeeded, so a
     partial failure retries whole on the next tick rather than leaving the
     user half-configured (unlike timekpr's own admin GUI, which applies
-    fields one call at a time and stops on the first failure)."""
+    fields one call at a time and stops on the first failure).
+
+    Returns the `_Push` rather than a bare bool so the caller can also
+    report `.failed` upward -- a stuck setter used to be visible only in
+    this machine's journal."""
     daily_limits = [int(x) for x in policy["daily_limits_s"]]
     if len(daily_limits) != 7:
         log.error(
             "%s: policy has %d daily limits, timekpr requires 7 -- not applying", username, len(daily_limits)
         )
-        return False
+        rejected = _Push(username, None)
+        rejected.ok = False
+        rejected.failed.append("daily_limits_length")
+        return rejected
 
     push = _Push(username, enforcer.get_applied_policy(username))
     if not push.readable:
@@ -164,7 +191,7 @@ def _apply_policy_push(enforcer: TimekprEnforcer, username: str, policy: dict) -
         push.applied_count,
         push.skipped_count,
     )
-    return push.ok
+    return push
 
 
 def _apply_lockout(enforcer: TimekprEnforcer, username: str, policy: dict, push: _Push) -> None:
@@ -173,8 +200,8 @@ def _apply_lockout(enforcer: TimekprEnforcer, username: str, policy: dict, push:
     only for 'suspendwake'; for any other type there is nothing to
     compare."""
     lockout_type = policy.get("lockout_type") or "lock"
-    wake_from = policy.get("wake_from") or ""
-    wake_to = policy.get("wake_to") or ""
+    wake_from = policy.get("wake_from") or _DEFAULT_WAKE_FROM
+    wake_to = policy.get("wake_to") or _DEFAULT_WAKE_TO
 
     current_type = push.current("LOCKOUT_TYPE")
     if lockout_type == "suspendwake":

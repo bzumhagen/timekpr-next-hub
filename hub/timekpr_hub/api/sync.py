@@ -78,11 +78,10 @@ async def sync(
     user_responses: list[SyncUserResponse] = []
 
     for user_sync in req.users:
-        alias_result = await session.execute(
-            select(UserAlias).where(
-                UserAlias.device_id == device.id, UserAlias.local_username == user_sync.username
-            )
+        alias_query = select(UserAlias).where(
+            UserAlias.device_id == device.id, UserAlias.local_username == user_sync.username
         )
+        alias_result = await session.execute(alias_query)
         alias = alias_result.scalar_one_or_none()
         if alias is None:
             # A local username this device hasn't reported before -- e.g. a
@@ -94,6 +93,11 @@ async def sync(
             user, policy, _ = await provision_user_alias(
                 session, device_id=device.id, local_username=user_sync.username
             )
+            # Re-read the row it just created rather than widening its
+            # (user, policy, is_new) return for this one caller. Runs once
+            # per (device, user) lifetime, so the extra indexed lookup is
+            # not worth threading a fourth element through every caller.
+            alias = (await session.execute(alias_query)).scalar_one()
         else:
             user_result = await session.execute(select(User).where(User.id == alias.user_id))
             user = user_result.scalar_one()
@@ -102,6 +106,15 @@ async def sync(
             # this user's first sync concurrently (services/policy.py's
             # get_or_create_policy docstring).
             policy = await get_or_create_policy(session, user)
+
+        # Diagnostic only, never gated on: a push the agent could not apply
+        # is already expressed by policy_revision_applied not advancing
+        # below. This records WHICH setter timekpr rejected, so /devices can
+        # name it instead of an admin having to read that machine's journal.
+        # Cleared on the first clean push, so a resolved failure disappears
+        # by itself.
+        alias.policy_push_error = user_sync.policy_push_error
+        alias.policy_push_error_at = now if user_sync.policy_push_error else None
 
         # 1. record this tick's contribution (idempotent on both writes)
         await upsert_usage_counter(

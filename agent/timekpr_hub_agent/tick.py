@@ -52,6 +52,11 @@ DEFAULT_OFFLINE_CAP_S = 1800
 # way -- see docs for global_spent_wallclock's GREATEST floor).
 MAX_PENDING_SPANS = 200
 
+# Cap on the push-failure label list reported to the hub, matching the
+# UserAlias.policy_push_error column. Truncated here rather than hub-side
+# so an over-long value can never be the thing that rejects a whole sync.
+MAX_PUSH_ERROR_LEN = 256
+
 
 def _canonical_day_str(dt: datetime, tz_name: str) -> str:
     """The agent's own best guess at "today", in the household's timezone
@@ -202,6 +207,7 @@ def run_tick(
                 },
                 "policy_version_applied": user_state.policy_version_applied,
                 "policy_revision_applied": user_state.policy_revision_applied,
+                "policy_push_error": user_state.last_policy_push_error,
             }
         )
 
@@ -278,7 +284,15 @@ def run_tick(
                 # push had landed on tick 1 even though nothing was ever
                 # written to timekpr, and the hub then never sent the
                 # payload again.
-                if _apply_policy_push(enforcer, username, policy_payload):
+                push = _apply_policy_push(enforcer, username, policy_payload)
+                # Reported to the hub on the NEXT sync, not this one: the
+                # push necessarily runs after the response that carried the
+                # policy. Only a repeating failure is worth surfacing
+                # anyway, and those repeat every tick by construction.
+                user_state.last_policy_push_error = (
+                    ", ".join(push.failed)[:MAX_PUSH_ERROR_LEN] if push.failed else None
+                )
+                if push.ok:
                     user_state.policy_version_applied = resp_user["policy_version"]
                     # Both are advanced only together, on success -- the int
                     # for a hub that predates `policy_revision` (it simply

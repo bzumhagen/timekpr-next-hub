@@ -43,11 +43,16 @@ from timekpr_hub_agent import state as state_mod
 from timekpr_hub_agent.enforcer import UserObservation
 from timekpr_hub_agent.hubclient import HubClient, HubClientConfig, HubUnreachableError
 from timekpr_hub_agent.tick import run_tick
+from timekpr_hub_core.models import LockoutType
 
 from tests.dbutil import TEST_DATABASE_URL, all_table_names, require_db
 from tests.fakes.fake_timekpr import FakeTimekprDaemon
 
 _T = TypeVar("_T")
+
+_TIMEKPR_LOCKOUT_TYPES = frozenset(t.value for t in LockoutType)
+"""The six values timekpr's `checkAndSetLockoutType` accepts -- `LockoutType`
+already mirrors its TK_CTRL_RES_* constants, so derive rather than restate."""
 
 # A stand-in admin, exactly like test_hub_api.py's _FAKE_ADMIN -- installed
 # via app.dependency_overrides only so the harness can mint enrollment codes
@@ -430,6 +435,16 @@ class FakeEnforcer:
         return True
 
     def set_lockout_type(self, username: str, lockout_type: str, wake_from: str, wake_to: str) -> bool:
+        """Mirrors `checkAndSetLockoutType`'s validation, which rejects the
+        whole call unless the type is known AND both wake bounds are
+        numeric -- including for lockout types that never use them. This
+        fake accepting anything is why the agent shipped for two releases
+        passing "" here, failing every non-suspendwake push in production
+        while every test stayed green (see enforcer.set_lockout_type)."""
+        if lockout_type not in _TIMEKPR_LOCKOUT_TYPES:
+            return False
+        if not wake_from.isnumeric() or not wake_to.isnumeric():
+            return False
         self._lockout[username] = (lockout_type, wake_from, wake_to)
         return True
 

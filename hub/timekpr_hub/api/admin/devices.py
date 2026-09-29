@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from timekpr_hub.api.admin_auth import get_current_admin_api
 from timekpr_hub.api.util import client_ip
-from timekpr_hub.db.models import Admin, Device
+from timekpr_hub.db.models import Admin, Device, UserAlias
 from timekpr_hub.db.session import get_session
 from timekpr_hub.services import devices as device_ops
 from timekpr_hub.services import enrollment as enrollment_ops
@@ -70,6 +70,16 @@ async def list_audit(
 @router.get("/devices")
 async def list_devices(session: AsyncSession = Depends(get_session)) -> list[dict]:
     result = await session.execute(select(Device))
+    # Mirrors what /devices renders -- the UI does nothing through a
+    # private path (see the README's "no separate internal API").
+    push_error_rows = await session.execute(
+        select(UserAlias.device_id, UserAlias.local_username, UserAlias.policy_push_error).where(
+            UserAlias.policy_push_error.is_not(None)
+        )
+    )
+    push_errors: dict[uuid.UUID, list[dict[str, str]]] = {}
+    for device_id, local_username, error in push_error_rows.all():
+        push_errors.setdefault(device_id, []).append({"username": local_username, "error": error})
     return [
         {
             "id": str(d.id),
@@ -77,6 +87,7 @@ async def list_devices(session: AsyncSession = Depends(get_session)) -> list[dic
             "status": d.status,
             "enforcement": d.enforcement,
             "last_sync_at": d.last_sync_at.isoformat() if d.last_sync_at else None,
+            "policy_push_errors": push_errors.get(d.id, []),
         }
         for d in result.scalars().all()
     ]

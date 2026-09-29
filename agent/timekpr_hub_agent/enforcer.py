@@ -90,7 +90,14 @@ class TimekprEnforcer:
         `dbus_method` is the name of the method on `timekprAdminConnector`."""
         if not self._connected and not self.connect():
             return False
-        result, _message = getattr(self._admin, dbus_method)(*args)
+        result, message = getattr(self._admin, dbus_method)(*args)
+        if result != 0:
+            # timekpr's own explanation for the rejection -- previously
+            # discarded, which left policy_push's `step failed: <label>` as
+            # the only evidence and made a pure-validation refusal (a value
+            # timekpr will never accept, however many times it's retried)
+            # look identical to a transport problem.
+            log.warning("%s failed: %s", dbus_method, message)
         return result == 0
 
     def get_user_observation(self, username: str) -> UserObservation | None:
@@ -178,10 +185,19 @@ class TimekprEnforcer:
 
     def set_lockout_type(self, username: str, lockout_type: str, wake_from: str, wake_to: str) -> bool:
         """`lockout_type` is one of timekpr's TK_CTRL_RES_* string values
-        (see `core.models.LockoutType`); `wake_from`/`wake_to` are only
-        meaningful for 'suspendwake' but are always passed through -- timekpr
-        itself just stores them regardless."""
-        return self._call("setLockoutType", username, lockout_type, wake_from or "", wake_to or "")
+        (see `core.models.LockoutType`).
+
+        `wake_from`/`wake_to` are only *meaningful* for 'suspendwake', but
+        timekpr validates them on every call regardless and rejects the
+        whole call unless both are `.isnumeric()` -- so neither may be ""
+        even when the lockout type ignores them. Callers are responsible
+        for substituting a numeric default; `policy_push._apply_lockout`
+        does, and is the only caller. Deliberately not defaulted here: this
+        class is a pass-through over the DBUS connector, and burying the
+        substitution below the layer the tests drive is what hid the
+        original bug.
+        """
+        return self._call("setLockoutType", username, lockout_type, wake_from, wake_to)
 
     def set_playtime_enabled(self, username: str, enabled: bool) -> bool:
         return self._call("setPlayTimeEnabled", username, enabled)

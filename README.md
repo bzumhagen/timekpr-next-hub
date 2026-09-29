@@ -124,7 +124,28 @@ on their own **Devices** page, out of the way until you need them.
 
 - **A device shows no recent activity.** `sudo timekpr-hub-agent status`
   on that machine shows whether the hub is reachable and when it last
-  synced.
+  synced. For anything it doesn't explain, the agent logs to the journal:
+  `journalctl -u timekpr-hub-agent -b -p warning`.
+- **A device shows "policy push failing".** The agent asked timekpr to
+  apply a setting and timekpr refused. The badge names the user and the
+  DBUS call; the journal on that machine has timekpr's own reason for
+  refusing it. The agent retries every poll and reports the failure until
+  it succeeds, so the badge clears itself once the cause is fixed.
+- **Repeated "policy changed" notifications on a client.** timekpr
+  notifies the user on every setting it is handed, changed or not, so this
+  means something is being written over and over. Check the journal on
+  that machine:
+
+  ```sh
+  journalctl -u timekpr-hub-agent --since "1 hour ago" | grep "policy push"
+  ```
+
+  | What you see | What it means |
+  |---|---|
+  | `applied 0, skipped N` | Healthy — the agent is writing nothing. The notifications are coming from somewhere else; try `journalctl -u timekpr.service`. |
+  | `policy push step failed: <call>` | That one setter is stuck. timekpr refuses it, so it is retried (and re-notified) every poll, forever. The line above it in the journal is timekpr's own reason. |
+  | `could not read current timekpr config` | The agent can't read the device back, so it can't tell which fields already match and re-writes all ~20 every poll. |
+
 - **Reinstalling the agent, or a fresh OS install on the same machine.**
   Just re-run `enroll` — it rebinds to the existing device by machine ID,
   keeping its history. Revoke or delete the old device in the hub UI
@@ -309,6 +330,10 @@ chain — timekpr-next installed, timekprd reachable over DBUS, config
 present, device token readable, service enabled, service active, hub
 reachable, and the device's clock skew against the hub — plus each
 managed user's last sync and current balance.
+
+It reports the state of that chain, not what the agent has been *doing*:
+for a device that is enrolled and syncing but misbehaving, the journal
+(`journalctl -u timekpr-hub-agent`) is where the detail is.
 
 ## Surviving reboots & upgrades
 

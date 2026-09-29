@@ -12,6 +12,35 @@ to upgrade.
 
 ## [Unreleased]
 
+### Fixed
+
+- The agent no longer fires timekpr's "policy changed" desktop
+  notification every ~20 seconds for users whose lockout type is anything
+  other than `suspendwake`. 0.1.1 stopped one rejected setter from
+  dragging the other ~19 with it, but `setLockoutType` itself was rejected
+  on every push for every such user, so one notification still fired every
+  poll, indefinitely. The cause: timekpr validates the suspend-wake window
+  on *every* `setLockoutType` call, including for the lockout types that
+  never use it, and rejects the call outright unless both bounds are
+  numeric — the agent was sending empty strings whenever the hub had no
+  window to send. It now sends the same `0`/`23` default timekpr's own
+  `timekpra` substitutes.
+
+### Added
+
+- A device whose agent cannot apply a policy now says so on **Devices**,
+  naming the user and the setting timekpr refused, instead of being
+  indistinguishable from one that simply hasn't applied it yet. Also on
+  `GET /api/v1/devices` as `policy_push_errors`. The warning clears itself
+  on the first clean push.
+- The agent now logs timekpr's own explanation when a setting is refused,
+  rather than only which call it was — previously a value timekpr would
+  never accept looked identical in the journal to a transient DBUS
+  problem.
+- README troubleshooting for repeated "policy changed" notifications, and
+  for reading the agent's journal generally, which the docs never
+  mentioned.
+
 ## [0.1.1] - 2026-09-21
 
 ### Fixed

@@ -138,6 +138,16 @@ class UserAlias(Base):
     device_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
     local_username: Mapped[str] = mapped_column(String(64), nullable=False)
 
+    # Purely diagnostic, written by /sync from the agent's own report (see
+    # SyncUserRequest.policy_push_error). This table is the right grain:
+    # a push failure is per (device, local user), which is exactly the
+    # unique key below. Nothing gates on these -- a failed push is already
+    # expressed by the device's policy_revision_applied not advancing;
+    # these exist so an admin can see WHICH setter is stuck without
+    # reading that machine's journal.
+    policy_push_error: Mapped[str | None] = mapped_column(String(256))
+    policy_push_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     __table_args__ = (UniqueConstraint("device_id", "local_username", name="uq_user_aliases_device_local"),)
 
 

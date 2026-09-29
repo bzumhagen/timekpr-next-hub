@@ -29,6 +29,7 @@ BIND=0.0.0.0
 PORT=8000
 SKIP_POSTGRES=0
 NO_START=0
+CONSOLE_AUTOLOGIN=1
 
 # ---------------------------------------------------------------- helpers --
 log()  { printf '==> %s\n' "$*" >&2; }
@@ -43,6 +44,9 @@ Usage: install.sh [options]
   --port PORT         port uvicorn binds (default: 8000)
   --skip-postgres     don't touch Postgres (assume it's already tuned/running)
   --no-start          install everything but don't enable/start the units
+  --no-console-autologin
+                      leave the container console at a login prompt, which
+                      no password can satisfy unless you set one yourself
   -h, --help          show this help
 EOF
 }
@@ -54,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --port) PORT=$2; shift 2 ;;
     --skip-postgres) SKIP_POSTGRES=1; shift ;;
     --no-start) NO_START=1; shift ;;
+    --no-console-autologin) CONSOLE_AUTOLOGIN=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (see --help)" ;;
   esac
@@ -281,6 +286,16 @@ ExecStart=/opt/timekpr-hub/venv/bin/uvicorn timekpr_hub.app:app --host $BIND --p
 EOF
 fi
 
+if [[ $CONSOLE_AUTOLOGIN -eq 1 ]]; then
+  log "enabling root autologin on the container console (--no-console-autologin to skip)"
+  mkdir -p /etc/systemd/system/container-getty@1.service.d
+  cat > /etc/systemd/system/container-getty@1.service.d/autologin.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud tty%I 115200,38400,9600 $TERM
+EOF
+fi
+
 systemctl daemon-reload
 
 if [[ $NO_START -eq 1 ]]; then
@@ -311,6 +326,10 @@ fi
 
 echo
 log "done. Hub listening on $BIND:$PORT"
+# Not restarting container-getty@1: this script may be running on it.
+if [[ $CONSOLE_AUTOLOGIN -eq 1 ]]; then
+  log "console autologin applies on the next console session (or after a reboot)"
+fi
 if [[ $UPGRADE -eq 0 ]]; then
   log "CLAIM IT NOW: open http://<this box>:$PORT/setup and create the first admin" \
       "account -- until you do, anyone who can reach the hub can create it themselves."

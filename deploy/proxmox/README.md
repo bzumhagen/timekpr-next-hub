@@ -55,14 +55,32 @@ anyone who can reach the hub can create that account themselves. Keep the
 hub on your LAN or behind a Tailscale/WireGuard tunnel -- it serves plain
 HTTP, no TLS.
 
+### Getting a shell in the container
+
+`pct enter <CTID>` from the Proxmox host, which needs no credentials.
+
+Root has no password -- nothing here sets one, and `pct create` leaves it
+locked -- so a login prompt can't be satisfied. `install.sh` therefore
+configures root autologin on the container console (PVE doesn't do this
+itself), which is what makes the **Console** button in the PVE UI drop
+straight into a shell. It applies on the next console session.
+
+Pass `--no-console-autologin` to skip that, and set a password yourself if
+you want console access:
+
+```sh
+pct exec <CTID> -- bash -c 'echo "root:YOUR_PASSWORD" | chpasswd'
+```
+
 ### `install.sh` flags
 
 ```
---tz TZ             HUB_TZ to configure (default: UTC)
---bind ADDR         address uvicorn binds (default: 0.0.0.0)
---port PORT         port uvicorn binds (default: 8000)
---skip-postgres     don't touch Postgres (assume it's already tuned/running)
---no-start          install everything but don't enable/start the units
+--tz TZ                 HUB_TZ to configure (default: UTC)
+--bind ADDR             address uvicorn binds (default: 0.0.0.0)
+--port PORT             port uvicorn binds (default: 8000)
+--skip-postgres         don't touch Postgres (assume it's already tuned/running)
+--no-start              install everything but don't enable/start the units
+--no-console-autologin  leave the container console at a login prompt
 ```
 
 ## Upgrading

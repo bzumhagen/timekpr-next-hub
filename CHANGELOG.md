@@ -12,34 +12,42 @@ to upgrade.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-28
+
+Upgrade if any managed user's lockout type is `lock` (the default),
+`suspend`, `terminate`, `kill` or `shutdown` — anything but
+`suspendwake`. Those users were getting a "policy changed" desktop
+notification every 20 seconds, indefinitely.
+
 ### Fixed
 
 - The agent no longer fires timekpr's "policy changed" desktop
-  notification every ~20 seconds for users whose lockout type is anything
-  other than `suspendwake`. 0.1.1 stopped one rejected setter from
-  dragging the other ~19 with it, but `setLockoutType` itself was rejected
-  on every push for every such user, so one notification still fired every
-  poll, indefinitely. The cause: timekpr validates the suspend-wake window
-  on *every* `setLockoutType` call, including for the lockout types that
-  never use it, and rejects the call outright unless both bounds are
-  numeric — the agent was sending empty strings whenever the hub had no
-  window to send. It now sends the same `0`/`23` default timekpr's own
-  `timekpra` substitutes.
+  notification on a loop for users whose lockout type is anything other
+  than `suspendwake`. 0.1.1 stopped one rejected setting from dragging the
+  other ~19 with it, but `setLockoutType` itself was rejected on every
+  push for every such user, so one notification still fired every poll and
+  the hub never stopped resending the policy. The cause: timekpr validates
+  the suspend-wake window on *every* `setLockoutType` call, including for
+  the lockout types that ignore it, and refuses the call outright unless
+  both bounds are numeric — the agent sent empty strings whenever the hub
+  had no window to send. It now sends the same `0`/`23` default timekpr's
+  own `timekpra` substitutes. No configuration change is needed; the
+  setting lands on the first poll after upgrading.
 
 ### Added
 
 - A device whose agent cannot apply a policy now says so on **Devices**,
   naming the user and the setting timekpr refused, instead of being
   indistinguishable from one that simply hasn't applied it yet. Also on
-  `GET /api/v1/devices` as `policy_push_errors`. The warning clears itself
-  on the first clean push.
+  `GET /api/v1/devices` as `policy_push_errors`. It clears itself on the
+  first clean push. This class of failure was previously visible only in
+  the journal of the affected machine, which is why the bug above went
+  unnoticed for two releases.
 - The agent now logs timekpr's own explanation when a setting is refused,
-  rather than only which call it was — previously a value timekpr would
-  never accept looked identical in the journal to a transient DBUS
-  problem.
-- README troubleshooting for repeated "policy changed" notifications, and
-  for reading the agent's journal generally, which the docs never
-  mentioned.
+  not just which call it was — a value timekpr will never accept used to
+  look identical in the journal to a transient DBUS problem.
+- README troubleshooting for repeated "policy changed" notifications and
+  for reading the agent's journal, which the docs had never mentioned.
 
 ## [0.1.1] - 2026-09-21
 
@@ -117,6 +125,7 @@ machine they use, instead of `timekpr-next` tracking each one separately.
 - Anyone with `sudo` on a managed machine can stop the agent. The hub UI
   flags a device that stops checking in; it can't prevent it.
 
-[Unreleased]: https://github.com/bzumhagen/timekpr-next-hub/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/bzumhagen/timekpr-next-hub/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/bzumhagen/timekpr-next-hub/releases/tag/v0.1.2
 [0.1.1]: https://github.com/bzumhagen/timekpr-next-hub/releases/tag/v0.1.1
 [0.1.0]: https://github.com/bzumhagen/timekpr-next-hub/releases/tag/v0.1.0
